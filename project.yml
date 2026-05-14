@@ -1,4 +1,4 @@
-name: DoubleEnder
+name: DoublEnder
 
 options:
   bundleIdPrefix: io.github.sevmorris
@@ -14,14 +14,14 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
-  DoubleEnder:
+  DoublEnder:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
     sources:
-      - path: DoubleEnder
+      - path: DoublEnder
         excludes:
-          - "DoubleEnderLite.entitlements"
+          - "DoublEnderLite.entitlements"
     settings:
       base:
         PRODUCT_NAME: DoublEnder
@@ -31,23 +31,23 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_ENTITLEMENTS: DoubleEnder/DoubleEnder.entitlements
+        CODE_SIGN_ENTITLEMENTS: DoublEnder/DoublEnder.entitlements
     info:
-      path: DoubleEnder/Info.plist
+      path: DoublEnder/Info.plist
       properties:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
 
-  DoubleEnderLite:
+  DoublEnderLite:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
     sources:
-      - path: DoubleEnder
+      - path: DoublEnder
         excludes:
-          - "DoubleEnder.entitlements"
+          - "DoublEnder.entitlements"
     settings:
       base:
         PRODUCT_NAME: DoublEnder Lite
@@ -56,9 +56,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_ENTITLEMENTS: DoubleEnder/DoubleEnderLite.entitlements
+        CODE_SIGN_ENTITLEMENTS: DoublEnder/DoublEnderLite.entitlements
     info:
-      path: DoubleEnder/Info.plist
+      path: DoublEnder/Info.plist
       properties:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."

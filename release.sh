@@ -21,8 +21,8 @@ VERSION="$1"
 TAG="v${VERSION}"
 SCRIPT_DIR="${0:A:h}"
 PROJECT_DIR="$SCRIPT_DIR"
-PROJECT="$PROJECT_DIR/DoubleEnder.xcodeproj"
-SCHEME="DoubleEnder"
+PROJECT="$PROJECT_DIR/DoublEnder.xcodeproj"
+SCHEME="DoublEnder"
 APP_NAME="DoublEnder"
 DERIVED_DATA="/tmp/doublender_build_${VERSION}"
 APP_PATH="$DERIVED_DATA/Build/Products/Release/${APP_NAME}.app"
@@ -31,7 +31,7 @@ DMG="/tmp/${APP_NAME}-${TAG}.dmg"
 MOUNT="/tmp/doublender_verify_${VERSION}"
 SIGN_IDENTITY="Developer ID Application: Seven Morris (T9RLNAXPWU)"
 NOTARY_PROFILE="WoWoNotary"
-ENTITLEMENTS="$PROJECT_DIR/DoubleEnder/DoubleEnder.entitlements"
+ENTITLEMENTS="$PROJECT_DIR/DoublEnder/DoublEnder.entitlements"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 step()  { echo "\n▶ $*"; }
@@ -85,7 +85,7 @@ else
 
     xcodegen generate --quiet
     ok "Bumped $CURRENT → $VERSION"
-    git add project.yml README.md docs/index.html DoubleEnder.xcodeproj/project.pbxproj
+    git add project.yml README.md docs/index.html DoublEnder.xcodeproj/project.pbxproj
     git commit -m "Bump version to $VERSION"
     ok "Committed version bump"
 fi
