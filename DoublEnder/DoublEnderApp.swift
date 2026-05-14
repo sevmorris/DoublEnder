@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import CoreText
+import OSLog
+
+private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "AppDelegate")
 
 @main
 struct DoublEnderApp: App {
@@ -81,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (custom filename, notes) so the next launch starts fresh.
     func applicationWillTerminate(_ notification: Notification) {
         RecorderViewModel.shared.clearSessionSettings()
+        UserDefaults.standard.synchronize()
     }
 
     /// Quit intercept: if recording, surface the save/discard/cancel choice
@@ -106,7 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // The help window is created lazily on first open, so at launch the
         // first (and only) window is the main content window.
         let candidate = NSApp.windows.first { $0.identifier?.rawValue != "help" && $0.contentView != nil }
-        guard let window = candidate ?? NSApp.windows.first else { return }
+        guard let window = candidate ?? NSApp.windows.first else {
+            logger.error("configureMainWindow: no window found — window chrome and delegate not applied")
+            return
+        }
 
         mainWindow = window
         window.delegate = self

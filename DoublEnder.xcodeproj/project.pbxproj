@@ -340,7 +340,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnder;
 				PRODUCT_NAME = DoublEnder;
 				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) GCS_ENABLED";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited)";
 			};
 			name = Debug;
 		};
@@ -385,7 +385,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnder;
 				PRODUCT_NAME = DoublEnder;
 				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) GCS_ENABLED";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited)";
 			};
 			name = Release;
 		};

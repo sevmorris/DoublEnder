@@ -27,7 +27,7 @@ targets:
         PRODUCT_NAME: DoublEnder
         PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnder
         INFOPLIST_KEY_CFBundleDisplayName: DoublEnder
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) GCS_ENABLED
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_IDENTITY: "-"

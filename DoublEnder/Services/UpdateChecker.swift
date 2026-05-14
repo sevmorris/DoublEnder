@@ -40,14 +40,16 @@ actor UpdateChecker {
 
             let (data, response) = try await URLSession.shared.data(for: request)
 
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                return .error("Could not reach GitHub. Check your internet connection.")
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard statusCode == 200 else {
+                return .error("Update check failed (HTTP \(statusCode)). Try again later.")
             }
 
             let release = try JSONDecoder().decode(Release.self, from: data)
 
             let latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
-            let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+            let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+            guard !currentVersion.isEmpty else { return .error("Could not read app version.") }
 
             guard let releaseURL = URL(string: release.htmlUrl)
                     ?? URL(string: "https://github.com/sevmorris/DoublEnder/releases") else {

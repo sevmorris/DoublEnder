@@ -46,6 +46,7 @@ class AudioEngine: NSObject, ObservableObject {
     private let aacBitRate: Int = 256_000
 
     private var audioEngine: AVAudioEngine?
+    private var engineConfigObserver: NSObjectProtocol?
     private var isRecording = false
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
@@ -74,6 +75,10 @@ class AudioEngine: NSObject, ObservableObject {
     }
     
     private func rebuildEngine(with deviceID: AudioDeviceID? = nil) {
+        if let obs = engineConfigObserver {
+            NotificationCenter.default.removeObserver(obs)
+            engineConfigObserver = nil
+        }
         if let engine = audioEngine {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
@@ -110,22 +115,45 @@ class AudioEngine: NSObject, ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] (buffer, _) in
             guard let self = self else { return }
-
             self.updateMetersAndClip(buffer: buffer)
-
-            if self.isRecording {
-                self.limiter?.process(buffer: buffer)
-                self.appendBufferToWriter(buffer)
-            }
+            self.appendBufferToWriter(buffer)
         }
 
         newEngine.prepare()
         do {
             try newEngine.start()
             self.audioEngine = newEngine
+            engineConfigObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: newEngine,
+                queue: .main
+            ) { [weak self] _ in self?.handleEngineConfigurationChange() }
         } catch {
             let message = "Failed to start audio engine: \(error.localizedDescription)"
             DispatchQueue.main.async { self.lastError = message }
+        }
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard audioEngine != nil else { return }
+        logger.info("AVAudioEngine configuration changed — device disconnected or reconfigured")
+
+        if isRecording {
+            stopRecording { [weak self] result in
+                guard let self else { return }
+                let msg: String
+                switch result {
+                case .success:
+                    msg = "Recording device disconnected. Your recording was saved."
+                case .failure:
+                    msg = "Recording device disconnected. The recording could not be saved."
+                }
+                DispatchQueue.main.async { self.lastError = msg }
+            }
+        } else {
+            DispatchQueue.main.async {
+                self.lastError = "Audio device disconnected or reconfigured. Select a new input."
+            }
         }
     }
     
@@ -151,7 +179,10 @@ class AudioEngine: NSObject, ObservableObject {
         }
 
         // AVAssetWriter refuses to start if the file already exists.
-        try? FileManager.default.removeItem(at: fileURL)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            logger.warning("Output file already exists — removing: \(fileURL.lastPathComponent, privacy: .public)")
+            try? FileManager.default.removeItem(at: fileURL)
+        }
 
         let fileType: AVFileType
         let outputSettings: [String: Any]
@@ -237,27 +268,46 @@ class AudioEngine: NSObject, ObservableObject {
 
     private func appendBufferToWriter(_ buffer: AVAudioPCMBuffer) {
         writerLock.lock()
-        defer { writerLock.unlock() }
 
         guard let writerInput = assetWriterInput, writerInput.isReadyForMoreMediaData else {
+            writerLock.unlock()
             return
         }
+
+        // Limiter runs inside the lock — limiter is created/destroyed under writerLock.
+        limiter?.process(buffer: buffer)
+
         guard let monoBuffer = downmixToMono(buffer),
               let sampleBuffer = makeSampleBuffer(from: monoBuffer, startFrame: writerFrameCount) else {
             consecutiveWriteErrors += 1
+            writerLock.unlock()
             return
         }
 
         if writerInput.append(sampleBuffer) {
             writerFrameCount += Int64(monoBuffer.frameLength)
             consecutiveWriteErrors = 0
+            writerLock.unlock()
         } else {
             consecutiveWriteErrors += 1
             if consecutiveWriteErrors >= writeErrorThreshold {
-                let status = assetWriter?.status.rawValue ?? -1
-                let err = assetWriter?.error?.localizedDescription ?? "status=\(status)"
-                DispatchQueue.main.async { self.lastError = "AVAssetWriter rejected audio samples (\(err))." }
-                isRecording = false
+                // Capture and clear writer state so no further appends occur.
+                let failedWriter = assetWriter
+                let err = assetWriter?.error?.localizedDescription
+                    ?? "status \(assetWriter?.status.rawValue ?? -1)"
+                assetWriter = nil
+                assetWriterInput = nil
+                limiter = nil
+                consecutiveWriteErrors = 0
+                writerLock.unlock()
+
+                // Cancel the partial file — it can't be finalized in this state.
+                failedWriter?.cancelWriting()
+                DispatchQueue.main.async {
+                    self.lastError = "AVAssetWriter rejected audio samples (\(err))."
+                }
+            } else {
+                writerLock.unlock()
             }
         }
     }
@@ -506,6 +556,11 @@ private final class LookaheadLimiter {
     private var writeIndices: [Int]
     private var currentGains: [Float]
 
+    // Per-channel monotone deques for O(n) sliding window max.
+    // Each deque stores (absolute-value, circular-buffer index) pairs in
+    // decreasing order of value so the front is always the current window max.
+    private var maxDeques: [[(value: Float, idx: Int)]]
+
     init(sampleRate: Double, channels: Int) {
         let lookaheadMs: Double = 5.0
         let releaseMs: Double = 80.0
@@ -517,6 +572,7 @@ private final class LookaheadLimiter {
         self.delayBuffers = Array(repeating: Array(repeating: 0, count: self.lookaheadSamples), count: ch)
         self.writeIndices = Array(repeating: 0, count: ch)
         self.currentGains = Array(repeating: 1.0, count: ch)
+        self.maxDeques = Array(repeating: [], count: ch)
     }
 
     func process(buffer: AVAudioPCMBuffer) {
@@ -529,23 +585,31 @@ private final class LookaheadLimiter {
             var delay = delayBuffers[c]
             var writeIdx = writeIndices[c]
             var currentGain = currentGains[c]
+            var deque = maxDeques[c]
             let data = channelData[c]
 
             for i in 0..<frameCount {
                 let inSample = data[i]
+                let inAbs = abs(inSample)
 
-                // Emit the oldest sample and overwrite that slot with the new input.
+                // The slot about to be overwritten is leaving the window —
+                // evict it from the front of the deque if it's there.
+                let evictIdx = writeIdx
+                if deque.first?.idx == evictIdx { deque.removeFirst() }
+
+                // Emit the oldest delayed sample before overwriting the slot.
                 let delayedSample = delay[writeIdx]
                 delay[writeIdx] = inSample
                 writeIdx = (writeIdx + 1) % L
 
-                // Scan the delay line for the worst upcoming peak.
-                var peak: Float = 0
-                for j in 0..<L {
-                    let v = abs(delay[j])
-                    if v > peak { peak = v }
-                }
+                // Maintain decreasing-value invariant: drop any back entries
+                // smaller than the incoming value — they can never be the max
+                // while the new entry is still in the window.
+                while let last = deque.last, last.value <= inAbs { deque.removeLast() }
+                deque.append((value: inAbs, idx: evictIdx))
 
+                // Front of deque is always the window max — O(1) lookup.
+                let peak = deque.first?.value ?? 0
                 let targetGain: Float = peak > threshold ? threshold / peak : 1.0
 
                 if targetGain < currentGain {
@@ -563,6 +627,7 @@ private final class LookaheadLimiter {
             delayBuffers[c] = delay
             writeIndices[c] = writeIdx
             currentGains[c] = currentGain
+            maxDeques[c] = deque
         }
     }
 }

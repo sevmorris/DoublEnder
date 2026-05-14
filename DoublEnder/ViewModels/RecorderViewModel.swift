@@ -117,7 +117,10 @@ class RecorderViewModel: ObservableObject {
             .compactMap { $0 }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] message in
-                self?.state = .error(message)
+                guard let self else { return }
+                self.timer?.cancel()
+                self.clearInProgressFlag()
+                self.state = .error(message)
             }
             .store(in: &cancellables)
 
@@ -147,7 +150,7 @@ class RecorderViewModel: ObservableObject {
                     }
                     self.state = .ready
                 } else {
-                    self.state = .error("Microphone access denied.")
+                    self.state = .error("Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable DoublEnder.")
                 }
             }
         }
@@ -158,15 +161,23 @@ class RecorderViewModel: ObservableObject {
     func startRecording() {
         do {
             let fileURL = makeRecordingURL()
-            try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
-            recordedFileURL = fileURL
 
-            // Flip the crash-recovery flag and record the destination so the
-            // next launch can offer to keep or delete an orphaned file.
+            // Set the crash-recovery flag before the writer creates the file so
+            // a crash anywhere in the start sequence doesn't orphan the file silently.
             let defaults = UserDefaults.standard
             defaults.set(true, forKey: Self.inProgressFlagKey)
             defaults.set(fileURL.path, forKey: Self.inProgressPathKey)
 
+            do {
+                try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
+            } catch {
+                // Writer failed to start — clear the flag we just set and rethrow.
+                defaults.removeObject(forKey: Self.inProgressFlagKey)
+                defaults.removeObject(forKey: Self.inProgressPathKey)
+                throw error
+            }
+
+            recordedFileURL = fileURL
             state = .recording
             recordingTime = 0
             timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
@@ -285,12 +296,14 @@ class RecorderViewModel: ObservableObject {
     #endif
 
     func reset() {
+        timer?.cancel()
         state = .selectingMic
         recordingTime = 0
         #if GCS_ENABLED
         uploadProgress = 0
         #endif
         recordedFileURL = nil
+        audioEngine.start()
     }
 }
 

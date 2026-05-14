@@ -14,6 +14,7 @@ struct ContentView: View {
     @ObservedObject private var viewModel = RecorderViewModel.shared
     @State private var showLit: Bool = false         // when true render record-button-on; flipped by pulseTimer
     @State private var pulseTimer: Timer?            // 1 s repeating timer; nil when not recording
+    @State private var isStopping = false            // true while finishWriting is in flight; blocks double-tap
     @State private var showDevicePicker = false
     @State private var showSettings = false
 
@@ -126,11 +127,14 @@ struct ContentView: View {
                     .scaledToFit()
                     .frame(width: 22, height: 14)
             }
+            .opacity(isRecordingState ? 0.35 : 1.0)
             .frame(height: 43)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
+        .disabled(isRecordingState)
+        .help(isRecordingState ? "Input unavailable while recording" : "Select input device")
         .popover(isPresented: $showDevicePicker, arrowEdge: .trailing) {
             DevicePickerPopover(
                 devices: viewModel.availableInputDevices,
@@ -193,7 +197,11 @@ struct ContentView: View {
     private func handleRecordTap() {
         switch viewModel.state {
         case .recording:
-            viewModel.stopRecording()
+            guard !isStopping else { return }
+            isStopping = true
+            viewModel.stopRecording {
+                isStopping = false
+            }
         case .selectingMic, .ready:
             viewModel.startRecording()
         default:
@@ -496,6 +504,11 @@ private struct SettingsPopover: View {
                         .stroke(panelOrange.opacity(0.55), lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 3))
+                if viewModel.outputFormat == .wav {
+                    Text("Notes are not stored in WAV files.")
+                        .font(.system(size: 9))
+                        .foregroundColor(panelOrange.opacity(0.55))
+                }
             }
 
             // Format
