@@ -111,7 +111,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainWindow = window
         window.delegate = self
         window.styleMask = [.borderless, .fullSizeContentView]
-        window.level = .floating
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
