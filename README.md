@@ -53,7 +53,7 @@ The project is generated from `project.yml` via [XcodeGen](https://github.com/yo
 ---
 
 ### Support
-If DoublEnder saves you a support call, [buy me a coffee](https://ko-fi.com/sevmo). Free forever either way.
+Free forever.
 
 ### License
 Copyright © 2026 Seven Morris.
