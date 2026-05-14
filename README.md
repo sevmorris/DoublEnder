@@ -2,6 +2,8 @@
 
 A minimal macOS audio recorder. Pick an input, hit record, get an AAC/M4A file on your Desktop.
 
+**[→ Download / share page](https://sevmorris.github.io/DoublEnder/)**
+
 **Version:** 1.0.0
 **Requires:** macOS 14+
 
