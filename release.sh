@@ -59,7 +59,7 @@ ok "Tag $TAG is available"
 
 # ── Version bump ──────────────────────────────────────────────────────────────
 step "Bumping version to $VERSION"
-CURRENT=$(grep '^    MARKETING_VERSION:' "$PROJECT_DIR/project.yml" | head -1 | sed 's/.*: *"\?\([0-9][0-9.]*\)"\?/\1/')
+CURRENT=$(awk -F'"' '/^[[:space:]]+MARKETING_VERSION:/ {print $2; exit}' "$PROJECT_DIR/project.yml")
 if [[ -z "$CURRENT" ]]; then
     fail "Could not read MARKETING_VERSION from project.yml"
 fi
