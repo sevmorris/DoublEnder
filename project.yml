@@ -1,0 +1,62 @@
+name: DoubleEnder
+
+options:
+  bundleIdPrefix: io.github.sevmorris
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  DoubleEnder:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: DoubleEnder
+        excludes:
+          - "DoubleEnderLite.entitlements"
+    settings:
+      base:
+        PRODUCT_NAME: DoublEnder
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnder
+        INFOPLIST_KEY_CFBundleDisplayName: DoublEnder
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) GCS_ENABLED
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_ENTITLEMENTS: DoubleEnder/DoubleEnder.entitlements
+    info:
+      path: DoubleEnder/Info.plist
+      properties:
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
+
+  DoubleEnderLite:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: DoubleEnder
+        excludes:
+          - "DoubleEnder.entitlements"
+    settings:
+      base:
+        PRODUCT_NAME: DoublEnder Lite
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderLite
+        INFOPLIST_KEY_CFBundleDisplayName: DoublEnder Lite
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_ENTITLEMENTS: DoubleEnder/DoubleEnderLite.entitlements
+    info:
+      path: DoubleEnder/Info.plist
+      properties:
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
