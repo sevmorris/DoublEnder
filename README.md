@@ -4,7 +4,7 @@
 <p align="center">
   <strong>Dead-simple guest recording for podcasters</strong>
   <br />
-  <strong>Version:</strong> 1.1.0
+  <strong>Version:</strong> 1.2.0
   <br />
   <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.2.0.dmg"><strong>Download Latest (DMG)</strong></a>
   ·
@@ -26,9 +26,10 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 
 - **One-button recording** to AAC (M4A), 256 kbps mono at the input's native sample rate
 - **Input selector** — pick any system audio input from the mic dropdown
-- **Live metering** — RMS + peak with clip indicator; aim for green, avoid red
+- **Segmented LED level meter** — 40 segments with green / yellow / orange / red zones and a CLIP indicator
 - **Lookahead limiter** — −1 dBFS ceiling on the recorded signal
-- **Segmented timer** — elapsed time in HH:MM:SS
+- **LCD-style timer** — seven-segment HH:MM:SS readout with visible ghost segments
+- **Native notifications** — when a recording finishes, a system notification appears with a Reveal in Finder action
 
 **Output:** `DoublEnder_<timestamp>.m4a` saved to the Desktop
 
