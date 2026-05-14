@@ -75,6 +75,14 @@ else
     sed -i '' "s|DoublEnder-v[0-9][0-9.]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/README.md"
     sed -i '' "s|DoublEnder-v[0-9][0-9.]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
     sed -i '' "s|Download v[0-9][0-9.]*|Download ${TAG}|g" "$PROJECT_DIR/docs/index.html"
+
+    # Sanity-check: nothing should still reference the old version.
+    if grep -E "DoublEnder-v[0-9]+\.[0-9]+\.[0-9]+\.dmg" \
+            "$PROJECT_DIR/README.md" "$PROJECT_DIR/docs/index.html" \
+            | grep -v "${TAG}\.dmg" >/dev/null 2>&1; then
+        fail "Stale version references remain after rewrite — check sed patterns"
+    fi
+
     xcodegen generate --quiet
     ok "Bumped $CURRENT → $VERSION"
     git add project.yml README.md docs/index.html DoubleEnder.xcodeproj/project.pbxproj
@@ -169,6 +177,20 @@ gh release create "$TAG" "$DMG" \
     --title "${APP_NAME} ${TAG}" \
     --notes "$RELEASE_NOTES"
 ok "Release published"
+
+# ── Remove old releases ───────────────────────────────────────────────────────
+step "Removing old releases"
+OLD_TAGS=$(gh release list --repo "$REPO" --limit 100 --json tagName \
+    --jq '.[].tagName' | grep -v "^${TAG}$" || true)
+if [[ -z "$OLD_TAGS" ]]; then
+    ok "No old releases to remove"
+else
+    while IFS= read -r old_tag; do
+        gh release delete "$old_tag" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+        git tag -d "$old_tag" 2>/dev/null || true
+        ok "Removed $old_tag"
+    done <<< "$OLD_TAGS"
+fi
 
 # ── Clean up temp files ───────────────────────────────────────────────────────
 step "Cleaning up"
