@@ -4,7 +4,7 @@
 <p align="center">
   <strong>Dead-simple guest recording for podcasters</strong>
   <br />
-  <strong>Version:</strong> 1.0.0
+  <strong>Version:</strong> 1.1.0
   <br />
   <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.1.0.dmg"><strong>Download Latest (DMG)</strong></a>
   ·
