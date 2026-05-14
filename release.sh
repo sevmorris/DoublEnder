@@ -149,13 +149,15 @@ ok "Pushed $TAG"
 
 # ── GitHub release ────────────────────────────────────────────────────────────
 step "Creating GitHub release"
-PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1)
+# grep -v exits 1 when it filters everything (e.g. first release with only this tag),
+# and set -e would abort — use `|| true` to keep going with an empty PREV_TAG.
+PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1 || true)
 if [[ -n "$PREV_TAG" ]]; then
     CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" \
-        | grep -v "^- Bump version")
+        | grep -v "^- Bump version" || true)
 else
     CHANGES=$(git log --pretty=format:"- %s" \
-        | grep -v "^- Bump version")
+        | grep -v "^- Bump version" || true)
 fi
 RELEASE_NOTES="### Changes
 ${CHANGES}"
