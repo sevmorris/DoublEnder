@@ -72,9 +72,11 @@ else
     sed -i '' "s/MARKETING_VERSION: \"${ESC_CURRENT}\"/MARKETING_VERSION: \"${ESC_VERSION}\"/g" \
         "$PROJECT_DIR/project.yml"
     sed -i '' "s|\*\*Version:\*\* ${ESC_CURRENT}|**Version:** ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
+    sed -i '' "s|DoublEnder-v[0-9][0-9.]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
+    sed -i '' "s|v[0-9][0-9.]* &nbsp;|${TAG} \&nbsp;|g" "$PROJECT_DIR/docs/index.html"
     xcodegen generate --quiet
     ok "Bumped $CURRENT → $VERSION"
-    git add project.yml README.md DoubleEnder.xcodeproj/project.pbxproj
+    git add project.yml README.md docs/index.html DoubleEnder.xcodeproj/project.pbxproj
     git commit -m "Bump version to $VERSION"
     ok "Committed version bump"
 fi
