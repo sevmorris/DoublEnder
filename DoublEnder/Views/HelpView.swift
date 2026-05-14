@@ -32,12 +32,25 @@ struct HelpView: View {
 
                 section("Quick Start") {
                     steps([
-                        "Click the mic icon (bottom left) to pick your input device.",
+                        "Click the mic icon (left) to pick your input device.",
                         "Speak normally and watch the level meter — aim for green, avoid red. If the CLIP indicator lights up, you're too loud.",
                         "Hit the big red button to start recording. The timer counts up.",
                         "Hit the button again to stop. Your file is saved to the Desktop.",
                         "A macOS notification appears with a Reveal in Finder action — use it to jump straight to the file, then send it to your host."
                     ])
+                }
+
+                dividerRow
+
+                section("Settings") {
+                    text("""
+                    Tap the gear icon (right of the record button) to open settings. \
+                    The gear is disabled while recording — you can't change settings \
+                    mid-session.
+                    """)
+                    definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically.")
+                    definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info.")
+                    definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (32-bit float, uncompressed). Defaults to AAC.")
                 }
 
                 dividerRow
@@ -59,11 +72,34 @@ struct HelpView: View {
                 section("Output File") {
                     text("""
                     Recordings are saved to your Desktop as \
-                    DoublEnder_<date>.m4a — AAC audio, 256 kbps, mono.
+                    DoublEnder_<date>.m4a — AAC audio, 256 kbps, mono. If you \
+                    pick WAV in settings, the file is saved as .wav (32-bit \
+                    float, uncompressed) instead. The prefix follows whatever \
+                    you set under Filename.
                     """)
                     text("""
                     The file is ready to send as-is. It will play in QuickTime, \
                     VoiceNotes, and any podcast editing app.
+                    """)
+                }
+
+                dividerRow
+
+                section("Recovery & Quit Protection") {
+                    text("""
+                    DoublEnder won't let you lose a recording by mistake.
+                    """)
+                    definition("Quitting mid-record", "Pressing ⌘Q while recording shows a confirmation. Choose Stop & Save to finalize the file, Quit Without Saving to discard it, or Cancel to keep going.")
+                    definition("Crash recovery", "If the app exits unexpectedly while a recording is in progress, the next launch offers to keep the orphaned file (revealed in Finder) or delete it.")
+                }
+
+                dividerRow
+
+                section("Updates") {
+                    text("""
+                    Choose DoublEnder → Check for Updates… from the app menu to \
+                    look for a new version. DoublEnder also performs a quiet \
+                    check at launch.
                     """)
                 }
 

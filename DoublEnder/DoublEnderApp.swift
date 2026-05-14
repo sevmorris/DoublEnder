@@ -3,7 +3,7 @@ import AppKit
 import CoreText
 
 @main
-struct DoubleEnderApp: App {
+struct DoublEnderApp: App {
     // AppDelegate owns window chrome, quit intercept, and crash recovery so
     // the window is fully borderless/transparent before its first paint —
     // eliminating the chrome flash that the old WindowChromeStripper produced.
