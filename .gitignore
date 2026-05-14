@@ -3,6 +3,7 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+project.xcworkspace/
 
 # macOS
 .DS_Store
