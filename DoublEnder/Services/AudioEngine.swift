@@ -136,9 +136,10 @@ class AudioEngine: NSObject, ObservableObject {
 
     private func handleEngineConfigurationChange() {
         guard audioEngine != nil else { return }
-        logger.info("AVAudioEngine configuration changed — device disconnected or reconfigured")
+        logger.info("AVAudioEngine configuration changed (isRecording: \(self.isRecording, privacy: .public))")
 
         if isRecording {
+            // Recording in progress — save what we have, then surface the error.
             stopRecording { [weak self] result in
                 guard let self else { return }
                 let msg: String
@@ -151,9 +152,12 @@ class AudioEngine: NSObject, ObservableObject {
                 DispatchQueue.main.async { self.lastError = msg }
             }
         } else {
-            DispatchQueue.main.async {
-                self.lastError = "Audio device disconnected or reconfigured. Select a new input."
-            }
+            // Not recording — rebuild silently with the system default device.
+            // This handles both spurious startup notifications and real device
+            // changes while idle. If the rebuild fails, rebuildEngine sets
+            // lastError through its own error paths.
+            rebuildEngine(with: nil)
+            refreshDevices()
         }
     }
     
