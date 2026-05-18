@@ -42,10 +42,6 @@ class RecorderViewModel: ObservableObject {
     /// content view and the menubar commands.
     static let shared = RecorderViewModel()
 
-    // UserDefaults keys — exposed so AppDelegate can clear them during
-    // crash recovery without coupling to the view model's lifecycle.
-    static let inProgressFlagKey = "recordingInProgress"
-    static let inProgressPathKey = "recordingInProgressPath"
     private static let selectedDeviceKey = "selectedInputDeviceID"
     private static let filenameBaseKey = "filenameBase"
     private static let outputFormatKey = "outputFormat"
@@ -119,7 +115,6 @@ class RecorderViewModel: ObservableObject {
             .sink { [weak self] message in
                 guard let self else { return }
                 self.timer?.cancel()
-                self.clearInProgressFlag()
                 self.state = .error(message)
             }
             .store(in: &cancellables)
@@ -162,20 +157,10 @@ class RecorderViewModel: ObservableObject {
         do {
             let fileURL = makeRecordingURL()
 
-            // Set the crash-recovery flag before the writer creates the file so
-            // a crash anywhere in the start sequence doesn't orphan the file silently.
-            let defaults = UserDefaults.standard
-            defaults.set(true, forKey: Self.inProgressFlagKey)
-            defaults.set(fileURL.path, forKey: Self.inProgressPathKey)
-
-            do {
-                try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
-            } catch {
-                // Writer failed to start — clear the flag we just set and rethrow.
-                defaults.removeObject(forKey: Self.inProgressFlagKey)
-                defaults.removeObject(forKey: Self.inProgressPathKey)
-                throw error
-            }
+            // Crash recovery is keyed off the PCM sidecar file, which the
+            // audio engine creates the moment the writer starts — no
+            // separate UserDefaults flag to keep in sync.
+            try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
 
             recordedFileURL = fileURL
             state = .recording
@@ -204,25 +189,22 @@ class RecorderViewModel: ObservableObject {
                 let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
                 guard size > 0 else {
                     self.state = .error("Recording produced an empty file. Check microphone permission and input device.")
-                    self.clearInProgressFlag()
                     completion?()
                     return
                 }
                 Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
-                self.clearInProgressFlag()
                 self.recordingTime = 0
                 self.state = .ready
             case .failure(let error):
                 self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
-                self.clearInProgressFlag()
             }
             completion?()
         }
     }
 
     /// Abort the current recording without finalizing — used by the
-    /// "Quit Without Saving" path. The partial file is deleted and the
-    /// crash-recovery flag is cleared so a future launch doesn't surface it.
+    /// "Quit Without Saving" path. The partial file and its recovery
+    /// sidecar are both deleted so a future launch doesn't surface them.
     func abortRecording(completion: (() -> Void)? = nil) {
         timer?.cancel()
         let url = recordedFileURL
@@ -231,7 +213,6 @@ class RecorderViewModel: ObservableObject {
             if let url = url {
                 try? FileManager.default.removeItem(at: url)
             }
-            self?.clearInProgressFlag()
             self?.recordingTime = 0
             self?.recordedFileURL = nil
             // No state mutation needed — the app is about to terminate.
@@ -251,10 +232,11 @@ class RecorderViewModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Self.filenameBaseKey)
     }
 
-    private func clearInProgressFlag() {
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: Self.inProgressFlagKey)
-        defaults.removeObject(forKey: Self.inProgressPathKey)
+    /// Directory recordings are written to. Shared with AppDelegate's
+    /// crash-recovery scan so the two never disagree on where to look.
+    static var recordingsDirectory: URL {
+        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Desktop")
     }
 
     private func makeRecordingURL() -> URL {
@@ -263,9 +245,7 @@ class RecorderViewModel: ObservableObject {
         let prefix = filenameBase.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = prefix.isEmpty ? "DoublEnder" : prefix
         let filename = "\(base)_\(formatter.string(from: Date())).\(outputFormat.fileExtension)"
-        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Desktop")
-        return desktop.appendingPathComponent(filename)
+        return Self.recordingsDirectory.appendingPathComponent(filename)
     }
 
     #if GCS_ENABLED

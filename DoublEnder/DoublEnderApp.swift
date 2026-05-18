@@ -161,36 +161,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Crash recovery
 
+    /// A PCM sidecar on disk means a previous recording never finalized —
+    /// the matching .m4a (if any) is unplayable. Present a themed dialog
+    /// per sidecar that re-wraps it into a valid WAV off the main thread.
     private func runCrashRecoveryIfNeeded() {
-        let defaults = UserDefaults.standard
-        let inProgress = defaults.bool(forKey: RecorderViewModel.inProgressFlagKey)
-        let path = defaults.string(forKey: RecorderViewModel.inProgressPathKey) ?? ""
+        let fm = FileManager.default
+        let dir = RecorderViewModel.recordingsDirectory
 
-        // Always clear the flag at the end — even if we don't show a dialog —
-        // so a missing file doesn't haunt future launches.
-        defer {
-            defaults.removeObject(forKey: RecorderViewModel.inProgressFlagKey)
-            defaults.removeObject(forKey: RecorderViewModel.inProgressPathKey)
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil
+        ) else { return }
+
+        let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
+        guard !sidecars.isEmpty else { return }
+
+        // Recovery is a gate the user must clear before using the app — keep
+        // the main recorder window hidden until every sidecar is resolved,
+        // then bring it forward. Untouched when no recovery is needed, so
+        // the normal launch path has no flicker.
+        mainWindow?.orderOut(nil)
+        for sidecar in sidecars {
+            presentRecoveryDialog(for: sidecar)
+        }
+        mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Runs a modal session for one sidecar. The modal run loop keeps the
+    /// window — and its spinner — responsive while `RecoveryModel` does the
+    /// conversion on a background queue.
+    private func presentRecoveryDialog(for sidecar: URL) {
+        let model = RecoveryModel(sidecarURL: sidecar)
+        let hosting = NSHostingController(rootView: RecoveryView(model: model))
+
+        let window = RecoveryWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 240),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = hosting
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
+        window.level = .modalPanel
+        window.center()
+
+        model.onFinished = { [weak window] in
+            NSApp.stopModal()
+            window?.orderOut(nil)
         }
 
-        guard inProgress, !path.isEmpty else { return }
-        let url = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Unsaved recording found"
-        alert.informativeText = "A recording from a previous session was not saved cleanly. Would you like to keep it?\n\n\(url.lastPathComponent)"
-        alert.addButton(withTitle: "Keep File")
-        alert.addButton(withTitle: "Delete")
-
-        let response = alert.runModal()
-        switch response {
-        case .alertFirstButtonReturn:
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        default:
-            try? FileManager.default.removeItem(at: url)
-        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.runModal(for: window)
     }
 
     // MARK: - Fonts
@@ -201,4 +225,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
     }
+}
+
+// MARK: - Recovery window
+
+/// Borderless windows refuse key/main status by default, which would block
+/// button clicks and keyboard focus in the modal recovery dialog.
+final class RecoveryWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
 }

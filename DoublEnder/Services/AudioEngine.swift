@@ -50,6 +50,7 @@ class AudioEngine: NSObject, ObservableObject {
     private var isRecording = false
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
+    private var pcmSidecar: PCMSidecar?
     private var writerFrameCount: Int64 = 0
     private let writerLock = NSLock()
     private var currentTapFormat: AVAudioFormat?
@@ -174,9 +175,10 @@ class AudioEngine: NSObject, ObservableObject {
     }
     
     /// Begin a recording. The AVAssetWriter streams samples directly to
-    /// `fileURL` — there is no temp file, no move step on stop. `format`
-    /// selects the container/codec; `notes` is written as the file's
-    /// description metadata tag.
+    /// `fileURL` — there is no temp file, no move step on stop. A raw-PCM
+    /// crash-recovery sidecar is mirrored alongside it (see `PCMSidecar`).
+    /// `format` selects the container/codec; `notes` is written as the
+    /// file's description metadata tag.
     func startRecording(to fileURL: URL, format: OutputFormat = .aac, notes: String = "") throws {
         guard let tapFormat = currentTapFormat else {
             throw RecordingError.engineNotRunning
@@ -240,9 +242,15 @@ class AudioEngine: NSObject, ObservableObject {
         }
         writer.startSession(atSourceTime: .zero)
 
+        // Mirror the post-limiter mono stream so an unfinalized .m4a can
+        // still be recovered. A nil sidecar (I/O failure) is non-fatal —
+        // the recording proceeds without the safety net.
+        let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: tapFormat.sampleRate, channels: 1)
+
         writerLock.lock()
         assetWriter = writer
         assetWriterInput = input
+        pcmSidecar = sidecar
         writerFrameCount = 0
         limiter = LookaheadLimiter(sampleRate: tapFormat.sampleRate, channels: Int(tapFormat.channelCount))
         consecutiveWriteErrors = 0
@@ -259,11 +267,14 @@ class AudioEngine: NSObject, ObservableObject {
 
         writerLock.lock()
         let writer = assetWriter
+        let sidecar = pcmSidecar
         assetWriter = nil
         assetWriterInput = nil
+        pcmSidecar = nil
         limiter = nil
         writerLock.unlock()
 
+        sidecar?.discard()
         writer?.cancelWriting()
         DispatchQueue.main.async {
             completion()
@@ -281,8 +292,20 @@ class AudioEngine: NSObject, ObservableObject {
         // Limiter runs inside the lock — limiter is created/destroyed under writerLock.
         limiter?.process(buffer: buffer)
 
-        guard let monoBuffer = downmixToMono(buffer),
-              let sampleBuffer = makeSampleBuffer(from: monoBuffer, startFrame: writerFrameCount) else {
+        guard let monoBuffer = downmixToMono(buffer) else {
+            consecutiveWriteErrors += 1
+            writerLock.unlock()
+            return
+        }
+
+        // Mirror to the sidecar before building the CMSampleBuffer — this
+        // way the recovery copy captures audio even if sample-buffer
+        // construction or the writer append fails.
+        if let mono = monoBuffer.floatChannelData?[0] {
+            pcmSidecar?.append(mono, frameCount: Int(monoBuffer.frameLength))
+        }
+
+        guard let sampleBuffer = makeSampleBuffer(from: monoBuffer, startFrame: writerFrameCount) else {
             consecutiveWriteErrors += 1
             writerLock.unlock()
             return
@@ -302,9 +325,14 @@ class AudioEngine: NSObject, ObservableObject {
                 assetWriter = nil
                 assetWriterInput = nil
                 limiter = nil
+                // Keep the sidecar on disk — the partial .m4a is being
+                // cancelled, so the sidecar is the only recoverable copy.
+                let abortedSidecar = pcmSidecar
+                pcmSidecar = nil
                 consecutiveWriteErrors = 0
                 writerLock.unlock()
 
+                abortedSidecar?.close()
                 // Cancel the partial file — it can't be finalized in this state.
                 failedWriter?.cancelWriting()
                 DispatchQueue.main.async {
@@ -494,12 +522,17 @@ class AudioEngine: NSObject, ObservableObject {
         writerLock.lock()
         let writer = assetWriter
         let input = assetWriterInput
+        let sidecar = pcmSidecar
         assetWriter = nil
         assetWriterInput = nil
+        pcmSidecar = nil
         limiter = nil
         writerLock.unlock()
 
         guard let writer = writer, let input = input else {
+            // No writer, but a sidecar may still exist — keep it so a
+            // recovery pass can surface it.
+            sidecar?.close()
             DispatchQueue.main.async {
                 completion(.failure(RecordingError.noActiveRecording))
             }
@@ -510,8 +543,12 @@ class AudioEngine: NSObject, ObservableObject {
         writer.finishWriting {
             DispatchQueue.main.async {
                 if writer.status == .completed {
+                    // Main file is intact — the sidecar is now redundant.
+                    sidecar?.discard()
                     completion(.success(writer.outputURL))
                 } else {
+                    // Finalize failed — the sidecar is the only intact copy.
+                    sidecar?.close()
                     let reason = writer.error?.localizedDescription ?? "status \(writer.status.rawValue)"
                     completion(.failure(RecordingError.writerFinishedWithError(reason)))
                 }
