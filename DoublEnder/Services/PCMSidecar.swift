@@ -51,7 +51,9 @@ final class PCMSidecar {
             PCMSidecar.logger.error("Failed to open sidecar at \(url.lastPathComponent, privacy: .public)")
             return nil
         }
-        try? handle.seekToEnd()
+        // forWritingTo opens at offset 0 without truncating — seek past the
+        // header so the first sample write doesn't overwrite it.
+        _ = try? handle.seekToEnd()
         self.handle = handle
         self.url = url
     }
