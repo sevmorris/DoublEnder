@@ -275,13 +275,18 @@ class RecorderViewModel: ObservableObject {
         do {
             try await uploader.upload(fileURL: fileURL, contentType: contentType)
             await MainActor.run {
-                Task { await NotificationService.shared.postRecordingSavedAndUploaded(fileURL: fileURL) }
                 self.recordingTime = 0
                 self.state = .ready
+                // Persistent, app-controlled confirmation — blocks until
+                // the user clicks OK (notifications can't guarantee this).
+                UploadConfirmation.present(success: true,
+                                           fileName: fileURL.lastPathComponent)
             }
         } catch {
             await MainActor.run {
                 self.state = .error("Upload failed: \(error.localizedDescription)")
+                UploadConfirmation.present(success: false,
+                                           fileName: fileURL.lastPathComponent)
             }
         }
     }
