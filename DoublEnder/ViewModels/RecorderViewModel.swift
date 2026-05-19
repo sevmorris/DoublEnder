@@ -197,9 +197,19 @@ class RecorderViewModel: ObservableObject {
                     completion?()
                     return
                 }
+                #if GCS_ENABLED
+                // The file is finalized on disk. Hand off to the uploader and
+                // let the .uploading state drive the progress UI. The stop
+                // button unblocks immediately via the completion call below.
+                self.recordingTime = 0
+                self.uploadProgress = 0
+                self.state = .uploading
+                Task { await self.performUpload() }
+                #else
                 Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
                 self.recordingTime = 0
                 self.state = .ready
+                #endif
             case .failure(let error):
                 self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
             }
@@ -256,24 +266,21 @@ class RecorderViewModel: ObservableObject {
     #if GCS_ENABLED
     private func performUpload() async {
         guard let fileURL = recordedFileURL else {
-            DispatchQueue.main.async {
-                self.state = .error("No recording found to upload")
-            }
+            await MainActor.run { self.state = .error("No recording found to upload") }
             return
         }
 
+        let contentType = outputFormat == .wav ? "audio/wav" : "audio/mp4"
+
         do {
-            let signedURL = try await uploader.fetchSignedURL()
-            try await uploader.upload(fileURL: fileURL, to: signedURL)
-            DispatchQueue.main.async {
-                if let url = self.recordedFileURL {
-                    Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
-                }
+            try await uploader.upload(fileURL: fileURL, contentType: contentType)
+            await MainActor.run {
+                Task { await NotificationService.shared.postRecordingSaved(fileURL: fileURL) }
                 self.recordingTime = 0
                 self.state = .ready
             }
         } catch {
-            DispatchQueue.main.async {
+            await MainActor.run {
                 self.state = .error("Upload failed: \(error.localizedDescription)")
             }
         }

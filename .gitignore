@@ -13,3 +13,7 @@ project.xcworkspace/
 
 # Claude
 .claude/
+
+# GCS service account key — client build only, never commit
+DoublEnderClient/doublender-*.json
+doublender-*.json
