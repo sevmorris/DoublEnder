@@ -98,6 +98,11 @@ class RecorderViewModel: ObservableObject {
         audioEngine.availableInputDevices
     }
 
+    /// Hardware mics vs. aggregate/virtual devices for the grouped picker.
+    var inputDeviceGroups: (microphones: [AVCaptureDevice], virtual: [AVCaptureDevice]) {
+        audioEngine.groupedInputDevices()
+    }
+
     private var cancellables = Set<AnyCancellable>()
 
     init() {

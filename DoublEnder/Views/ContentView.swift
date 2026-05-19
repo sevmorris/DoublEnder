@@ -137,7 +137,8 @@ struct ContentView: View {
         .help(isRecordingState ? "Input unavailable while recording" : "Select input device")
         .popover(isPresented: $showDevicePicker, arrowEdge: .trailing) {
             DevicePickerPopover(
-                devices: viewModel.availableInputDevices,
+                microphones: viewModel.inputDeviceGroups.microphones,
+                virtualDevices: viewModel.inputDeviceGroups.virtual,
                 selectedID: viewModel.selectedInputDeviceID,
                 onSelect: { id in
                     viewModel.selectedInputDeviceID = id
@@ -397,47 +398,65 @@ struct ContentView: View {
 // MARK: - Device Picker Popover
 
 private struct DevicePickerPopover: View {
-    let devices: [AVCaptureDevice]
+    let microphones: [AVCaptureDevice]
+    let virtualDevices: [AVCaptureDevice]
     let selectedID: String
     let onSelect: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("INPUT")
-                .font(.system(size: 9, weight: .bold))
-                .tracking(1.5)
-                .foregroundColor(panelOrange.opacity(0.75))
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
+            if !microphones.isEmpty {
+                sectionHeader("MICROPHONES", topPadding: 10)
+                ForEach(microphones, id: \.uniqueID) { row($0, dimmed: false) }
+            }
 
-            ForEach(devices, id: \.uniqueID) { device in
-                Button {
-                    onSelect(device.uniqueID)
-                } label: {
-                    HStack {
-                        Text(device.localizedName)
-                            .font(.system(size: 11))
-                            .foregroundColor(.white)
-                        Spacer()
-                        if selectedID == device.uniqueID {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(panelOrange)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
+            if !virtualDevices.isEmpty {
+                sectionHeader(
+                    "VIRTUAL & AGGREGATE",
+                    topPadding: microphones.isEmpty ? 10 : 12
+                )
+                ForEach(virtualDevices, id: \.uniqueID) { row($0, dimmed: true) }
             }
         }
         .padding(.bottom, 6)
-        .frame(minWidth: 200)
+        .frame(minWidth: 220)
         .background(panelBlueDark)
         .preferredColorScheme(.dark)
+    }
+
+    private func sectionHeader(_ text: String, topPadding: CGFloat) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .bold))
+            .tracking(1.5)
+            .foregroundColor(panelOrange.opacity(0.75))
+            .padding(.horizontal, 12)
+            .padding(.top, topPadding)
+            .padding(.bottom, 4)
+    }
+
+    private func row(_ device: AVCaptureDevice, dimmed: Bool) -> some View {
+        Button {
+            onSelect(device.uniqueID)
+        } label: {
+            HStack {
+                Text(device.localizedName)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(dimmed ? 0.4 : 1.0))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                if selectedID == device.uniqueID {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(panelOrange)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 

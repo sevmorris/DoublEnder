@@ -28,6 +28,13 @@ enum RecordingError: LocalizedError {
     }
 }
 
+/// Hardware mic vs. aggregate/virtual device, decided by CoreAudio
+/// transport type rather than fragile name matching.
+private enum InputDeviceKind {
+    case microphone
+    case virtual
+}
+
 class AudioEngine: NSObject, ObservableObject {
     @Published var availableInputDevices: [AVCaptureDevice] = []
     @Published var selectedInputDevice: AVCaptureDevice?
@@ -54,6 +61,9 @@ class AudioEngine: NSObject, ObservableObject {
     private var writerFrameCount: Int64 = 0
     private let writerLock = NSLock()
     private var currentTapFormat: AVAudioFormat?
+    /// uniqueID → kind, rebuilt on each device refresh so the picker
+    /// doesn't re-query CoreAudio on every SwiftUI render.
+    private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
     private let writeErrorThreshold = 5
     private var limiter: LookaheadLimiter?
@@ -169,9 +179,35 @@ class AudioEngine: NSObject, ObservableObject {
             position: .unspecified
         )
         self.availableInputDevices = session.devices
+        deviceKindCache = Dictionary(
+            uniqueKeysWithValues: session.devices.map { ($0.uniqueID, classify($0)) }
+        )
         if selectedInputDevice == nil {
             selectedInputDevice = AVCaptureDevice.default(for: .audio)
         }
+    }
+
+    /// Hardware mics vs. aggregate/virtual devices, preserving discovery
+    /// order within each group. Driven by the cache built in
+    /// `refreshDevices()`, with a lazy fallback for safety.
+    func groupedInputDevices() -> (microphones: [AVCaptureDevice], virtual: [AVCaptureDevice]) {
+        var microphones: [AVCaptureDevice] = []
+        var virtual: [AVCaptureDevice] = []
+        for device in availableInputDevices {
+            let kind: InputDeviceKind
+            if let cached = deviceKindCache[device.uniqueID] {
+                kind = cached
+            } else {
+                kind = classify(device)
+                deviceKindCache[device.uniqueID] = kind
+            }
+            if kind == .virtual {
+                virtual.append(device)
+            } else {
+                microphones.append(device)
+            }
+        }
+        return (microphones, virtual)
     }
     
     /// Begin a recording. The AVAssetWriter streams samples directly to
@@ -557,32 +593,61 @@ class AudioEngine: NSObject, ObservableObject {
     }
     
     func setDevice(_ device: AVCaptureDevice) {
-        let deviceUID = device.uniqueID
-        var propertyAddress = AudioObjectPropertyAddress(
+        if let id = audioDeviceID(forUID: device.uniqueID) {
+            rebuildEngine(with: id)
+        } else {
+            logger.error("Failed to translate device UID to AudioDeviceID: \(device.uniqueID, privacy: .public)")
+        }
+    }
+
+    /// Resolve an `AVCaptureDevice.uniqueID` to its CoreAudio device ID.
+    private func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        
-        var uidString: CFString = deviceUID as CFString
-        var audioDeviceID: AudioDeviceID = 0
-        var deviceIDSize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        
-        let status = withUnsafePointer(to: &uidString) { ptr in
+        var cfUID: CFString = uid as CFString
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafePointer(to: &cfUID) { ptr in
             AudioObjectGetPropertyData(
                 AudioObjectID(kAudioObjectSystemObject),
-                &propertyAddress,
+                &address,
                 UInt32(MemoryLayout<CFString>.size),
                 ptr,
-                &deviceIDSize,
-                &audioDeviceID
+                &size,
+                &deviceID
             )
         }
-        
-        if status == noErr {
-            rebuildEngine(with: audioDeviceID)
-        } else {
-            logger.error("Failed to translate device UID to AudioDeviceID (status: \(status, privacy: .public))")
+        return status == noErr ? deviceID : nil
+    }
+
+    private func transportType(for deviceID: AudioDeviceID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport)
+        return status == noErr ? transport : nil
+    }
+
+    /// Only an explicit Aggregate or Virtual transport demotes a device —
+    /// anything else (incl. Unknown) stays a microphone so real hardware is
+    /// never hidden in the de-emphasized section.
+    private func classify(_ device: AVCaptureDevice) -> InputDeviceKind {
+        guard let id = audioDeviceID(forUID: device.uniqueID),
+              let transport = transportType(for: id) else {
+            return .microphone
+        }
+        switch transport {
+        case kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeVirtual:
+            return .virtual
+        default:
+            return .microphone
         }
     }
 }
