@@ -275,7 +275,7 @@ class RecorderViewModel: ObservableObject {
         do {
             try await uploader.upload(fileURL: fileURL, contentType: contentType)
             await MainActor.run {
-                Task { await NotificationService.shared.postRecordingSaved(fileURL: fileURL) }
+                Task { await NotificationService.shared.postRecordingSavedAndUploaded(fileURL: fileURL) }
                 self.recordingTime = 0
                 self.state = .ready
             }

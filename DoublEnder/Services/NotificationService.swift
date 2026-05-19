@@ -67,6 +67,32 @@ final class NotificationService: NSObject {
         )
         try? await center.add(request)
     }
+
+    #if GCS_ENABLED
+    /// Cloud build: a single notification covering both outcomes — the take
+    /// is on the Desktop and has been uploaded to Google Cloud Storage.
+    func postRecordingSavedAndUploaded(fileURL: URL) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        let allowed = settings.authorizationStatus == .authorized
+                   || settings.authorizationStatus == .provisional
+        guard allowed else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "DoublEnder Cloud"
+        content.body = "\(fileURL.lastPathComponent) — saved to Desktop and uploaded."
+        content.sound = .default
+        content.categoryIdentifier = Self.categoryID
+        content.userInfo = [Self.filePathKey: fileURL.path]
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        try? await center.add(request)
+    }
+    #endif
 }
 
 extension NotificationService: UNUserNotificationCenterDelegate {
