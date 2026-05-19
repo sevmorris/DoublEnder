@@ -51,6 +51,8 @@ struct ContentView: View {
         #if GCS_ENABLED
         case .uploading:
             uploadingView
+        case .uploadFailed(let url):
+            uploadFailedView(url)
         #endif
         case .error(let message):
             errorView(message)
@@ -348,6 +350,52 @@ struct ContentView: View {
                 .foregroundColor(panelOrange)
                 .monospacedDigit()
         }
+    }
+
+    /// Upload failed after automatic retries. The recording is safe on the
+    /// Desktop — only the upload needs retrying, so this is visually the
+    /// error view but reassures the user and re-attempts just the upload.
+    private func uploadFailedView(_ url: URL) -> some View {
+        VStack(spacing: 12) {
+            Spacer().frame(height: 4)
+            Image(systemName: "exclamationmark.icloud.fill")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(panelOrange)
+                .shadow(color: panelOrange.opacity(0.55), radius: 4)
+
+            Text("Recording saved to Desktop. Upload failed — tap Retry to try again.")
+                .font(.system(size: 11, weight: .medium))
+                .tracking(0.3)
+                .foregroundColor(panelOrange)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 18)
+
+            Button {
+                viewModel.retryUpload()
+            } label: {
+                Text("RETRY UPLOAD")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.5)
+                    .foregroundColor(panelOrange)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.black.opacity(0.55))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(panelOrange, lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+
+            Spacer()
+        }
+        .padding(.top, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     #endif
 

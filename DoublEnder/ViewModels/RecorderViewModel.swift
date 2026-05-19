@@ -9,6 +9,9 @@ enum AppState {
     case recording
     #if GCS_ENABLED
     case uploading
+    /// Terminal upload failure after automatic retries were exhausted.
+    /// Carries the saved local file so the user can retry just the upload.
+    case uploadFailed(URL)
     #endif
     case error(String)
 }
@@ -45,6 +48,11 @@ class RecorderViewModel: ObservableObject {
     private static let selectedDeviceKey = "selectedInputDeviceID"
     private static let filenameBaseKey = "filenameBase"
     private static let outputFormatKey = "outputFormat"
+    #if GCS_ENABLED
+    /// Path of a recording whose upload is pending or has failed. Survives
+    /// quit so the next launch can offer to finish it.
+    private static let pendingUploadKey = "pendingUploadURL"
+    #endif
 
     @Published var state: AppState = .selectingMic
     @Published var recordingTime: TimeInterval = 0
@@ -264,6 +272,42 @@ class RecorderViewModel: ObservableObject {
     }
 
     #if GCS_ENABLED
+    /// Path of a recording whose upload is pending/failed, if any. Read by
+    /// AppDelegate at launch to offer to finish an interrupted upload.
+    var persistedPendingUploadPath: String? {
+        UserDefaults.standard.string(forKey: Self.pendingUploadKey)
+    }
+
+    /// Forget the pending upload (called on success, or when the user skips
+    /// the launch prompt).
+    func clearPendingUpload() {
+        UserDefaults.standard.removeObject(forKey: Self.pendingUploadKey)
+    }
+
+    /// Manual retry from the upload-failed error view. The local file is
+    /// untouched — re-attempt only the upload, no new recording.
+    func retryUpload() {
+        guard recordedFileURL != nil else {
+            state = .error("No recording found to upload")
+            return
+        }
+        uploadProgress = 0
+        state = .uploading
+        Task { await performUpload() }
+    }
+
+    /// Resume an upload the previous session left pending (launch prompt).
+    func resumePendingUpload(fileURL: URL) {
+        recordedFileURL = fileURL
+        uploadProgress = 0
+        state = .uploading
+        Task { await performUpload() }
+    }
+
+    /// Upload the saved local file, retrying with exponential backoff
+    /// (2s, 4s, 8s) before surfacing failure. The recording is already
+    /// safe on disk; only the upload is being retried. The pending-upload
+    /// path is persisted up front so an interrupted upload survives quit.
     private func performUpload() async {
         guard let fileURL = recordedFileURL else {
             await MainActor.run { self.state = .error("No recording found to upload") }
@@ -271,22 +315,45 @@ class RecorderViewModel: ObservableObject {
         }
 
         let contentType = outputFormat == .wav ? "audio/wav" : "audio/mp4"
+        UserDefaults.standard.set(fileURL.path, forKey: Self.pendingUploadKey)
 
-        do {
-            try await uploader.upload(fileURL: fileURL, contentType: contentType)
+        let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
+        var attempt = 0
+
+        while true {
             await MainActor.run {
-                self.recordingTime = 0
-                self.state = .ready
-                // Persistent, app-controlled confirmation — blocks until
-                // the user clicks OK (notifications can't guarantee this).
-                UploadConfirmation.present(success: true,
-                                           fileName: fileURL.lastPathComponent)
+                self.uploadProgress = 0
+                self.state = .uploading
             }
-        } catch {
-            await MainActor.run {
-                self.state = .error("Upload failed: \(error.localizedDescription)")
-                UploadConfirmation.present(success: false,
-                                           fileName: fileURL.lastPathComponent)
+            do {
+                try await uploader.upload(fileURL: fileURL, contentType: contentType)
+                self.clearPendingUpload()
+                await MainActor.run {
+                    self.recordingTime = 0
+                    self.state = .ready
+                    // Persistent, app-controlled confirmation — blocks until
+                    // the user clicks OK (notifications can't guarantee this).
+                    UploadConfirmation.present(success: true,
+                                               fileName: fileURL.lastPathComponent)
+                }
+                return
+            } catch {
+                guard attempt < backoffSeconds.count else {
+                    // Retries exhausted — surface a distinct, reassuring
+                    // failure state. The pending path stays persisted so a
+                    // quit-then-relaunch can still offer to finish it.
+                    await MainActor.run {
+                        self.state = .uploadFailed(fileURL)
+                        UploadConfirmation.present(success: false,
+                                                   fileName: fileURL.lastPathComponent)
+                    }
+                    return
+                }
+                let delay = backoffSeconds[attempt]
+                attempt += 1
+                // Stay in .uploading across the backoff so the UI shows a
+                // retry in progress rather than a flash of failure.
+                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             }
         }
     }

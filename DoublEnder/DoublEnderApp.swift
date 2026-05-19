@@ -71,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMainWindow()
         runCrashRecoveryIfNeeded()
+        #if GCS_ENABLED
+        runPendingUploadCheckIfNeeded()
+        #endif
         Task { await checkForUpdates(silent: true) }
     }
 
@@ -185,6 +188,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         mainWindow?.makeKeyAndOrderFront(nil)
     }
+
+    #if GCS_ENABLED
+    /// A persisted pending-upload path means a prior session's upload was
+    /// interrupted. If the local file is still on disk, offer to finish it;
+    /// stale/missing entries are cleared silently.
+    private func runPendingUploadCheckIfNeeded() {
+        let vm = RecorderViewModel.shared
+        guard let path = vm.persistedPendingUploadPath else { return }
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            vm.clearPendingUpload()
+            return
+        }
+
+        let url = URL(fileURLWithPath: path)
+        mainWindow?.orderOut(nil)
+        let shouldUpload = PendingUploadPrompt.present(fileName: url.lastPathComponent)
+        mainWindow?.makeKeyAndOrderFront(nil)
+
+        if shouldUpload {
+            vm.resumePendingUpload(fileURL: url)
+        } else {
+            vm.clearPendingUpload()
+        }
+    }
+    #endif
 
     /// Runs a modal session for one sidecar. The modal run loop keeps the
     /// window — and its spinner — responsive while `RecoveryModel` does the
