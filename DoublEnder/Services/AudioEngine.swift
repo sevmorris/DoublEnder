@@ -67,6 +67,24 @@ class AudioEngine: NSObject, ObservableObject {
     private var consecutiveWriteErrors = 0
     private let writeErrorThreshold = 5
     private var limiter: LookaheadLimiter?
+    // Conditional resampler / mono downmixer that bridges the tap format to
+    // an AAC-friendly mono PCM stream. Nil for WAV at the hardware rate.
+    private var encoderConverter: AVAudioConverter?
+    private var encoderFormat: AVAudioFormat?
+    // First-five PTS log — flips on at startRecording, helps surface
+    // timestamp problems if the writer ever rejects samples again.
+    private var ptsLogCount = 0
+
+    // AAC-LC's allowed input sample rates per the standard. Anything else
+    // makes the encoder reject samples with "Cannot Encode Media."
+    private static let aacSupportedSampleRates: Set<Double> = [
+        8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000
+    ]
+    private static let aacFallbackSampleRate: Double = 48000
+
+    private static func aacSampleRate(matching rate: Double) -> Double {
+        aacSupportedSampleRates.contains(rate) ? rate : aacFallbackSampleRate
+    }
 
     private var heldPeakDb: Float = -60
     private var smoothedRmsDb: Float = -60
@@ -226,6 +244,32 @@ class AudioEngine: NSObject, ObservableObject {
             try? FileManager.default.removeItem(at: fileURL)
         }
 
+        // Pick a sample rate the encoder will actually accept. AAC silently
+        // rejects samples ("Cannot Encode Media") when fed PCM at rates
+        // outside its standard set — a real failure mode on USB interfaces
+        // that default to 96 / 176.4 / 192 kHz. WAV passes the hardware
+        // rate through untouched.
+        let encoderRate: Double
+        switch format {
+        case .aac: encoderRate = Self.aacSampleRate(matching: tapFormat.sampleRate)
+        case .wav: encoderRate = tapFormat.sampleRate
+        }
+        if encoderRate != tapFormat.sampleRate {
+            logger.info("Hardware rate \(tapFormat.sampleRate, privacy: .public) Hz isn't AAC-compatible — converting to \(encoderRate, privacy: .public) Hz.")
+        }
+
+        // The converter folds multi-channel-to-mono and resamples (when
+        // needed) in a single pass before samples reach the writer.
+        guard let encFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: encoderRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw RecordingError.writerFailedToStart("could not build encoder PCM format")
+        }
+        let converter = AVAudioConverter(from: tapFormat, to: encFormat)
+
         let fileType: AVFileType
         let outputSettings: [String: Any]
         switch format {
@@ -233,7 +277,7 @@ class AudioEngine: NSObject, ObservableObject {
             fileType = .m4a
             outputSettings = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: tapFormat.sampleRate,
+                AVSampleRateKey: encoderRate,
                 AVNumberOfChannelsKey: 1,
                 AVEncoderBitRateKey: aacBitRate
             ]
@@ -243,7 +287,7 @@ class AudioEngine: NSObject, ObservableObject {
             fileType = .wav
             outputSettings = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: tapFormat.sampleRate,
+                AVSampleRateKey: encoderRate,
                 AVNumberOfChannelsKey: 1,
                 AVLinearPCMBitDepthKey: 32,
                 AVLinearPCMIsBigEndianKey: false,
@@ -278,10 +322,12 @@ class AudioEngine: NSObject, ObservableObject {
         }
         writer.startSession(atSourceTime: .zero)
 
-        // Mirror the post-limiter mono stream so an unfinalized .m4a can
-        // still be recovered. A nil sidecar (I/O failure) is non-fatal —
-        // the recording proceeds without the safety net.
-        let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: tapFormat.sampleRate, channels: 1)
+        // Mirror the post-limiter, post-conversion mono stream so an
+        // unfinalized .m4a can still be recovered. A nil sidecar (I/O
+        // failure) is non-fatal — the recording proceeds without the
+        // safety net. Sidecar rate matches the writer so playback parity
+        // is preserved on recovery.
+        let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: encoderRate, channels: 1)
 
         writerLock.lock()
         assetWriter = writer
@@ -289,6 +335,9 @@ class AudioEngine: NSObject, ObservableObject {
         pcmSidecar = sidecar
         writerFrameCount = 0
         limiter = LookaheadLimiter(sampleRate: tapFormat.sampleRate, channels: Int(tapFormat.channelCount))
+        encoderConverter = converter
+        encoderFormat = encFormat
+        ptsLogCount = 0
         consecutiveWriteErrors = 0
         writerLock.unlock()
 
@@ -308,6 +357,8 @@ class AudioEngine: NSObject, ObservableObject {
         assetWriterInput = nil
         pcmSidecar = nil
         limiter = nil
+        encoderConverter = nil
+        encoderFormat = nil
         writerLock.unlock()
 
         sidecar?.discard()
@@ -320,16 +371,71 @@ class AudioEngine: NSObject, ObservableObject {
     private func appendBufferToWriter(_ buffer: AVAudioPCMBuffer) {
         writerLock.lock()
 
-        guard let writerInput = assetWriterInput, writerInput.isReadyForMoreMediaData else {
+        guard let writer = assetWriter, let writerInput = assetWriterInput else {
             writerLock.unlock()
             return
         }
 
-        // Limiter runs inside the lock — limiter is created/destroyed under writerLock.
+        // 1. Writer must be in .writing. A non-writing status (.failed,
+        //    .cancelled, .completed) means appends will be rejected — tear
+        //    down once and surface the real error rather than letting
+        //    every subsequent tap callback re-trigger the same failure.
+        guard writer.status == .writing else {
+            let err = writer.error?.localizedDescription
+                ?? "AVAssetWriter status \(writer.status.rawValue)"
+            assetWriter = nil
+            assetWriterInput = nil
+            limiter = nil
+            encoderConverter = nil
+            encoderFormat = nil
+            let abortedSidecar = pcmSidecar
+            pcmSidecar = nil
+            consecutiveWriteErrors = 0
+            writerLock.unlock()
+            logger.error("AVAssetWriter not in .writing state — \(err, privacy: .public)")
+            abortedSidecar?.close()
+            writer.cancelWriting()
+            DispatchQueue.main.async { self.lastError = err }
+            return
+        }
+
+        // Transient encoder backpressure is normal — dropping a single
+        // buffer here is the documented contract for AVAssetWriterInput.
+        guard writerInput.isReadyForMoreMediaData else {
+            writerLock.unlock()
+            return
+        }
+
+        // Limiter runs in place on the raw tap buffer (multi-channel at hw
+        // rate) — limiter is created/destroyed under writerLock.
         limiter?.process(buffer: buffer)
 
-        guard let monoBuffer = downmixToMono(buffer) else {
+        // 2. Convert tap buffer → mono PCM at the AAC-friendly rate. The
+        //    same converter handles both downmix and resample so the
+        //    sample buffer we hand to the writer always matches the format
+        //    it was configured with.
+        guard let converter = encoderConverter, let target = encoderFormat else {
+            writerLock.unlock()
+            return
+        }
+        let outCapacity = AVAudioFrameCount(
+            ceil(Double(buffer.frameLength) * target.sampleRate / buffer.format.sampleRate)
+        ) + 32
+        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCapacity) else {
             consecutiveWriteErrors += 1
+            writerLock.unlock()
+            return
+        }
+        var convError: NSError?
+        let convStatus = converter.convert(to: convertedBuffer, error: &convError) { _, outStatus in
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        guard convStatus != .error, convertedBuffer.frameLength > 0 else {
+            consecutiveWriteErrors += 1
+            if let e = convError {
+                logger.error("AVAudioConverter failed: \(e.localizedDescription, privacy: .public)")
+            }
             writerLock.unlock()
             return
         }
@@ -337,18 +443,30 @@ class AudioEngine: NSObject, ObservableObject {
         // Mirror to the sidecar before building the CMSampleBuffer — this
         // way the recovery copy captures audio even if sample-buffer
         // construction or the writer append fails.
-        if let mono = monoBuffer.floatChannelData?[0] {
-            pcmSidecar?.append(mono, frameCount: Int(monoBuffer.frameLength))
+        if let mono = convertedBuffer.floatChannelData?[0] {
+            pcmSidecar?.append(mono, frameCount: Int(convertedBuffer.frameLength))
         }
 
-        guard let sampleBuffer = makeSampleBuffer(from: monoBuffer, startFrame: writerFrameCount) else {
+        guard let sampleBuffer = makeSampleBuffer(from: convertedBuffer, startFrame: writerFrameCount) else {
             consecutiveWriteErrors += 1
             writerLock.unlock()
             return
         }
 
+        // 3. Log the first five presentation timestamps. Since PTS is
+        //    derived from a monotonically increasing frame counter at the
+        //    encoder rate, any oddity (invalid CMTime, non-monotonic
+        //    sequence) shows up here on first inspection.
+        if ptsLogCount < 5 {
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            logger.info(
+                "PTS[\(self.ptsLogCount, privacy: .public)] value=\(pts.value, privacy: .public) ts=\(pts.timescale, privacy: .public) valid=\(pts.flags.contains(.valid) ? 1 : 0, privacy: .public) frames=\(convertedBuffer.frameLength, privacy: .public)"
+            )
+            ptsLogCount += 1
+        }
+
         if writerInput.append(sampleBuffer) {
-            writerFrameCount += Int64(monoBuffer.frameLength)
+            writerFrameCount += Int64(convertedBuffer.frameLength)
             consecutiveWriteErrors = 0
             writerLock.unlock()
         } else {
@@ -356,11 +474,15 @@ class AudioEngine: NSObject, ObservableObject {
             if consecutiveWriteErrors >= writeErrorThreshold {
                 // Capture and clear writer state so no further appends occur.
                 let failedWriter = assetWriter
+                // 4. Surface the writer's actual localized error verbatim.
+                //    The previous wrapper text obscured useful diagnostics.
                 let err = assetWriter?.error?.localizedDescription
-                    ?? "status \(assetWriter?.status.rawValue ?? -1)"
+                    ?? "AVAssetWriter status \(assetWriter?.status.rawValue ?? -1)"
                 assetWriter = nil
                 assetWriterInput = nil
                 limiter = nil
+                encoderConverter = nil
+                encoderFormat = nil
                 // Keep the sidecar on disk — the partial .m4a is being
                 // cancelled, so the sidecar is the only recoverable copy.
                 let abortedSidecar = pcmSidecar
@@ -371,43 +493,14 @@ class AudioEngine: NSObject, ObservableObject {
                 abortedSidecar?.close()
                 // Cancel the partial file — it can't be finalized in this state.
                 failedWriter?.cancelWriting()
+                logger.error("AVAssetWriter append failed \(self.writeErrorThreshold, privacy: .public)x — \(err, privacy: .public)")
                 DispatchQueue.main.async {
-                    self.lastError = "AVAssetWriter rejected audio samples (\(err))."
+                    self.lastError = err
                 }
             } else {
                 writerLock.unlock()
             }
         }
-    }
-
-    private func downmixToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        let channelCount = Int(buffer.format.channelCount)
-        if channelCount == 1 { return buffer }
-
-        guard let inputChannels = buffer.floatChannelData,
-              let monoFormat = AVAudioFormat(
-                  commonFormat: .pcmFormatFloat32,
-                  sampleRate: buffer.format.sampleRate,
-                  channels: 1,
-                  interleaved: false
-              ),
-              let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength) else {
-            return nil
-        }
-        monoBuffer.frameLength = buffer.frameLength
-
-        guard let outputChannel = monoBuffer.floatChannelData?[0] else { return nil }
-
-        let frameCount = Int(buffer.frameLength)
-        let scale = 1.0 / Float(channelCount)
-        for i in 0..<frameCount {
-            var sum: Float = 0
-            for c in 0..<channelCount {
-                sum += inputChannels[c][i]
-            }
-            outputChannel[i] = sum * scale
-        }
-        return monoBuffer
     }
 
     private func makeSampleBuffer(from monoBuffer: AVAudioPCMBuffer, startFrame: Int64) -> CMSampleBuffer? {
@@ -563,6 +656,8 @@ class AudioEngine: NSObject, ObservableObject {
         assetWriterInput = nil
         pcmSidecar = nil
         limiter = nil
+        encoderConverter = nil
+        encoderFormat = nil
         writerLock.unlock()
 
         guard let writer = writer, let input = input else {

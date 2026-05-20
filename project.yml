@@ -39,6 +39,7 @@ targets:
         NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
 
   DoublEnderCloud:
     type: application
@@ -72,28 +73,5 @@ targets:
         NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
 
-  DoublEnderLite:
-    type: application
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources:
-      - path: DoublEnder
-        excludes:
-          - "DoublEnder.entitlements"
-    settings:
-      base:
-        PRODUCT_NAME: DoublEnder Lite
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderLite
-        INFOPLIST_KEY_CFBundleDisplayName: DoublEnder Lite
-        CODE_SIGN_STYLE: Automatic
-        ENABLE_HARDENED_RUNTIME: YES
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_ENTITLEMENTS: DoublEnder/DoublEnderLite.entitlements
-    info:
-      path: DoublEnder/Info.plist
-      properties:
-        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
-        NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"

@@ -122,6 +122,16 @@ actor UpdateChecker {
 
 /// Show an update dialog. When `silent` is true (launch check), only prompt if
 /// an update is actually available — don't bother the user with "you're up to date".
+/// Force secondary alerts into the dark "aqua" appearance regardless of
+/// the system setting — keeps every non-primary surface on the same dark
+/// palette as the SwiftUI dialogs.
+@MainActor
+private func makeLightAlert() -> NSAlert {
+    let alert = NSAlert()
+    alert.window.appearance = NSAppearance(named: .darkAqua)
+    return alert
+}
+
 @MainActor
 func checkForUpdates(silent: Bool = false) async {
     let result = await UpdateChecker().check()
@@ -129,14 +139,14 @@ func checkForUpdates(silent: Bool = false) async {
     switch result {
     case .upToDate(let version):
         guard !silent else { return }
-        let alert = NSAlert()
+        let alert = makeLightAlert()
         alert.messageText = "You're up to date"
         alert.informativeText = "DoublEnder \(version) is the latest version."
         alert.addButton(withTitle: "OK")
         alert.runModal()
 
     case .available(let version, let downloadURL, let releaseURL):
-        let alert = NSAlert()
+        let alert = makeLightAlert()
         alert.messageText = "Update Available"
         #if GCS_ENABLED
         // Cloud has no GitHub release page; one Download button only.
@@ -162,7 +172,7 @@ func checkForUpdates(silent: Bool = false) async {
 
     case .error(let message):
         guard !silent else { return }
-        let alert = NSAlert()
+        let alert = makeLightAlert()
         alert.messageText = "Update Check Failed"
         alert.informativeText = message
         alert.addButton(withTitle: "OK")

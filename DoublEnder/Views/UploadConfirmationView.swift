@@ -2,8 +2,11 @@
 import SwiftUI
 import AppKit
 
-private let panelBlue = Color(red: 0.13, green: 0.34, blue: 0.58)
-private let panelOrange = Color(red: 0.93, green: 0.56, blue: 0.22)
+private let secondarySurface = Color(red: 0x2A/255, green: 0x2A/255, blue: 0x2A/255)
+private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
+private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
+// Phosphor green — matches the counter digits in the main panel.
+private let accentBlue       = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
 
 /// Upload-result confirmation for the DoublEnder Cloud build.
 ///
@@ -34,11 +37,11 @@ struct UploadConfirmationView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
-        .background(panelBlue)
+        .background(secondarySurface)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(panelOrange, lineWidth: 2)
+                .strokeBorder(accentBlue, lineWidth: 1.5)
         )
         .preferredColorScheme(.dark)
     }
@@ -48,22 +51,21 @@ struct UploadConfirmationView: View {
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 30, weight: .semibold))
-            .foregroundStyle(panelOrange)
-            .shadow(color: panelOrange.opacity(0.55), radius: 4)
+            .foregroundStyle(accentBlue)
     }
 
     private func title(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 12, weight: .bold))
             .tracking(1.8)
-            .foregroundColor(panelOrange)
+            .foregroundColor(secondaryText)
     }
 
     private func bodyText(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 11, weight: .medium))
             .tracking(0.3)
-            .foregroundColor(panelOrange)
+            .foregroundColor(secondaryText)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -71,7 +73,7 @@ struct UploadConfirmationView: View {
     private func fileNameText(_ name: String) -> some View {
         Text(name)
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundColor(panelOrange.opacity(0.7))
+            .foregroundColor(secondaryText.opacity(0.65))
             .lineLimit(1)
             .truncationMode(.middle)
     }
@@ -81,11 +83,11 @@ struct UploadConfirmationView: View {
             Text(label)
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.5)
-                .foregroundColor(panelOrange)
+                .foregroundColor(secondaryText)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.55)))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(panelOrange, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -153,11 +155,11 @@ struct PendingUploadView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
-        .background(panelBlue)
+        .background(secondarySurface)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(panelOrange, lineWidth: 2)
+                .strokeBorder(accentBlue, lineWidth: 1.5)
         )
         .preferredColorScheme(.dark)
     }
@@ -165,22 +167,21 @@ struct PendingUploadView: View {
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 30, weight: .semibold))
-            .foregroundStyle(panelOrange)
-            .shadow(color: panelOrange.opacity(0.55), radius: 4)
+            .foregroundStyle(accentBlue)
     }
 
     private func title(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 12, weight: .bold))
             .tracking(1.8)
-            .foregroundColor(panelOrange)
+            .foregroundColor(secondaryText)
     }
 
     private func bodyText(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 11, weight: .medium))
             .tracking(0.3)
-            .foregroundColor(panelOrange)
+            .foregroundColor(secondaryText)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -188,7 +189,7 @@ struct PendingUploadView: View {
     private func fileNameText(_ name: String) -> some View {
         Text(name)
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundColor(panelOrange.opacity(0.7))
+            .foregroundColor(secondaryText.opacity(0.65))
             .lineLimit(1)
             .truncationMode(.middle)
     }
@@ -198,11 +199,11 @@ struct PendingUploadView: View {
             Text(label)
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.5)
-                .foregroundColor(panelOrange)
+                .foregroundColor(secondaryText)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.55)))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(panelOrange, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()

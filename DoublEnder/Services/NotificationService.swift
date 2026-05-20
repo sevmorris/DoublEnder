@@ -55,7 +55,7 @@ final class NotificationService: NSObject {
 
         let content = UNMutableNotificationContent()
         content.title = "DoublEnder"
-        content.body = fileURL.lastPathComponent
+        content.body = "\(fileURL.lastPathComponent) — recording saved."
         content.sound = .default
         content.categoryIdentifier = Self.categoryID
         content.userInfo = [Self.filePathKey: fileURL.path]

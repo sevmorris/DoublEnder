@@ -1,46 +1,88 @@
 import SwiftUI
 import AVFoundation
+import AppKit
 
-private let panelBlue = Color(red: 0.13, green: 0.34, blue: 0.58)
-private let panelBlueDark = Color(red: 0.09, green: 0.22, blue: 0.38)   // popover background — deeper than the main panel
-private let panelOrange = Color(red: 0.93, green: 0.56, blue: 0.22)
-private let counterBorder = Color(white: 0.42)
-private let windowSize = CGSize(width: 288, height: 276)
-private let counterFontName = "DSEG7Classic-Regular"
+// Accent for secondary surfaces — kept on the same phosphor green as the
+// counter digits so light text, borders, and buttons read as part of one
+// visual family. (Name preserved to keep this diff small.)
+private let accentBlue = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+private let panelStroke = Color(red: 0xC0/255, green: 0xC0/255, blue: 0xC0/255)
+// Dark neutral surface for popovers and secondary windows. Background is a
+// deep grey with near-white primary text, tied to the main panel by the
+// accent-blue border / button outline.
+private let secondarySurface = Color(red: 0x2A/255, green: 0x2A/255, blue: 0x2A/255)
+private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
+private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
+private let windowSize = CGSize(width: 320, height: 338)
+private let grillBandHeight: CGFloat = 93
+
+
+// CRT-style timer readout: phosphor green digits in a clean wide sans-serif.
+// Eurostile/Bank Gothic ship with some pro design suites but not stock macOS,
+// so the helper walks a preferred-name list and falls back to SF Mono Bold
+// if none are installed.
+private let phosphorGreen = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+private let crtFontCandidates: [String] = [
+    "EurostileLTStd-Bold", "Eurostile-Bold", "Eurostile",
+    "BankGothicBT-Medium", "BankGothic-Medium", "Bank Gothic"
+]
+
+private func crtFont(size: CGFloat) -> Font {
+    for name in crtFontCandidates where NSFont(name: name, size: size) != nil {
+        return .custom(name, size: size)
+    }
+    return .system(size: size, weight: .bold, design: .monospaced)
+}
 
 struct ContentView: View {
     // Singleton — AppDelegate also references this for quit-intercept and
     // crash-recovery checks, and the view simply observes its state.
     @ObservedObject private var viewModel = RecorderViewModel.shared
-    @State private var showLit: Bool = false         // when true render record-button-on; flipped by pulseTimer
-    @State private var pulseTimer: Timer?            // 1 s repeating timer; nil when not recording
     @State private var isStopping = false            // true while finishWriting is in flight; blocks double-tap
     @State private var showDevicePicker = false
     @State private var showSettings = false
 
-    // LCD readout colors — dark warm bezel with dim ghost segments and lit amber digits.
-    private let lcdBackground = Color(red: 0.13, green: 0.07, blue: 0.02)
-    private let lcdGhost     = Color(red: 0.93, green: 0.56, blue: 0.22).opacity(0.10)
+    // Phosphor-green CRT readout sits in a pure-black counter box.
+    private let lcdBackground = Color.black
 
     var body: some View {
         ZStack {
             backgroundChrome
             content
-                .padding(.horizontal, 17)
-                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
         }
         .frame(width: windowSize.width, height: windowSize.height)
-        .background(.clear)   // window is transparent — desktop shows outside the rounded rect
-        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .background(.clear)
     }
 
+    // Hard-edged rectangle: full black panel with a grill band at the bottom
+    // and a single silver hairline border. The grill runs straight into all
+    // four corners — no clip shape to truncate it. A soft radial vignette
+    // sits on top of the panel to nudge the eye toward the lens at centre.
     private var backgroundChrome: some View {
-        RoundedRectangle(cornerRadius: 17, style: .continuous)
-            .fill(panelBlue)
-            .overlay(
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .strokeBorder(panelOrange, lineWidth: 2.5)   // strokeBorder keeps the line inside the path so clipShape doesn't clip it
+        ZStack(alignment: .bottom) {
+            Color.black
+            Image("grill")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(height: grillBandHeight)
+                .frame(maxWidth: .infinity)
+                .clipped()
+        }
+        .overlay(
+            RadialGradient(
+                colors: [.clear, Color.black.opacity(0.3)],
+                center: .center,
+                startRadius: 70,
+                endRadius: 230
             )
+            .allowsHitTesting(false)
+        )
+        .overlay(
+            Rectangle()
+                .strokeBorder(panelStroke, lineWidth: 1.5)
+        )
     }
 
     @ViewBuilder
@@ -63,13 +105,13 @@ struct ContentView: View {
 
     private var mainView: some View {
         VStack(spacing: 0) {
-            Spacer().frame(height: 10)
+            Spacer().frame(height: 16)
             counterWindow
-            Spacer(minLength: 7)
-            middleRow
             Spacer().frame(height: 8)
-            meter
-            Spacer().frame(height: 6)
+            middleRow
+            // Flexible — the bottom of the window is pure grill now that the
+            // meter is gone, so let the spacer absorb whatever room is left.
+            Spacer(minLength: 8)
         }
     }
 
@@ -77,26 +119,29 @@ struct ContentView: View {
 
     private var counterWindow: some View {
         ZStack {
-            // Ghost layer — every segment lit, dim. With DSEG7, "8" lights all 7 segments,
-            // so rendering "88:88:88" beneath the live readout exposes the unlit segments
-            // through the active digits and sells the physical LCD look.
-            Text("88:88:88")
-                .font(.custom(counterFontName, size: 28))
-                .tracking(1)
-                .foregroundColor(lcdGhost)
-            // Active digits — bright amber with two-stop glow.
+            // 1. Black LCD background.
+            lcdBackground
+
+            // 2. Phosphor-green digits with CRT glow.
             Text(viewModel.recordingTime.hhmmss)
-                .font(.custom(counterFontName, size: 28))
-                .tracking(1)
-                .foregroundColor(panelOrange)
-                .shadow(color: panelOrange.opacity(0.75), radius: 3)
-                .shadow(color: panelOrange.opacity(0.45), radius: 7)
+                .font(crtFont(size: 30))
+                .tracking(2)
+                .foregroundColor(phosphorGreen)
+                .shadow(color: phosphorGreen.opacity(0.85), radius: 5)
+
+            // 3. Glossy curved highlight on top. `.screen` at 0.4 lifts the
+            //    reflection over the dark background without flattening the
+            //    bright green digits the way `.overlay` did.
+            Image("counter_reflection")
+                .resizable()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(0.4)
+                .blendMode(.screen)
+                .allowsHitTesting(false)
         }
-        .padding(.horizontal, 18)
-        .frame(height: 49)
-        .background(lcdBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(counterBorder, lineWidth: 1))
+        .frame(width: 248, height: 60)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(panelStroke, lineWidth: 1.5))
         .shadow(color: .black.opacity(0.45), radius: 3, x: 0, y: 1)
     }
 
@@ -110,28 +155,24 @@ struct ContentView: View {
                 Spacer(minLength: 0)
                 gearButton
             }
+            // Visually the record button's lit centre sits a little above
+            // the geometric midpoint of the 135pt image, so nudge the
+            // flanking icons up to read as truly aligned with the lens.
+            .offset(y: -6)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 132)
+        .frame(height: 135)
     }
 
     private var inputSelector: some View {
         Button {
             showDevicePicker.toggle()
         } label: {
-            HStack(spacing: -12) {
-                Image("mic")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 43, height: 43)
-                Image("input_selector")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 22, height: 14)
-            }
-            .opacity(isRecordingState ? 0.35 : 1.0)
-            .frame(height: 43)
-            .contentShape(Rectangle())
+            Image("mic")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 48, height: 48)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -159,9 +200,9 @@ struct ContentView: View {
             Image("gear")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 28, height: 28)
-                .opacity(isRecordingState ? 0.35 : 1.0)
+                .frame(width: 31, height: 31)
                 .contentShape(Rectangle())
+                .padding(.trailing, 10)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -179,22 +220,29 @@ struct ContentView: View {
         return false
     }
 
+    // Both record_button_on / record_button_off render at the same size
+    // and crossfade by opacity while recording. Nothing wraps them — no
+    // ring, no border, just the image itself.
+    private static let recordButtonSize: CGFloat = 135
+
     private var recordButton: some View {
-        Image(showLit ? "record-button-on" : "record-button-off")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 112, height: 112)   // 132 × 0.85
-            .contentShape(Circle())
-            .onTapGesture { handleRecordTap() }
-            .onAppear {
-                // Defensive: no flash logic should be running until the user taps record.
-                stopPulseTimer()
-                showLit = false
+        Group {
+            if isRecordingState {
+                // Crossfade between the two states while recording. View is
+                // conditionally mounted so SwiftUI tears down the repeating
+                // animation the instant recording stops — no timers, no
+                // animation cancellation to chase.
+                RecordCrossfade(size: Self.recordButtonSize)
+            } else {
+                Image("record_button_off")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: Self.recordButtonSize, height: Self.recordButtonSize)
             }
-            .onChange(of: isRecordingState) { _, recording in
-                updatePulse(recording: recording)
-            }
-            .onDisappear { stopPulseTimer() }
+        }
+        .frame(width: Self.recordButtonSize, height: Self.recordButtonSize)
+        .contentShape(Circle())
+        .onTapGesture { handleRecordTap() }
     }
 
     private func handleRecordTap() {
@@ -212,143 +260,24 @@ struct ContentView: View {
         }
     }
 
-    private func updatePulse(recording: Bool) {
-        stopPulseTimer()
-        if recording {
-            // Hard flash — 2 toggles/sec → on for 0.5 s, off for 0.5 s.
-            showLit = true
-            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-                showLit.toggle()
-            }
-        } else {
-            // Snap back to off — no animation.
-            showLit = false
-        }
-    }
-
-    private func stopPulseTimer() {
-        pulseTimer?.invalidate()
-        pulseTimer = nil
-    }
-
-    // MARK: - Meter (bottom)
-
-    private let meterTicks: [(db: Float, label: String)] = [
-        (-60, "-60"), (-40, "-40"), (-20, "-20"), (-12, "-12"), (-6, "-6"), (-3, "-3"), (0, "0")
-    ]
-
-    // Segmented LED meter — 40 segments split into four colored zones.
-    // Green:  -60..-12 dBFS  (positions 0.00..0.90 → 32 segments)
-    // Yellow: -12..-6  dBFS  (positions 0.80..0.90 →  4 segments)
-    // Orange: -6..-3   dBFS  (positions 0.90..0.95 →  2 segments)
-    // Red:    -3..0    dBFS  (positions 0.95..1.00 →  2 segments)
-    private static let segmentCount = 40
-    private static let segmentSpacing: CGFloat = 1
-    private static let zoneGreen  = Color(red: 0.18, green: 0.85, blue: 0.30)
-    private static let zoneYellow = Color(red: 0.95, green: 0.82, blue: 0.20)
-    private static let zoneOrange = Color(red: 0.96, green: 0.55, blue: 0.15)
-    private static let zoneRed    = Color(red: 0.95, green: 0.25, blue: 0.25)
-    private static let unlitOpacity: Double = 0.15
-
-    private static func zoneColor(progress: Float) -> Color {
-        if progress <= 0.8  { return zoneGreen }
-        if progress <= 0.9  { return zoneYellow }
-        if progress <= 0.95 { return zoneOrange }
-        return zoneRed
-    }
-
-    private func position(forDB db: Float) -> CGFloat {
-        CGFloat(max(0, min(1, (db + 60) / 60)))
-    }
-
-    private var meter: some View {
-        HStack(alignment: .top, spacing: 6) {
-            VStack(spacing: 2) {
-                meterBar
-                meterScale
-            }
-            clipIndicator
-                .frame(height: 13)
-        }
-        .padding(.leading, 12)
-        .padding(.trailing, 7)
-        .padding(.vertical, 5)
-        .background(Color.black.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(panelOrange, lineWidth: 1))
-    }
-
-    private var meterBar: some View {
-        HStack(spacing: Self.segmentSpacing) {
-            ForEach(0..<Self.segmentCount, id: \.self) { i in
-                let top  = Float(i + 1) / Float(Self.segmentCount)
-                let bot  = Float(i)     / Float(Self.segmentCount)
-                let color = Self.zoneColor(progress: top)
-                // A segment lights when the RMS level reaches it, or when the
-                // held peak falls within its range (gives the classic floating
-                // peak-hold tick above the lit row).
-                let rmsLit = top <= viewModel.rmsLevel
-                let peakInSeg = viewModel.peakLevel > bot && viewModel.peakLevel <= top
-                let isLit = rmsLit || peakInSeg
-                Rectangle()
-                    .fill(isLit ? color : color.opacity(Self.unlitOpacity))
-            }
-        }
-        .frame(height: 13)
-    }
-
-    private var clipIndicator: some View {
-        HStack(spacing: 2) {
-            Circle()
-                .fill(viewModel.clipDetected ? Color.red : Color.white.opacity(0.18))
-                .frame(width: 6, height: 6)
-                .overlay(Circle().stroke(panelOrange.opacity(0.7), lineWidth: 0.5))
-                .shadow(color: viewModel.clipDetected ? .red.opacity(0.8) : .clear, radius: 3)
-                .animation(.easeOut(duration: 0.08), value: viewModel.clipDetected)
-            Text("CLIP")
-                .font(.system(size: 7, weight: .semibold))
-                .foregroundColor(viewModel.clipDetected ? .red : panelOrange.opacity(0.8))
-        }
-        .frame(width: 28, alignment: .trailing)
-    }
-
-    private var meterScale: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                ForEach(meterTicks, id: \.db) { tick in
-                    VStack(spacing: 1) {
-                        Rectangle()
-                            .fill(panelOrange.opacity(0.55))
-                            .frame(width: 1, height: 2)
-                        Text(tick.label)
-                            .font(.system(size: 7, weight: .medium))
-                            .foregroundColor(panelOrange.opacity(0.85))
-                            .fixedSize()
-                    }
-                    .frame(width: 14)
-                    .offset(x: geo.size.width * position(forDB: tick.db) - 7)
-                }
-            }
-        }
-        .frame(height: 10)
-    }
-
     // MARK: - Other state views
 
     #if GCS_ENABLED
     private var uploadingView: some View {
-        VStack(spacing: 12) {
-            Text("Uploading…")
-                .font(.title3)
-                .foregroundColor(panelOrange)
-            ProgressView(value: viewModel.uploadProgress)
-                .progressViewStyle(.linear)
-                .tint(panelOrange)
-                .frame(width: 168)
-            Text("\(Int(viewModel.uploadProgress * 100))%")
-                .font(.headline)
-                .foregroundColor(panelOrange)
-                .monospacedDigit()
+        SecondaryCard {
+            VStack(spacing: 12) {
+                Text("Uploading…")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(secondaryText)
+                ProgressView(value: viewModel.uploadProgress)
+                    .progressViewStyle(.linear)
+                    .tint(accentBlue)
+                    .frame(width: 168)
+                Text("\(Int(viewModel.uploadProgress * 100))%")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(secondaryText)
+                    .monospacedDigit()
+            }
         }
     }
 
@@ -356,90 +285,121 @@ struct ContentView: View {
     /// Desktop — only the upload needs retrying, so this is visually the
     /// error view but reassures the user and re-attempts just the upload.
     private func uploadFailedView(_ url: URL) -> some View {
-        VStack(spacing: 12) {
-            Spacer().frame(height: 4)
-            Image(systemName: "exclamationmark.icloud.fill")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(panelOrange)
-                .shadow(color: panelOrange.opacity(0.55), radius: 4)
+        SecondaryCard {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(accentBlue)
 
-            Text("Recording saved to Desktop. Upload failed — tap Retry to try again.")
-                .font(.system(size: 11, weight: .medium))
-                .tracking(0.3)
-                .foregroundColor(panelOrange)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 18)
+                Text("Recording saved to Desktop. Upload failed — tap Retry to try again.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(secondaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 8)
 
-            Button {
-                viewModel.retryUpload()
-            } label: {
-                Text("RETRY UPLOAD")
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(1.5)
-                    .foregroundColor(panelOrange)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 7)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.black.opacity(0.55))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(panelOrange, lineWidth: 1)
-                    )
+                SecondaryButton("RETRY UPLOAD") { viewModel.retryUpload() }
             }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-
-            Spacer()
         }
-        .padding(.top, 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     #endif
 
     private func errorView(_ message: String) -> some View {
-        VStack(spacing: 12) {
-            Spacer().frame(height: 4)
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(panelOrange)
-                .shadow(color: panelOrange.opacity(0.55), radius: 4)
+        SecondaryCard {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(accentBlue)
 
-            Text(message)
-                .font(.system(size: 11, weight: .medium))
-                .tracking(0.3)
-                .foregroundColor(panelOrange)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 18)
+                Text(message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(secondaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 8)
 
-            Button {
-                viewModel.reset()
-            } label: {
-                Text("TRY AGAIN")
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(1.5)
-                    .foregroundColor(panelOrange)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 7)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.black.opacity(0.55))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(panelOrange, lineWidth: 1)
-                    )
+                SecondaryButton("TRY AGAIN") { viewModel.reset() }
             }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-
-            Spacer()
         }
-        .padding(.top, 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Secondary surface components
+
+/// Light-grey rounded card used for every non-primary surface (popovers,
+/// in-window dialogs). Mirrors the silver-stroke aesthetic of the main
+/// window with an accent-blue border instead of silver, so secondary UI
+/// reads as related-but-distinct from the dark recording panel.
+private struct SecondaryCard<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(secondarySurface)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(accentBlue, lineWidth: 1.5)
+            )
+            .preferredColorScheme(.dark)
+    }
+}
+
+private struct SecondaryButton: View {
+    let label: String
+    let action: () -> Void
+
+    init(_ label: String, action: @escaping () -> Void) {
+        self.label = label
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.5)
+                .foregroundColor(secondaryText)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+}
+
+// MARK: - Record-button recording crossfade
+
+/// Smoothly crossfades between record_button_off and record_button_on while
+/// recording. Lives only as long as it's mounted — when the parent stops
+/// including it in the hierarchy, SwiftUI tears it down and the repeating
+/// animation goes with it. No timers, no animation cancellation to manage.
+private struct RecordCrossfade: View {
+    let size: CGFloat
+    @State private var onOpacity: Double = 0.0
+
+    var body: some View {
+        ZStack {
+            Image("record_button_off")
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+            Image("record_button_on")
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .opacity(onOpacity)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                onOpacity = 1.0
+            }
+        }
     }
 }
 
@@ -468,7 +428,7 @@ private struct DevicePickerPopover: View {
         }
         .padding(.bottom, 6)
         .frame(minWidth: 220)
-        .background(panelBlueDark)
+        .background(secondarySurface)
         .preferredColorScheme(.dark)
     }
 
@@ -476,7 +436,7 @@ private struct DevicePickerPopover: View {
         Text(text)
             .font(.system(size: 9, weight: .bold))
             .tracking(1.5)
-            .foregroundColor(panelOrange.opacity(0.75))
+            .foregroundColor(accentBlue)
             .padding(.horizontal, 12)
             .padding(.top, topPadding)
             .padding(.bottom, 4)
@@ -489,14 +449,14 @@ private struct DevicePickerPopover: View {
             HStack {
                 Text(device.localizedName)
                     .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(dimmed ? 0.4 : 1.0))
+                    .foregroundColor(secondaryText.opacity(dimmed ? 0.45 : 1.0))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
                 if selectedID == device.uniqueID {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(panelOrange)
+                        .foregroundColor(accentBlue)
                 }
             }
             .contentShape(Rectangle())
@@ -518,7 +478,7 @@ private struct SettingsPopover: View {
             Text("SETTINGS")
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.8)
-                .foregroundColor(panelOrange)
+                .foregroundColor(accentBlue)
 
             // Filename
             VStack(alignment: .leading, spacing: 4) {
@@ -527,19 +487,19 @@ private struct SettingsPopover: View {
                     TextField("DoublEnder", text: $viewModel.filenameBase)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11))
-                        .foregroundColor(.white)
+                        .foregroundColor(secondaryText)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
-                        .background(Color.black.opacity(0.55))
+                        .background(secondaryFieldBg)
                         .overlay(
                             RoundedRectangle(cornerRadius: 3)
-                                .stroke(panelOrange.opacity(0.55), lineWidth: 1)
+                                .stroke(accentBlue, lineWidth: 1)
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 3))
 
                     Text("_<date>.\(viewModel.outputFormat.fileExtension)")
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(panelOrange.opacity(0.55))
+                        .foregroundColor(secondaryText.opacity(0.55))
                         .fixedSize()
                 }
             }
@@ -552,7 +512,7 @@ private struct SettingsPopover: View {
                         Text("Saved as metadata in the recording")
                             .font(.system(size: 10))
                             .italic()
-                            .foregroundColor(panelOrange.opacity(0.35))
+                            .foregroundColor(secondaryText.opacity(0.45))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 7)
                             .allowsHitTesting(false)
@@ -560,21 +520,21 @@ private struct SettingsPopover: View {
                     TextEditor(text: $viewModel.notes)
                         .scrollContentBackground(.hidden)
                         .font(.system(size: 11))
-                        .foregroundColor(.white)
+                        .foregroundColor(secondaryText)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 3)
                 }
                 .frame(height: 56)
-                .background(Color.black.opacity(0.55))
+                .background(secondaryFieldBg)
                 .overlay(
                     RoundedRectangle(cornerRadius: 3)
-                        .stroke(panelOrange.opacity(0.55), lineWidth: 1)
+                        .stroke(accentBlue, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 3))
                 if viewModel.outputFormat == .wav {
                     Text("Notes are not stored in WAV files.")
                         .font(.system(size: 9))
-                        .foregroundColor(panelOrange.opacity(0.55))
+                        .foregroundColor(secondaryText.opacity(0.55))
                 }
             }
 
@@ -588,12 +548,12 @@ private struct SettingsPopover: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .tint(panelOrange)
+                .tint(accentBlue)
             }
         }
         .padding(16)
         .frame(width: 260)
-        .background(panelBlueDark)
+        .background(secondarySurface)
         .preferredColorScheme(.dark)
     }
 
@@ -602,6 +562,6 @@ private struct SettingsPopover: View {
         Text(text)
             .font(.system(size: 9, weight: .bold))
             .tracking(1.2)
-            .foregroundColor(panelOrange.opacity(0.75))
+            .foregroundColor(accentBlue)
     }
 }

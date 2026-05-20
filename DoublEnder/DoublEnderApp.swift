@@ -18,7 +18,7 @@ struct DoublEnderApp: App {
             ContentView()
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)   // fixed-size: content frame enforces 288×276
+        .windowResizability(.contentSize)   // fixed-size: content frame enforces 320×338
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
@@ -135,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func presentRecordingInProgressAlert() {
         let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Recording in progress"
         alert.informativeText = "Stopping now will save what has been recorded so far. Quitting without saving will lose the current recording."
