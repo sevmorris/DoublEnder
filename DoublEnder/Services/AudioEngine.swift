@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import AVFoundation
 import Combine
 import OSLog
@@ -39,17 +40,15 @@ class AudioEngine: NSObject, ObservableObject {
     @Published var availableInputDevices: [AVCaptureDevice] = []
     @Published var selectedInputDevice: AVCaptureDevice?
 
-    @Published var rmsLevel: Float = 0.0     // smoothed RMS, normalized 0...1 over -60..0 dBFS
-    @Published var peakLevel: Float = 0.0    // peak with hold + dB-domain decay, normalized 0...1
-    @Published var clipDetected: Bool = false  // latches when samples cross limiter ceiling
     @Published var lastError: String?
+    /// True when the PCM sidecar could not be opened for this recording —
+    /// crash recovery is unavailable for the current take. (M4)
+    @Published var sidecarUnavailable: Bool = false
+    /// True when the active input is delivering a sample rate ≤ 16 kHz,
+    /// which typically indicates Bluetooth SCO (8 kHz narrowband) or another
+    /// low-quality path. Does not stop recording — surfaces a UI warning. (M5)
+    @Published var lowQualityInput: Bool = false
 
-    private let meterFloorDb: Float = -60
-    private let limiterCeilingLinear: Float = 0.891  // -1 dBFS — matches LookaheadLimiter
-    private let rmsAttackSec: Float = 0.04
-    private let rmsReleaseSec: Float = 0.30
-    private let peakDecayDbPerSec: Float = 20
-    private let clipLatchSeconds: CFAbsoluteTime = 1.0
     private let aacBitRate: Int = 256_000
 
     private var audioEngine: AVAudioEngine?
@@ -75,6 +74,19 @@ class AudioEngine: NSObject, ObservableObject {
     // timestamp problems if the writer ever rejects samples again.
     private var ptsLogCount = 0
 
+    // Serial queue for all AVAssetWriter / PCMSidecar work. Moving this
+    // off the AVAudioEngine tap thread eliminates NSLock, malloc, and file
+    // I/O from the real-time audio callback.
+    private let writerQueue = DispatchQueue(
+        label: "io.github.sevmorris.DoublEnder.writer",
+        qos: .userInitiated
+    )
+
+    /// Called on the main thread when a device disconnects mid-recording.
+    /// RecorderViewModel sets this so it can run the full stop / notification
+    /// / upload path rather than having AudioEngine duplicate that logic.
+    var onDisconnectedDuringRecording: (() -> Void)?
+
     // AAC-LC's allowed input sample rates per the standard. Anything else
     // makes the encoder reject samples with "Cannot Encode Media."
     private static let aacSupportedSampleRates: Set<Double> = [
@@ -86,15 +98,29 @@ class AudioEngine: NSObject, ObservableObject {
         aacSupportedSampleRates.contains(rate) ? rate : aacFallbackSampleRate
     }
 
-    private var heldPeakDb: Float = -60
-    private var smoothedRmsDb: Float = -60
-    private var peakHoldUntil: CFAbsoluteTime = 0
-    private var clipHoldUntil: CFAbsoluteTime = 0
-    private let peakHoldSeconds: CFAbsoluteTime = 1.0
-    private var lastMeterUpdate: CFAbsoluteTime = 0
-
     override init() {
         super.init()
+        refreshDevices()
+        // Refresh the device list whenever the system wakes or the app comes
+        // to front — devices plugged in while DoublEnder was in the background
+        // otherwise stay hidden in the picker until something else triggers a
+        // config-change notification.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRefreshTrigger),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleRefreshTrigger),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleRefreshTrigger() {
+        guard !isRecording else { return }
         refreshDevices()
     }
 
@@ -134,6 +160,15 @@ class AudioEngine: NSObject, ObservableObject {
             return
         }
 
+        // M5: flag sample rates ≤ 16 kHz — almost always Bluetooth SCO (8 kHz)
+        // or a misconfigured device. Doesn't block recording; just surfaces the
+        // warning so the user can switch to a better input.
+        let isLowQuality = hwFormat.sampleRate <= 16_000
+        if isLowQuality {
+            logger.warning("Input rate \(hwFormat.sampleRate, privacy: .public) Hz — possible Bluetooth SCO or low-quality device.")
+        }
+        DispatchQueue.main.async { self.lowQualityInput = isLowQuality }
+
         guard let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: hwFormat.sampleRate, channels: hwFormat.channelCount, interleaved: false) else {
             let message = "Could not create tap format for selected input."
             DispatchQueue.main.async { self.lastError = message }
@@ -144,8 +179,25 @@ class AudioEngine: NSObject, ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] (buffer, _) in
             guard let self = self else { return }
-            self.updateMetersAndClip(buffer: buffer)
-            self.appendBufferToWriter(buffer)
+            // Skip the copy+dispatch overhead while not recording.
+            guard self.isRecording else { return }
+
+            // Copy audio data before the engine can reclaim the buffer.
+            // AVAudioPCMBuffer alloc + memcpy is the minimum work needed on
+            // the RT thread; everything else (NSLock, conversion, file I/O,
+            // CMSampleBuffer construction) runs on writerQueue below.
+            let fmt = buffer.format
+            let frameLength = buffer.frameLength
+            guard let copy = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frameLength) else { return }
+            copy.frameLength = frameLength
+            if let src = buffer.floatChannelData, let dst = copy.floatChannelData {
+                for c in 0..<Int(fmt.channelCount) {
+                    memcpy(dst[c], src[c], Int(frameLength) * MemoryLayout<Float>.size)
+                }
+            }
+            self.writerQueue.async { [weak self] in
+                self?.appendBufferToWriter(copy)
+            }
         }
 
         newEngine.prepare()
@@ -168,18 +220,13 @@ class AudioEngine: NSObject, ObservableObject {
         logger.info("AVAudioEngine configuration changed (isRecording: \(self.isRecording, privacy: .public))")
 
         if isRecording {
-            // Recording in progress — save what we have, then surface the error.
-            stopRecording { [weak self] result in
-                guard let self else { return }
-                let msg: String
-                switch result {
-                case .success:
-                    msg = "Recording device disconnected. Your recording was saved."
-                case .failure:
-                    msg = "Recording device disconnected. The recording could not be saved."
-                }
-                DispatchQueue.main.async { self.lastError = msg }
-            }
+            // Recording in progress. Setting isRecording = false prevents
+            // new buffers from being dispatched to writerQueue. The VM's
+            // onDisconnectedDuringRecording callback then calls its own
+            // stopRecording, which drains writerQueue and finalizes the
+            // writer — ensuring notification and Cloud upload happen too.
+            isRecording = false
+            onDisconnectedDuringRecording?()
         } else {
             // Not recording — rebuild silently with the system default device.
             // This handles both spurious startup notifications and real device
@@ -241,7 +288,16 @@ class AudioEngine: NSObject, ObservableObject {
         // AVAssetWriter refuses to start if the file already exists.
         if FileManager.default.fileExists(atPath: fileURL.path) {
             logger.warning("Output file already exists — removing: \(fileURL.lastPathComponent, privacy: .public)")
-            try? FileManager.default.removeItem(at: fileURL)
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch {
+                // A locked or in-use file (iCloud sync, other app) gives a
+                // confusing "file exists" error from AVAssetWriter — surface
+                // the real reason instead.
+                throw RecordingError.writerFailedToStart(
+                    "Could not remove existing file '\(fileURL.lastPathComponent)': \(error.localizedDescription)"
+                )
+            }
         }
 
         // Pick a sample rate the encoder will actually accept. AAC silently
@@ -328,6 +384,12 @@ class AudioEngine: NSObject, ObservableObject {
         // safety net. Sidecar rate matches the writer so playback parity
         // is preserved on recovery.
         let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: encoderRate, channels: 1)
+        // M4: flag when the safety net is unavailable so the UI can warn.
+        let sidecarMissing = sidecar == nil
+        if sidecarMissing {
+            logger.warning("PCMSidecar init failed — this recording has no crash-recovery safety net.")
+        }
+        DispatchQueue.main.async { self.sidecarUnavailable = sidecarMissing }
 
         writerLock.lock()
         assetWriter = writer
@@ -349,6 +411,10 @@ class AudioEngine: NSObject, ObservableObject {
     /// confirmation path.
     func cancelRecording(completion: @escaping () -> Void) {
         isRecording = false
+        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        // Drain any buffer-copy dispatches that were already in flight on
+        // writerQueue before isRecording was cleared.
+        writerQueue.sync {}
 
         writerLock.lock()
         let writer = assetWriter
@@ -475,9 +541,10 @@ class AudioEngine: NSObject, ObservableObject {
                 // Capture and clear writer state so no further appends occur.
                 let failedWriter = assetWriter
                 // 4. Surface the writer's actual localized error verbatim.
-                //    The previous wrapper text obscured useful diagnostics.
-                let err = assetWriter?.error?.localizedDescription
-                    ?? "AVAssetWriter status \(assetWriter?.status.rawValue ?? -1)"
+                //    Use the already-captured local rather than re-reading the
+                //    property, which will be nilled on the very next line.
+                let err = failedWriter?.error?.localizedDescription
+                    ?? "AVAssetWriter status \(failedWriter?.status.rawValue ?? -1)"
                 assetWriter = nil
                 assetWriterInput = nil
                 limiter = nil
@@ -577,76 +644,12 @@ class AudioEngine: NSObject, ObservableObject {
         return sampleBuffer
     }
     
-    private func updateMetersAndClip(buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData else { return }
-        let frameCount = Int(buffer.frameLength)
-        let channelCount = Int(buffer.format.channelCount)
-        guard frameCount > 0, channelCount > 0 else { return }
-
-        var sumSquares: Float = 0
-        var peakLin: Float = 0
-        var ceilingHit = false
-        let ceiling = limiterCeilingLinear
-
-        for c in 0..<channelCount {
-            let data = channelData[c]
-            for i in 0..<frameCount {
-                let s = data[i]
-                sumSquares += s * s
-                let a = abs(s)
-                if a > peakLin { peakLin = a }
-                if a >= ceiling { ceilingHit = true }
-            }
-        }
-
-        let frameTotal = Float(frameCount * channelCount)
-        let rmsLin = sqrt(sumSquares / frameTotal)
-        let rawRmsDb  = rmsLin  > 1e-6 ? 20 * log10(rmsLin)  : meterFloorDb
-        let rawPeakDb = peakLin > 1e-6 ? 20 * log10(peakLin) : meterFloorDb
-
-        let now = CFAbsoluteTimeGetCurrent()
-        let dt: Float
-        if lastMeterUpdate == 0 {
-            dt = 0
-            smoothedRmsDb = rawRmsDb
-            heldPeakDb = rawPeakDb
-        } else {
-            dt = Float(now - lastMeterUpdate)
-        }
-        lastMeterUpdate = now
-
-        // RMS — asymmetric one-pole in dB space.
-        let rmsCoeff: Float = rawRmsDb > smoothedRmsDb
-            ? expf(-dt / rmsAttackSec)
-            : expf(-dt / rmsReleaseSec)
-        smoothedRmsDb = rmsCoeff * smoothedRmsDb + (1 - rmsCoeff) * rawRmsDb
-        smoothedRmsDb = max(meterFloorDb, smoothedRmsDb)
-
-        // Peak — instant rise, hold, then dB-rate decay.
-        if rawPeakDb >= heldPeakDb {
-            heldPeakDb = rawPeakDb
-            peakHoldUntil = now + peakHoldSeconds
-        } else if now > peakHoldUntil {
-            heldPeakDb = max(meterFloorDb, heldPeakDb - peakDecayDbPerSec * dt)
-        }
-
-        let rmsNorm  = max(0, min(1, (smoothedRmsDb - meterFloorDb) / -meterFloorDb))
-        let peakNorm = max(0, min(1, (heldPeakDb  - meterFloorDb) / -meterFloorDb))
-
-        if ceilingHit {
-            clipHoldUntil = now + clipLatchSeconds
-        }
-        let clip = now < clipHoldUntil
-
-        DispatchQueue.main.async {
-            self.rmsLevel = rmsNorm
-            self.peakLevel = peakNorm
-            if self.clipDetected != clip { self.clipDetected = clip }
-        }
-    }
-    
     func stopRecording(completion: @escaping (Result<URL, Error>) -> Void) {
         isRecording = false
+        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        // Drain any buffer-copy dispatches that were already in flight on
+        // writerQueue before isRecording was cleared.
+        writerQueue.sync {}
 
         writerLock.lock()
         let writer = assetWriter

@@ -20,8 +20,6 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: DoublEnder
-        excludes:
-          - "DoublEnderLite.entitlements"
     settings:
       base:
         PRODUCT_NAME: DoublEnder
@@ -49,7 +47,6 @@ targets:
       - path: DoublEnder
         excludes:
           - "DoublEnder.entitlements"
-          - "DoublEnderLite.entitlements"
       - path: DoublEnderCloud/doublender-10af32ff2d11.json
         buildPhase: resources
     settings:

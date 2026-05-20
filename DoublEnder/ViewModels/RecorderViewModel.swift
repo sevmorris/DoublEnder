@@ -56,9 +56,6 @@ class RecorderViewModel: ObservableObject {
 
     @Published var state: AppState = .selectingMic
     @Published var recordingTime: TimeInterval = 0
-    @Published var rmsLevel: Float = 0
-    @Published var peakLevel: Float = 0
-    @Published var clipDetected: Bool = false
     #if GCS_ENABLED
     @Published var uploadProgress: Double = 0
     #endif
@@ -95,6 +92,17 @@ class RecorderViewModel: ObservableObject {
         return false
     }
 
+    /// Non-fatal condition worth surfacing in the UI, or nil.
+    /// Shown as a compact warning line below the counter in ContentView.
+    var recordingWarning: String? {
+        // SCO / low-quality input: show regardless of recording state so the
+        // user can switch devices before pressing record.
+        if audioEngine.lowQualityInput { return "Low-quality input (BT SCO?)" }
+        // Sidecar failure: only relevant once recording has started.
+        if isCurrentlyRecording && audioEngine.sidecarUnavailable { return "No crash recovery" }
+        return nil
+    }
+
     private let audioEngine = AudioEngine()
     #if GCS_ENABLED
     private let uploader = Uploader()
@@ -115,9 +123,15 @@ class RecorderViewModel: ObservableObject {
 
     init() {
         audioEngine.$availableInputDevices.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        audioEngine.$rmsLevel.receive(on: DispatchQueue.main).assign(to: &$rmsLevel)
-        audioEngine.$peakLevel.receive(on: DispatchQueue.main).assign(to: &$peakLevel)
-        audioEngine.$clipDetected.receive(on: DispatchQueue.main).assign(to: &$clipDetected)
+        // Forward engine warning flags so ContentView re-renders when they change.
+        audioEngine.$lowQualityInput
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        audioEngine.$sidecarUnavailable
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         #if GCS_ENABLED
         uploader.$progress.receive(on: DispatchQueue.main).assign(to: &$uploadProgress)
         #endif
@@ -139,6 +153,33 @@ class RecorderViewModel: ObservableObject {
             outputFormat = format
         }
 
+        // C3 / M1 / M2: When the audio device disconnects mid-recording,
+        // AudioEngine signals us here (on the main thread) instead of running
+        // its own stop path. This ensures the full VM stop — timer cancel,
+        // "recording saved" notification, Cloud upload — all happen correctly.
+        // After the stop we also rebuild the engine (M1) and re-validate the
+        // selected device (M2) so the app is ready for the next take without
+        // requiring the user to re-pick a device.
+        audioEngine.onDisconnectedDuringRecording = { [weak self] in
+            guard let self else { return }
+            self.stopRecording {
+                // Rebuild with the best available device.
+                self.audioEngine.refreshDevices()
+                let devices = self.availableInputDevices
+                if let device = devices.first(where: { $0.uniqueID == self.selectedInputDeviceID }) {
+                    // M1: selected device is still present — reconnect to it.
+                    self.audioEngine.setDevice(device)
+                } else if let first = devices.first {
+                    // M2: selected device is gone — fall back to the first
+                    // available device. didSet persists the choice and
+                    // calls setDevice → rebuildEngine automatically.
+                    self.selectedInputDeviceID = first.uniqueID
+                }
+                // If no input devices are available at all, the engine stays
+                // stopped; the user will see the normal "no device" state.
+            }
+        }
+
         requestPermissions()
     }
 
@@ -148,13 +189,20 @@ class RecorderViewModel: ObservableObject {
                 guard let self = self else { return }
                 if granted {
                     self.audioEngine.refreshDevices()
-                    self.audioEngine.start()
-                    let saved = UserDefaults.standard.string(forKey: Self.selectedDeviceKey) ?? ""
                     let devices = self.audioEngine.availableInputDevices
+                    let saved = UserDefaults.standard.string(forKey: Self.selectedDeviceKey) ?? ""
+                    // m7: restore the saved device ID *before* starting the
+                    // engine so it builds with the right device directly —
+                    // avoids the start-then-immediately-rebuild churn that
+                    // happened when the selection was restored afterwards.
                     if devices.contains(where: { $0.uniqueID == saved }) {
-                        self.selectedInputDeviceID = saved
+                        self.selectedInputDeviceID = saved  // triggers setDevice → rebuildEngine
                     } else if let first = devices.first {
                         self.selectedInputDeviceID = first.uniqueID
+                    } else {
+                        // No devices at all — start with system default and
+                        // wait for the user to plug something in.
+                        self.audioEngine.start()
                     }
                     self.state = .ready
                 } else {
@@ -216,6 +264,7 @@ class RecorderViewModel: ObservableObject {
                 #else
                 Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
                 self.recordingTime = 0
+                self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready
                 #endif
             case .failure(let error):
@@ -255,6 +304,13 @@ class RecorderViewModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Self.filenameBaseKey)
     }
 
+    /// Called from `applicationWillFinishLaunching` — before the VM is
+    /// initialised — so that a crash or force-quit in a prior session doesn't
+    /// leave a stale custom filename in UserDefaults for the next launch.
+    static func eraseSessionDefaults() {
+        UserDefaults.standard.removeObject(forKey: filenameBaseKey)
+    }
+
     /// Directory recordings are written to. Shared with AppDelegate's
     /// crash-recovery scan so the two never disagree on where to look.
     static var recordingsDirectory: URL {
@@ -264,11 +320,27 @@ class RecorderViewModel: ObservableObject {
 
     private func makeRecordingURL() -> URL {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        // POSIX locale prevents locale-specific characters (am/pm, RTL
+        // markers, non-Gregorian calendars) from appearing in filenames.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        // Millisecond precision shrinks the same-timestamp collision window
+        // from 1 second to 1 ms — effectively impossible in practice.
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
         let prefix = filenameBase.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = prefix.isEmpty ? "DoublEnder" : prefix
-        let filename = "\(base)_\(formatter.string(from: Date())).\(outputFormat.fileExtension)"
-        return Self.recordingsDirectory.appendingPathComponent(filename)
+        let timestamp = formatter.string(from: Date())
+        let ext = outputFormat.fileExtension
+        let dir = Self.recordingsDirectory
+
+        // De-duplicate defensively: if two recordings land on the exact same
+        // millisecond (or a stale file already exists), append _2, _3, …
+        var candidate = dir.appendingPathComponent("\(base)_\(timestamp).\(ext)")
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = dir.appendingPathComponent("\(base)_\(timestamp)_\(n).\(ext)")
+            n += 1
+        }
+        return candidate
     }
 
     #if GCS_ENABLED
@@ -276,6 +348,12 @@ class RecorderViewModel: ObservableObject {
     /// AppDelegate at launch to offer to finish an interrupted upload.
     var persistedPendingUploadPath: String? {
         UserDefaults.standard.string(forKey: Self.pendingUploadKey)
+    }
+
+    /// Persist the path of the recording whose upload is in progress.
+    /// Using this helper keeps all pendingUploadKey read/write in one place.
+    private func setPendingUpload(path: String) {
+        UserDefaults.standard.set(path, forKey: Self.pendingUploadKey)
     }
 
     /// Forget the pending upload (called on success, or when the user skips
@@ -315,7 +393,7 @@ class RecorderViewModel: ObservableObject {
         }
 
         let contentType = outputFormat == .wav ? "audio/wav" : "audio/mp4"
-        UserDefaults.standard.set(fileURL.path, forKey: Self.pendingUploadKey)
+        setPendingUpload(path: fileURL.path)
 
         let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
         var attempt = 0

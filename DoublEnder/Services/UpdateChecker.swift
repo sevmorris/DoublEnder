@@ -2,6 +2,27 @@ import AppKit
 
 actor UpdateChecker {
 
+    /// The running app's marketing version string, read once per check.
+    /// A computed property avoids the repeated `infoDictionary` lookup that
+    /// appeared in both the public and Cloud branches (m16).
+    private var installedVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
+    /// Strip pre-release suffixes (`-rc1`, `-beta.2`, etc.) so that a tagged
+    /// beta on GitHub never triggers an "update available" prompt for
+    /// production users (m4). Only the numeric `major.minor.patch` part is
+    /// used for comparison.
+    private static func numericVersion(_ raw: String) -> String {
+        // Accept digits and dots up to (but not including) any non-numeric /
+        // non-dot character (hyphen, tilde, plus …).
+        let stripped = raw.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
+        if let range = stripped.range(of: #"[^0-9.]"#, options: .regularExpression) {
+            return String(stripped[..<range.lowerBound])
+        }
+        return stripped
+    }
+
     enum Result {
         case upToDate(version: String)
         case available(version: String, downloadURL: URL, releaseURL: URL)
@@ -50,8 +71,8 @@ actor UpdateChecker {
 
             let release = try JSONDecoder().decode(Release.self, from: data)
 
-            let latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
-            let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+            let latestVersion = Self.numericVersion(release.tagName)
+            let currentVersion = installedVersion
             guard !currentVersion.isEmpty else { return .error("Could not read app version.") }
 
             guard let releaseURL = URL(string: release.htmlUrl)
@@ -100,13 +121,13 @@ actor UpdateChecker {
             }
 
             let manifest = try JSONDecoder().decode(CloudManifest.self, from: data)
-            let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+            let currentVersion = installedVersion
             guard !currentVersion.isEmpty else { return .error("Could not read app version.") }
             guard let downloadURL = URL(string: manifest.url) else {
                 return .error("Invalid download URL in manifest.")
             }
 
-            if manifest.version.compare(currentVersion, options: .numeric) == .orderedDescending {
+            if Self.numericVersion(manifest.version).compare(currentVersion, options: .numeric) == .orderedDescending {
                 return .available(version: manifest.version,
                                   downloadURL: downloadURL,
                                   releaseURL: downloadURL)

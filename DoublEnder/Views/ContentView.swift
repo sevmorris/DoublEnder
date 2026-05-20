@@ -2,10 +2,9 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
-// Accent for secondary surfaces — kept on the same phosphor green as the
-// counter digits so light text, borders, and buttons read as part of one
-// visual family. (Name preserved to keep this diff small.)
-private let accentBlue = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+// Accent for secondary surfaces — phosphor green matching the counter digits
+// so light text, borders, and buttons read as part of one visual family.
+private let appAccent = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
 private let panelStroke = Color(red: 0xC0/255, green: 0xC0/255, blue: 0xC0/255)
 // Dark neutral surface for popovers and secondary windows. Background is a
 // deep grey with near-white primary text, tied to the main panel by the
@@ -107,11 +106,29 @@ struct ContentView: View {
         VStack(spacing: 0) {
             Spacer().frame(height: 16)
             counterWindow
+            warningBadge
             Spacer().frame(height: 8)
             middleRow
             // Flexible — the bottom of the window is pure grill now that the
             // meter is gone, so let the spacer absorb whatever room is left.
             Spacer(minLength: 8)
+        }
+    }
+
+    /// Compact one-line warning shown below the counter when a non-fatal
+    /// condition needs the user's attention (M4 sidecar unavailable, M5 SCO).
+    @ViewBuilder private var warningBadge: some View {
+        if let msg = viewModel.recordingWarning {
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(msg)
+                    .font(.system(size: 9, weight: .medium))
+                    .tracking(0.4)
+            }
+            .foregroundColor(.yellow.opacity(0.80))
+            .frame(height: 14)
+            .padding(.top, 3)
         }
     }
 
@@ -271,7 +288,7 @@ struct ContentView: View {
                     .foregroundColor(secondaryText)
                 ProgressView(value: viewModel.uploadProgress)
                     .progressViewStyle(.linear)
-                    .tint(accentBlue)
+                    .tint(appAccent)
                     .frame(width: 168)
                 Text("\(Int(viewModel.uploadProgress * 100))%")
                     .font(.system(size: 14, weight: .bold))
@@ -289,7 +306,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.icloud.fill")
                     .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(accentBlue)
+                    .foregroundStyle(appAccent)
 
                 Text("Recording saved to Desktop. Upload failed — tap Retry to try again.")
                     .font(.system(size: 11, weight: .medium))
@@ -309,7 +326,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(accentBlue)
+                    .foregroundStyle(appAccent)
 
                 Text(message)
                     .font(.system(size: 11, weight: .medium))
@@ -342,7 +359,7 @@ private struct SecondaryCard<Content: View>: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(accentBlue, lineWidth: 1.5)
+                    .strokeBorder(appAccent, lineWidth: 1.5)
             )
             .preferredColorScheme(.dark)
     }
@@ -366,7 +383,7 @@ private struct SecondaryButton: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -436,7 +453,7 @@ private struct DevicePickerPopover: View {
         Text(text)
             .font(.system(size: 9, weight: .bold))
             .tracking(1.5)
-            .foregroundColor(accentBlue)
+            .foregroundColor(appAccent)
             .padding(.horizontal, 12)
             .padding(.top, topPadding)
             .padding(.bottom, 4)
@@ -456,7 +473,7 @@ private struct DevicePickerPopover: View {
                 if selectedID == device.uniqueID {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(accentBlue)
+                        .foregroundColor(appAccent)
                 }
             }
             .contentShape(Rectangle())
@@ -478,7 +495,7 @@ private struct SettingsPopover: View {
             Text("SETTINGS")
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.8)
-                .foregroundColor(accentBlue)
+                .foregroundColor(appAccent)
 
             // Filename
             VStack(alignment: .leading, spacing: 4) {
@@ -548,7 +565,15 @@ private struct SettingsPopover: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .tint(accentBlue)
+                .tint(appAccent)
+                // M7: inform users with hi-res or multi-channel interfaces why
+                // they might prefer WAV for a given session.
+                Text(viewModel.outputFormat == .aac
+                     ? "Recorded as mono, 256 kbps. For multi-channel or >96 kHz sources, use WAV."
+                     : "Recorded as mono at the hardware sample rate (uncompressed).")
+                    .font(.system(size: 9))
+                    .foregroundColor(secondaryText.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(16)
@@ -562,6 +587,6 @@ private struct SettingsPopover: View {
         Text(text)
             .font(.system(size: 9, weight: .bold))
             .tracking(1.2)
-            .foregroundColor(accentBlue)
+            .foregroundColor(appAccent)
     }
 }

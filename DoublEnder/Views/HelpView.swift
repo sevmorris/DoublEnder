@@ -1,5 +1,12 @@
 import SwiftUI
 
+// Palette kept in sync with ContentView / RecoveryView so the help window
+// reads as part of the same product rather than a generic system document.
+private let helpSurface  = Color(red: 0x1A/255, green: 0x1A/255, blue: 0x1A/255)
+private let helpText     = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
+private let helpAccent   = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+private let helpSecondary = Color(red: 0xA0/255, green: 0xA0/255, blue: 0xA0/255)
+
 struct HelpView: View {
     var body: some View {
         ScrollView {
@@ -33,7 +40,6 @@ struct HelpView: View {
                 section("Quick Start") {
                     steps([
                         "Click the mic icon (left) to pick your input device.",
-                        "Speak normally and watch the level meter — aim for green, avoid red. If the CLIP indicator lights up, you're too loud.",
                         "Hit the big red button to start recording. The timer counts up.",
                         "Hit the button again to stop. Your file is saved to the Desktop.",
                         "A macOS notification appears with a Reveal in Finder action — use it to jump straight to the file, then send it to your host."
@@ -51,20 +57,6 @@ struct HelpView: View {
                     definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically.")
                     definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info.")
                     definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (32-bit float, uncompressed). Defaults to AAC.")
-                }
-
-                dividerRow
-
-                section("Reading the Meter") {
-                    text("""
-                    The segmented bar lights from left to right with the RMS level \
-                    (your average loudness) and holds the recent peak. The color zones are:
-                    """)
-                    definition("Green (−60 to −12 dBFS)", "Good recording level. Aim to stay here.")
-                    definition("Yellow (−12 to −6 dBFS)", "Getting loud. Still fine for brief peaks.")
-                    definition("Orange (−6 to −3 dBFS)", "Hot. Pull back unless this is the loudest moment of the take.")
-                    definition("Red (−3 to 0 dBFS)", "Too loud. The limiter is working hard here.")
-                    definition("CLIP indicator", "Lit red when peaks hit the limiter ceiling. Back off your mic position or gain.")
                 }
 
                 dividerRow
@@ -108,6 +100,8 @@ struct HelpView: View {
             .padding(30)
         }
         .frame(width: 520, height: 640)
+        .background(helpSurface)
+        .preferredColorScheme(.dark)  // M11: match the rest of the app's dark palette
     }
 
     // MARK: - Components
@@ -116,9 +110,10 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("DoublEnder Help")
                 .font(.largeTitle.bold())
+                .foregroundColor(helpText)
             Text("Simple Audio Recorder for macOS")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundColor(helpSecondary)
         }
     }
 
@@ -131,12 +126,14 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.title2.bold())
+                .foregroundColor(helpAccent)
             content()
         }
     }
 
     private func text(_ string: String) -> some View {
         Text(string)
+            .foregroundColor(helpText)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -146,8 +143,10 @@ struct HelpView: View {
                 HStack(alignment: .top, spacing: 8) {
                     Text("\(index + 1).")
                         .font(.body.bold())
+                        .foregroundColor(helpAccent)
                         .frame(width: 20, alignment: .trailing)
                     Text(item)
+                        .foregroundColor(helpText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -158,8 +157,9 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(term)
                 .font(.body.bold())
+                .foregroundColor(helpText)
             Text(detail)
-                .foregroundStyle(.secondary)
+                .foregroundColor(helpSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.bottom, 4)

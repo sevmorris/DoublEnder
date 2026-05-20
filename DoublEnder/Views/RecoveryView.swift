@@ -5,7 +5,7 @@ private let secondarySurface = Color(red: 0x2A/255, green: 0x2A/255, blue: 0x2A/
 private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
 private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
 // Phosphor green — matches the counter digits in the main panel.
-private let accentBlue       = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+private let appAccent       = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
 
 /// Drives the crash-recovery dialog through its phases. The expensive
 /// sidecar→WAV conversion runs off the main thread so the window keeps
@@ -92,7 +92,7 @@ struct RecoveryView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(accentBlue, lineWidth: 1.5)
+                .strokeBorder(appAccent, lineWidth: 1.5)
         )
         .preferredColorScheme(.dark)
     }
@@ -165,7 +165,7 @@ struct RecoveryView: View {
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 30, weight: .semibold))
-            .foregroundStyle(accentBlue)
+            .foregroundStyle(appAccent)
     }
 
     private func title(_ text: String) -> some View {
@@ -201,7 +201,7 @@ struct RecoveryView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()

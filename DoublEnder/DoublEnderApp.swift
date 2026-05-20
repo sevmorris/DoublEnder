@@ -64,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         registerBundledFonts()
         NotificationService.shared.configure()
+        // m5: clear session-scoped settings (custom filename) before the VM
+        // is initialised — this is the only reliable path that also runs after
+        // a crash or force-quit, where applicationWillTerminate never fires.
+        RecorderViewModel.eraseSessionDefaults()
     }
 
     /// Windows exist but haven't been ordered front yet — configure the main
@@ -85,9 +89,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Final cleanup on clean termination — wipe session-scoped settings
     /// (custom filename, notes) so the next launch starts fresh.
+    /// Also wiped at `applicationWillFinishLaunching` to cover crashes.
     func applicationWillTerminate(_ notification: Notification) {
         RecorderViewModel.shared.clearSessionSettings()
-        UserDefaults.standard.synchronize()
+        // synchronize() has been a documented no-op since macOS 10.12 —
+        // the OS flushes UserDefaults automatically. Removed (m6).
     }
 
     /// Quit intercept: if recording, surface the save/discard/cancel choice
@@ -172,9 +178,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let fm = FileManager.default
         let dir = RecorderViewModel.recordingsDirectory
 
-        guard let entries = try? fm.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil
-        ) else { return }
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        } catch {
+            // M10: log rather than silently skip — if the Desktop is
+            // inaccessible (permission revoked, sandboxed), the user
+            // should be able to diagnose it from the unified log.
+            logger.error("Crash recovery scan failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
 
         let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
         guard !sidecars.isEmpty else { return }
@@ -236,7 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.level = .modalPanel
-        window.center()
+        centerModal(window)
 
         model.onFinished = { [weak window] in
             NSApp.stopModal()
@@ -245,6 +258,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.runModal(for: window)
+    }
+
+    // MARK: - Modal placement
+
+    /// Centre `window` on the same screen as the main window, falling back to
+    /// the primary screen if neither can be determined. `NSWindow.center()`
+    /// always targets the primary screen, which is wrong on multi-monitor rigs
+    /// where the user runs DoublEnder on a secondary display (m17).
+    private func centerModal(_ window: NSWindow) {
+        let screen = mainWindow?.screen ?? NSScreen.main
+        guard let screen else { window.center(); return }
+        let sf = screen.visibleFrame
+        let wf = window.frame
+        window.setFrameOrigin(NSPoint(
+            x: sf.midX - wf.width / 2,
+            y: sf.midY - wf.height / 2
+        ))
     }
 
     // MARK: - Fonts

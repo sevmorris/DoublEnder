@@ -6,7 +6,7 @@ private let secondarySurface = Color(red: 0x2A/255, green: 0x2A/255, blue: 0x2A/
 private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
 private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
 // Phosphor green — matches the counter digits in the main panel.
-private let accentBlue       = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+private let appAccent       = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
 
 /// Upload-result confirmation for the DoublEnder Cloud build.
 ///
@@ -41,7 +41,7 @@ struct UploadConfirmationView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(accentBlue, lineWidth: 1.5)
+                .strokeBorder(appAccent, lineWidth: 1.5)
         )
         .preferredColorScheme(.dark)
     }
@@ -51,7 +51,7 @@ struct UploadConfirmationView: View {
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 30, weight: .semibold))
-            .foregroundStyle(accentBlue)
+            .foregroundStyle(appAccent)
     }
 
     private func title(_ text: String) -> some View {
@@ -87,7 +87,7 @@ struct UploadConfirmationView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -122,10 +122,22 @@ enum UploadConfirmation {
         window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.level = .modalPanel
-        window.center()
+        centerOnAppScreen(window)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.runModal(for: window)
+    }
+
+    /// Centre `window` on the same screen that the main app window occupies,
+    /// falling back to the primary screen (m17 — multi-monitor placement).
+    fileprivate static func centerOnAppScreen(_ window: NSWindow) {
+        let screen = NSApp.windows
+            .first(where: { !$0.isMiniaturized && $0.isVisible && $0 !== window })?.screen
+            ?? NSScreen.main
+        guard let screen else { window.center(); return }
+        let sf = screen.visibleFrame
+        let wf = window.frame
+        window.setFrameOrigin(NSPoint(x: sf.midX - wf.width / 2, y: sf.midY - wf.height / 2))
     }
 }
 
@@ -159,7 +171,7 @@ struct PendingUploadView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(accentBlue, lineWidth: 1.5)
+                .strokeBorder(appAccent, lineWidth: 1.5)
         )
         .preferredColorScheme(.dark)
     }
@@ -167,7 +179,7 @@ struct PendingUploadView: View {
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 30, weight: .semibold))
-            .foregroundStyle(accentBlue)
+            .foregroundStyle(appAccent)
     }
 
     private func title(_ text: String) -> some View {
@@ -203,7 +215,7 @@ struct PendingUploadView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(accentBlue, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -241,7 +253,7 @@ enum PendingUploadPrompt {
         window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.level = .modalPanel
-        window.center()
+        UploadConfirmation.centerOnAppScreen(window)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.runModal(for: window)
