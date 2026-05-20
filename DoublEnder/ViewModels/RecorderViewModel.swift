@@ -56,6 +56,9 @@ class RecorderViewModel: ObservableObject {
 
     @Published var state: AppState = .selectingMic
     @Published var recordingTime: TimeInterval = 0
+    /// Current input level in dBFS (-60…0), forwarded from AudioEngine.
+    /// Used by the viewport level meter; resets to -60 when recording stops.
+    @Published var rmsLevel: Float = -60
     #if GCS_ENABLED
     @Published var uploadProgress: Double = 0
     #endif
@@ -132,6 +135,9 @@ class RecorderViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        audioEngine.$rmsLevel
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$rmsLevel)
         #if GCS_ENABLED
         uploader.$progress.receive(on: DispatchQueue.main).assign(to: &$uploadProgress)
         #endif

@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import AVFoundation
+import Accelerate
 import Combine
 import OSLog
 
@@ -41,6 +42,10 @@ class AudioEngine: NSObject, ObservableObject {
     @Published var selectedInputDevice: AVCaptureDevice?
 
     @Published var lastError: String?
+    /// Current input level in dBFS (-60…0). Updated on every recorded buffer
+    /// via writerQueue; reset to -60 on stop/cancel. Display-only — never
+    /// affects the recording pipeline.
+    @Published var rmsLevel: Float = -60
     /// True when the PCM sidecar could not be opened for this recording —
     /// crash recovery is unavailable for the current take. (M4)
     @Published var sidecarUnavailable: Bool = false
@@ -411,7 +416,7 @@ class AudioEngine: NSObject, ObservableObject {
     /// confirmation path.
     func cancelRecording(completion: @escaping () -> Void) {
         isRecording = false
-        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        DispatchQueue.main.async { self.sidecarUnavailable = false; self.rmsLevel = -60 }
         // Drain any buffer-copy dispatches that were already in flight on
         // writerQueue before isRecording was cleared.
         writerQueue.sync {}
@@ -534,7 +539,16 @@ class AudioEngine: NSObject, ObservableObject {
         if writerInput.append(sampleBuffer) {
             writerFrameCount += Int64(convertedBuffer.frameLength)
             consecutiveWriteErrors = 0
+            // Meter: compute RMS from the already-converted mono buffer.
+            // vDSP_rmsqv is fast and runs here on writerQueue, not the RT thread.
+            var rms: Float = 0
+            if let data = convertedBuffer.floatChannelData?[0] {
+                vDSP_rmsqv(data, 1, &rms, vDSP_Length(convertedBuffer.frameLength))
+            }
+            let db = rms > 1e-9 ? 20.0 * log10f(rms) : -60
+            let clamped = max(-60, min(0, db))
             writerLock.unlock()
+            DispatchQueue.main.async { self.rmsLevel = clamped }
         } else {
             consecutiveWriteErrors += 1
             if consecutiveWriteErrors >= writeErrorThreshold {
@@ -646,7 +660,7 @@ class AudioEngine: NSObject, ObservableObject {
     
     func stopRecording(completion: @escaping (Result<URL, Error>) -> Void) {
         isRecording = false
-        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        DispatchQueue.main.async { self.sidecarUnavailable = false; self.rmsLevel = -60 }
         // Drain any buffer-copy dispatches that were already in flight on
         // writerQueue before isRecording was cleared.
         writerQueue.sync {}

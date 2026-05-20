@@ -2,28 +2,37 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
-// Accent for secondary surfaces — phosphor green matching the counter digits
-// so light text, borders, and buttons read as part of one visual family.
-private let appAccent = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
-private let panelStroke = Color(red: 0xC0/255, green: 0xC0/255, blue: 0xC0/255)
-// Dark neutral surface for popovers and secondary windows. Background is a
-// deep grey with near-white primary text, tied to the main panel by the
-// accent-blue border / button outline.
+// MARK: - Design tokens
+
+/// New window size — matches frame.png aspect ratio (5480 : 4680 ≈ 1.17 : 1).
+private let windowSize = CGSize(width: 420, height: 358)
+
+/// Viewport insets — the area revealed by the frame.png cutout.
+private let vpTop:      CGFloat = 38
+private let vpLeading:  CGFloat = 58
+private let vpTrailing: CGFloat = 58
+private let vpBottom:   CGFloat = 52
+
+/// Amber: counter digits, record button text, meter segments, labels.
+private let vpAmber  = Color(red: 1.0,        green: 165/255, blue: 0)
+/// Muted green border matching the counter outline in the mockup (#7FBF7F).
+private let vpBorder = Color(red: 127/255,    green: 191/255, blue: 127/255)
+/// Very dark warm surface — slightly warmer than pure black.
+private let vpSurface = Color(red: 18/255,    green: 15/255,  blue: 10/255)
+
+/// Phosphor green accent kept for secondary surfaces (popovers, error card borders).
+private let appAccent      = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+private let panelStroke    = Color(red: 0xC0/255, green: 0xC0/255, blue: 0xC0/255)
 private let secondarySurface = Color(red: 0x2A/255, green: 0x2A/255, blue: 0x2A/255)
 private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
 private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
-private let windowSize = CGSize(width: 320, height: 338)
-private let grillBandHeight: CGFloat = 93
 
+// MARK: - CRT font helper
 
-// CRT-style timer readout: phosphor green digits in a clean wide sans-serif.
-// Eurostile/Bank Gothic ship with some pro design suites but not stock macOS,
-// so the helper walks a preferred-name list and falls back to SF Mono Bold
-// if none are installed.
-private let phosphorGreen = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
 private let crtFontCandidates: [String] = [
     "EurostileLTStd-Bold", "Eurostile-Bold", "Eurostile",
-    "BankGothicBT-Medium", "BankGothic-Medium", "Bank Gothic"
+    "BankGothicBT-Medium", "BankGothic-Medium", "Bank Gothic",
+    "DSEG7Classic-Regular"
 ]
 
 private func crtFont(size: CGFloat) -> Font {
@@ -33,56 +42,84 @@ private func crtFont(size: CGFloat) -> Font {
     return .system(size: size, weight: .bold, design: .monospaced)
 }
 
-struct ContentView: View {
-    // Singleton — AppDelegate also references this for quit-intercept and
-    // crash-recovery checks, and the view simply observes its state.
-    @ObservedObject private var viewModel = RecorderViewModel.shared
-    @State private var isStopping = false            // true while finishWriting is in flight; blocks double-tap
-    @State private var showDevicePicker = false
-    @State private var showSettings = false
+// MARK: - ContentView
 
-    // Phosphor-green CRT readout sits in a pure-black counter box.
-    private let lcdBackground = Color.black
+struct ContentView: View {
+    @ObservedObject private var viewModel = RecorderViewModel.shared
+    @State private var isStopping    = false
+    @State private var showDevicePicker = false
+    @State private var showSettings  = false
+    /// Drives the LED blink and RECORD-button red pulse in perfect sync.
+    @State private var ledFlashOn    = false
+
+    /// Single shared publisher — LED image and record-button fill both read
+    /// this flag so they are always in phase (spec §5).
+    private let flashPublisher = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ZStack {
-            backgroundChrome
+            // 1 ── Viewport background (behind frame cutout)
+            viewportBackground
+
+            // 2 ── State-switched content, padded to the viewport cutout
             content
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(EdgeInsets(
+                    top: vpTop, leading: vpLeading,
+                    bottom: vpBottom, trailing: vpTrailing
+                ))
+
+            // 3 ── Metal frame overlay (transparent cutout reveals content)
+            Image("frame")
+                .resizable()
+                .frame(width: windowSize.width, height: windowSize.height)
+                .allowsHitTesting(false)
+
+            // 4 ── LED indicator, positioned in top-left bezel
+            Image(isRecordingState && ledFlashOn ? "led_on" : "led_off")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 22, height: 22)
+                .position(x: 52, y: 44)
+                .allowsHitTesting(false)
+
+            // 5 ── Input selector — left bezel
+            inputSelector
+                .position(x: 29, y: 207)
+
+            // 6 ── Settings — right bezel
+            gearButton
+                .position(x: 391, y: 207)
         }
         .frame(width: windowSize.width, height: windowSize.height)
         .background(.clear)
+        .onReceive(flashPublisher) { _ in
+            if isRecordingState { ledFlashOn.toggle() }
+            else { ledFlashOn = false }
+        }
     }
 
-    // Hard-edged rectangle: full black panel with a grill band at the bottom
-    // and a single silver hairline border. The grill runs straight into all
-    // four corners — no clip shape to truncate it. A soft radial vignette
-    // sits on top of the panel to nudge the eye toward the lens at centre.
-    private var backgroundChrome: some View {
-        ZStack(alignment: .bottom) {
-            Color.black
-            Image("grill")
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(height: grillBandHeight)
-                .frame(maxWidth: .infinity)
-                .clipped()
-        }
-        .overlay(
-            RadialGradient(
-                colors: [.clear, Color.black.opacity(0.3)],
-                center: .center,
-                startRadius: 70,
-                endRadius: 230
-            )
+    // MARK: - Viewport background
+
+    /// Warm dark grey with subtle scanlines — sells the physical-screen illusion.
+    private var viewportBackground: some View {
+        ZStack {
+            vpSurface
+            Canvas { context, size in
+                let lineSpacing: CGFloat = 3
+                var y: CGFloat = 0
+                while y < size.height {
+                    context.fill(
+                        Path(CGRect(x: 0, y: y, width: size.width, height: 1)),
+                        with: .color(.black.opacity(0.07))
+                    )
+                    y += lineSpacing
+                }
+            }
             .allowsHitTesting(false)
-        )
-        .overlay(
-            Rectangle()
-                .strokeBorder(panelStroke, lineWidth: 1.5)
-        )
+        }
     }
+
+    // MARK: - State switch
 
     @ViewBuilder
     private var content: some View {
@@ -104,19 +141,44 @@ struct ContentView: View {
 
     private var mainView: some View {
         VStack(spacing: 0) {
-            Spacer().frame(height: 16)
+            Spacer().frame(height: 14)
             counterWindow
             warningBadge
-            Spacer().frame(height: 8)
-            middleRow
-            // Flexible — the bottom of the window is pure grill now that the
-            // meter is gone, so let the spacer absorb whatever room is left.
-            Spacer(minLength: 8)
+            Spacer().frame(height: 12)
+            recordStopButton
+            Spacer().frame(height: 10)
+            LevelMeter(level: viewModel.rmsLevel)
+                .frame(maxWidth: .infinity)
+            Spacer(minLength: 6)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Compact one-line warning shown below the counter when a non-fatal
-    /// condition needs the user's attention (M4 sidecar unavailable, M5 SCO).
+    // MARK: - Counter window
+
+    private var counterWindow: some View {
+        ZStack {
+            vpSurface
+            Text(viewModel.recordingTime.hhmmss)
+                .font(crtFont(size: 30))
+                .tracking(2)
+                .foregroundColor(vpAmber)
+                .shadow(color: vpAmber.opacity(0.85), radius: 5)
+            Image("counter_reflection")
+                .resizable()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(0.4)
+                .blendMode(.screen)
+                .allowsHitTesting(false)
+        }
+        .frame(width: 248, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(vpBorder, lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.45), radius: 3, x: 0, y: 1)
+    }
+
+    // MARK: - Warning badge
+
     @ViewBuilder private var warningBadge: some View {
         if let msg = viewModel.recordingWarning {
             HStack(spacing: 4) {
@@ -132,63 +194,61 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Counter window (top)
+    // MARK: - RECORD / STOP button
 
-    private var counterWindow: some View {
-        ZStack {
-            // 1. Black LCD background.
-            lcdBackground
-
-            // 2. Phosphor-green digits with CRT glow.
-            Text(viewModel.recordingTime.hhmmss)
-                .font(crtFont(size: 30))
-                .tracking(2)
-                .foregroundColor(phosphorGreen)
-                .shadow(color: phosphorGreen.opacity(0.85), radius: 5)
-
-            // 3. Glossy curved highlight on top. `.screen` at 0.4 lifts the
-            //    reflection over the dark background without flattening the
-            //    bright green digits the way `.overlay` did.
-            Image("counter_reflection")
-                .resizable()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .opacity(0.4)
-                .blendMode(.screen)
-                .allowsHitTesting(false)
-        }
-        .frame(width: 248, height: 60)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(panelStroke, lineWidth: 1.5))
-        .shadow(color: .black.opacity(0.45), radius: 3, x: 0, y: 1)
+    private var isRecordingState: Bool {
+        if case .recording = viewModel.state { return true }
+        return false
     }
 
-    // MARK: - Middle row (mic selector + record button + gear)
-
-    private var middleRow: some View {
-        ZStack {
-            recordButton
-            HStack {
-                inputSelector
-                Spacer(minLength: 0)
-                gearButton
+    private var recordStopButton: some View {
+        Button { handleRecordTap() } label: {
+            ZStack {
+                // Red fill pulses in sync with the LED when recording.
+                if isRecordingState && ledFlashOn {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(red: 0.8, green: 0.0, blue: 0.0))
+                }
+                Text(isRecordingState ? "STOP" : "RECORD")
+                    .font(crtFont(size: 17))
+                    .tracking(3)
+                    .foregroundColor(vpAmber)
+                    .shadow(color: vpAmber.opacity(0.75), radius: 4)
             }
-            // Visually the record button's lit centre sits a little above
-            // the geometric midpoint of the 135pt image, so nudge the
-            // flanking icons up to read as truly aligned with the lens.
-            .offset(y: -6)
+            .frame(width: 248, height: 42)
+            .background(vpSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(vpBorder, lineWidth: 1.5)
+            )
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 135)
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .disabled(isStopping)
     }
+
+    private func handleRecordTap() {
+        switch viewModel.state {
+        case .recording:
+            guard !isStopping else { return }
+            isStopping = true
+            viewModel.stopRecording { isStopping = false }
+        case .selectingMic, .ready:
+            viewModel.startRecording()
+        default:
+            break
+        }
+    }
+
+    // MARK: - Input selector (left bezel)
 
     private var inputSelector: some View {
-        Button {
-            showDevicePicker.toggle()
-        } label: {
-            Image("mic")
+        Button { showDevicePicker.toggle() } label: {
+            Image("input_button")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 48, height: 48)
+                .frame(width: 38, height: 38)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -208,76 +268,26 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Gear / settings
+    // MARK: - Settings (right bezel)
 
     private var gearButton: some View {
-        Button {
-            showSettings.toggle()
-        } label: {
-            Image("gear")
+        Button { showSettings.toggle() } label: {
+            Image("settings_button")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 31, height: 31)
+                .frame(width: 38, height: 38)
                 .contentShape(Rectangle())
-                .padding(.trailing, 10)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .disabled(isRecordingState)
         .help(isRecordingState ? "Settings unavailable while recording" : "Settings")
-        .popover(isPresented: $showSettings, arrowEdge: .top) {
+        .popover(isPresented: $showSettings, arrowEdge: .leading) {
             SettingsPopover(viewModel: viewModel)
         }
     }
 
-    // MARK: - Record button
-
-    private var isRecordingState: Bool {
-        if case .recording = viewModel.state { return true }
-        return false
-    }
-
-    // Both record_button_on / record_button_off render at the same size
-    // and crossfade by opacity while recording. Nothing wraps them — no
-    // ring, no border, just the image itself.
-    private static let recordButtonSize: CGFloat = 135
-
-    private var recordButton: some View {
-        Group {
-            if isRecordingState {
-                // Crossfade between the two states while recording. View is
-                // conditionally mounted so SwiftUI tears down the repeating
-                // animation the instant recording stops — no timers, no
-                // animation cancellation to chase.
-                RecordCrossfade(size: Self.recordButtonSize)
-            } else {
-                Image("record_button_off")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: Self.recordButtonSize, height: Self.recordButtonSize)
-            }
-        }
-        .frame(width: Self.recordButtonSize, height: Self.recordButtonSize)
-        .contentShape(Circle())
-        .onTapGesture { handleRecordTap() }
-    }
-
-    private func handleRecordTap() {
-        switch viewModel.state {
-        case .recording:
-            guard !isStopping else { return }
-            isStopping = true
-            viewModel.stopRecording {
-                isStopping = false
-            }
-        case .selectingMic, .ready:
-            viewModel.startRecording()
-        default:
-            break
-        }
-    }
-
-    // MARK: - Other state views
+    // MARK: - Secondary state views
 
     #if GCS_ENABLED
     private var uploadingView: some View {
@@ -298,23 +308,18 @@ struct ContentView: View {
         }
     }
 
-    /// Upload failed after automatic retries. The recording is safe on the
-    /// Desktop — only the upload needs retrying, so this is visually the
-    /// error view but reassures the user and re-attempts just the upload.
     private func uploadFailedView(_ url: URL) -> some View {
         SecondaryCard {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.icloud.fill")
                     .font(.system(size: 30, weight: .semibold))
                     .foregroundStyle(appAccent)
-
                 Text("Recording saved to Desktop. Upload failed — tap Retry to try again.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(secondaryText)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 8)
-
                 SecondaryButton("RETRY UPLOAD") { viewModel.retryUpload() }
             }
         }
@@ -327,26 +332,110 @@ struct ContentView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 30, weight: .semibold))
                     .foregroundStyle(appAccent)
-
                 Text(message)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(secondaryText)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 8)
-
                 SecondaryButton("TRY AGAIN") { viewModel.reset() }
             }
         }
     }
 }
 
-// MARK: - Secondary surface components
+// MARK: - Level meter
 
-/// Light-grey rounded card used for every non-primary surface (popovers,
-/// in-window dialogs). Mirrors the silver-stroke aesthetic of the main
-/// window with an accent-blue border instead of silver, so secondary UI
-/// reads as related-but-distinct from the dark recording panel.
+private struct LevelMeter: View {
+    let level: Float  // -60 … 0 dBFS
+
+    private static let segCount = 40
+    private static let dbMin: Float = -60
+    private static let dbMax: Float =   0
+
+    private let amber  = vpAmber
+    private let border = vpBorder
+    private let bg     = vpSurface
+
+    private func segColor(index: Int) -> Color {
+        let db  = Self.dbMin + Float(index) / Float(Self.segCount) * (Self.dbMax - Self.dbMin)
+        let lit = level >= db
+        let base: Color
+        if      db < -12 { base = amber }
+        else if db <  -6 { base = Color(red: 1.0, green: 0.72, blue: 0.0) }
+        else if db <  -3 { base = Color(red: 1.0, green: 0.30, blue: 0.0) }
+        else             { base = Color(red: 0.85, green: 0.04, blue: 0.0) }
+        return lit ? base : base.opacity(0.14)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // ── Segment bar + CLIP ──────────────────────────────────────
+            HStack(spacing: 4) {
+                // 40 segments drawn with Canvas for precise sizing.
+                Canvas { ctx, size in
+                    let n   = Self.segCount
+                    let gap: CGFloat = 1.5
+                    let inset: CGFloat = 3
+                    let availW = size.width - inset * 2
+                    let availH = size.height - inset * 2
+                    let sw = (availW - CGFloat(n - 1) * gap) / CGFloat(n)
+                    for i in 0..<n {
+                        let db  = Self.dbMin + Float(i) / Float(n) * (Self.dbMax - Self.dbMin)
+                        let lit = level >= db
+                        let base: Color
+                        if      db < -12 { base = vpAmber }
+                        else if db <  -6 { base = Color(red: 1.0, green: 0.72, blue: 0.0) }
+                        else if db <  -3 { base = Color(red: 1.0, green: 0.30, blue: 0.0) }
+                        else             { base = Color(red: 0.85, green: 0.04, blue: 0.0) }
+                        let c = lit ? base : base.opacity(0.14)
+                        let x = inset + CGFloat(i) * (sw + gap)
+                        let rect = CGRect(x: x, y: inset, width: max(sw, 1), height: availH)
+                        ctx.fill(RoundedRectangle(cornerRadius: 1).path(in: rect), with: .color(c))
+                    }
+                }
+                .frame(height: 22)
+                .background(bg)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(border, lineWidth: 1.2))
+
+                // CLIP indicator
+                let clipping = level >= -0.1
+                Text("CLIP")
+                    .font(.system(size: 7, weight: .bold))
+                    .tracking(0.4)
+                    .foregroundColor(clipping ? .white : amber.opacity(0.22))
+                    .frame(width: 28, height: 28)
+                    .background(clipping ? Color(red: 0.8, green: 0, blue: 0) : bg)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(border, lineWidth: 1.2))
+            }
+
+            // ── dBFS scale labels ───────────────────────────────────────
+            GeometryReader { geo in
+                // Subtract CLIP box width + gap to align labels with segment area only.
+                let clipOffset: CGFloat = 28 + 4
+                let segW = geo.size.width - clipOffset
+                let labels: [(Float, String)] = [
+                    (-60, "-60"), (-48, "-48"), (-36, "-36"),
+                    (-24, "-24"), (-12, "-12"), (-6, "-6"), (0, "0")
+                ]
+                ForEach(0..<labels.count, id: \.self) { i in
+                    let (db, text) = labels[i]
+                    let frac = CGFloat((db - Self.dbMin) / (Self.dbMax - Self.dbMin))
+                    Text(text)
+                        .font(.system(size: 7, weight: .medium, design: .monospaced))
+                        .foregroundColor(amber.opacity(0.55))
+                        .position(x: frac * segW, y: 5)
+                }
+            }
+            .frame(height: 12)
+        }
+    }
+}
+
+// MARK: - Secondary surface components (popovers, error card)
+
 private struct SecondaryCard<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
@@ -390,43 +479,13 @@ private struct SecondaryButton: View {
     }
 }
 
-// MARK: - Record-button recording crossfade
-
-/// Smoothly crossfades between record_button_off and record_button_on while
-/// recording. Lives only as long as it's mounted — when the parent stops
-/// including it in the hierarchy, SwiftUI tears it down and the repeating
-/// animation goes with it. No timers, no animation cancellation to manage.
-private struct RecordCrossfade: View {
-    let size: CGFloat
-    @State private var onOpacity: Double = 0.0
-
-    var body: some View {
-        ZStack {
-            Image("record_button_off")
-                .resizable()
-                .scaledToFit()
-                .frame(width: size, height: size)
-            Image("record_button_on")
-                .resizable()
-                .scaledToFit()
-                .frame(width: size, height: size)
-                .opacity(onOpacity)
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
-                onOpacity = 1.0
-            }
-        }
-    }
-}
-
-// MARK: - Device Picker Popover
+// MARK: - Device picker popover
 
 private struct DevicePickerPopover: View {
-    let microphones: [AVCaptureDevice]
+    let microphones:    [AVCaptureDevice]
     let virtualDevices: [AVCaptureDevice]
-    let selectedID: String
-    let onSelect: (String) -> Void
+    let selectedID:     String
+    let onSelect:       (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -434,12 +493,8 @@ private struct DevicePickerPopover: View {
                 sectionHeader("MICROPHONES", topPadding: 10)
                 ForEach(microphones, id: \.uniqueID) { row($0, dimmed: false) }
             }
-
             if !virtualDevices.isEmpty {
-                sectionHeader(
-                    "VIRTUAL & AGGREGATE",
-                    topPadding: microphones.isEmpty ? 10 : 12
-                )
+                sectionHeader("VIRTUAL & AGGREGATE", topPadding: microphones.isEmpty ? 10 : 12)
                 ForEach(virtualDevices, id: \.uniqueID) { row($0, dimmed: true) }
             }
         }
@@ -460,9 +515,7 @@ private struct DevicePickerPopover: View {
     }
 
     private func row(_ device: AVCaptureDevice, dimmed: Bool) -> some View {
-        Button {
-            onSelect(device.uniqueID)
-        } label: {
+        Button { onSelect(device.uniqueID) } label: {
             HStack {
                 Text(device.localizedName)
                     .font(.system(size: 11))
@@ -485,7 +538,7 @@ private struct DevicePickerPopover: View {
     }
 }
 
-// MARK: - Settings Popover
+// MARK: - Settings popover
 
 private struct SettingsPopover: View {
     @ObservedObject var viewModel: RecorderViewModel
@@ -508,12 +561,8 @@ private struct SettingsPopover: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .background(secondaryFieldBg)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 3)
-                                .stroke(panelStroke, lineWidth: 1)
-                        )
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(panelStroke, lineWidth: 1))
                         .clipShape(RoundedRectangle(cornerRadius: 3))
-
                     Text("_<date>.\(viewModel.outputFormat.fileExtension)")
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundColor(secondaryText.opacity(0.55))
@@ -543,10 +592,7 @@ private struct SettingsPopover: View {
                 }
                 .frame(height: 56)
                 .background(secondaryFieldBg)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(panelStroke, lineWidth: 1)
-                )
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(panelStroke, lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 3))
                 if viewModel.outputFormat == .wav {
                     Text("Notes are not stored in WAV files.")
@@ -566,8 +612,6 @@ private struct SettingsPopover: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .tint(appAccent)
-                // M7: inform users with hi-res or multi-channel interfaces why
-                // they might prefer WAV for a given session.
                 Text(viewModel.outputFormat == .aac
                      ? "Recorded as mono, 256 kbps. For multi-channel or >96 kHz sources, use WAV."
                      : "Recorded as mono at the hardware sample rate (uncompressed).")
