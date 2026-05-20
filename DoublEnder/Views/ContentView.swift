@@ -493,7 +493,7 @@ private struct SettingsPopover: View {
                         .background(secondaryFieldBg)
                         .overlay(
                             RoundedRectangle(cornerRadius: 3)
-                                .stroke(accentBlue, lineWidth: 1)
+                                .stroke(panelStroke, lineWidth: 1)
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 3))
 
@@ -528,7 +528,7 @@ private struct SettingsPopover: View {
                 .background(secondaryFieldBg)
                 .overlay(
                     RoundedRectangle(cornerRadius: 3)
-                        .stroke(accentBlue, lineWidth: 1)
+                        .stroke(panelStroke, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 3))
                 if viewModel.outputFormat == .wav {
