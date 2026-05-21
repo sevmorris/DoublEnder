@@ -212,7 +212,8 @@ struct ContentView: View {
                 .allowsHitTesting(false)
         }
         .frame(width: windowSize.width, height: windowSize.height)
-        .background(.clear)
+        .background(Color.clear)
+        .ignoresSafeArea()
         .onReceive(flashPublisher) { _ in
             if isRecordingState { ledFlashOn.toggle() }
             else { ledFlashOn = false }

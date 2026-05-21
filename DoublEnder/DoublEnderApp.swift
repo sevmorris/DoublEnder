@@ -120,21 +120,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         mainWindow = window
         window.delegate = self
-        window.styleMask = [.borderless, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
+        // .fullSizeContentView is only meaningful for titled windows; on a
+        // borderless window it is a no-op but has been observed to leave a
+        // stale chrome layer active in some builds — drop it.
+        // titlebarAppearsTransparent is also redundant for .borderless.
+        window.styleMask = [.borderless]
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        // Clear the NSHostingView's backing CALayer so transparent regions
-        // in the frame image (rounded outer corners) composite to genuine
-        // alpha-zero pixels rather than a system-default layer fill colour.
-        // Without this, macOS leaves an opaque patch visible in the bottom-
-        // right corner of the borderless transparent window.
-        if let cv = window.contentView {
-            cv.wantsLayer = true
-            cv.layer?.backgroundColor = NSColor.clear.cgColor
+
+        // ── 1. Hosting-view layer ────────────────────────────────────────────
+        // Cast explicitly to NSHostingView<ContentView> so we are certain we
+        // are clearing the SwiftUI hosting view's own CALayer, not a wrapper.
+        // SwiftUI sometimes initialises this layer with a non-zero fill colour
+        // which shows through wherever the frame image has transparent pixels
+        // (the rounded outer corners), most visibly in the bottom-right.
+        if let hv = window.contentView as? NSHostingView<ContentView> {
+            hv.wantsLayer = true
+            hv.layer?.backgroundColor = CGColor.clear
+            hv.layer?.isOpaque = false
+        } else {
+            // Fallback for any build variant where the generic cast fails.
+            window.contentView?.wantsLayer = true
+            window.contentView?.layer?.backgroundColor = CGColor.clear
+            window.contentView?.layer?.isOpaque = false
         }
+
+        // ── 2. NSThemeFrame chrome layers ────────────────────────────────────
+        // The NSThemeFrame (superview of contentView) and any sibling views
+        // macOS injects alongside the hosting view can carry opaque CALayers.
+        // Walk every view in that layer — skipping the hosting view itself,
+        // which SwiftUI manages — and force their layers clear.
+        if let frameView = window.contentView?.superview {
+            frameView.wantsLayer = true
+            frameView.layer?.backgroundColor = CGColor.clear
+            frameView.layer?.isOpaque = false
+            for sub in frameView.subviews where sub !== window.contentView {
+                sub.wantsLayer = true
+                sub.layer?.backgroundColor = CGColor.clear
+                sub.layer?.isOpaque = false
+            }
+        }
+
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
