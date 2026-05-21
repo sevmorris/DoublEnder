@@ -55,8 +55,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderCloud
         INFOPLIST_KEY_CFBundleDisplayName: DoublEnder Cloud
         # Independent of the public app's MARKETING_VERSION (settings.base).
-        # release-cloud.sh auto-increments this patch on every run.
-        MARKETING_VERSION: "1.5.6"
+        # release-cloud.sh auto-increments the patch on every run, preserving
+        # the "ce" suffix that distinguishes Cloud builds from the public app.
+        MARKETING_VERSION: "1.5.6ce"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIconCloud
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: GCS_ENABLED
         CODE_SIGN_STYLE: Automatic
