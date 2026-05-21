@@ -6,7 +6,7 @@
   <br />
   <strong>Version:</strong> 1.6.3
   <br />
-  <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.6.5.dmg"><strong>Download Latest (DMG)</strong></a>
+  <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.6.6.dmg"><strong>Download Latest (DMG)</strong></a>
   ·
   <a href="https://sevmorris.github.io/DoublEnder/">App Page</a>
 </p>
