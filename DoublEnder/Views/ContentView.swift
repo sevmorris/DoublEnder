@@ -786,7 +786,7 @@ private struct SettingsPopover: View {
                 .tint(appAccent)
                 Text(viewModel.outputFormat == .aac
                      ? "Recorded as mono, 256 kbps. Smaller file size, transparent quality for voice."
-                     : "Uncompressed audio at the hardware's native sample rate. Recommended for high-sample-rate sources or archival.")
+                     : "Uncompressed 24-bit PCM at the hardware's native sample rate. Professional quality, universally compatible.")
                     .font(.system(size: 11))
                     .foregroundColor(secondaryText.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)

@@ -10,6 +10,13 @@ import OSLog
 /// post-limiter mono float samples into a flat raw-PCM file with a tiny
 /// self-describing header. Even an abruptly-truncated sidecar re-wraps
 /// cleanly into a valid WAV at next launch.
+///
+/// The sidecar deliberately stays at 32-bit float even though the main WAV
+/// writer ships 24-bit integer. This is a recovery-only path — the user
+/// only sees a sidecar-derived file when the main writer never finalized —
+/// so preserving the source samples verbatim (no requantization to int24)
+/// is the safer choice. Recovered WAVs are written as 32-bit float for the
+/// same reason.
 final class PCMSidecar {
     /// Extension appended to the main output path: `Recording.m4a.pcmrec`.
     static let pathExtension = "pcmrec"

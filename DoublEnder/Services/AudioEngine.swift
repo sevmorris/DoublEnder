@@ -356,18 +356,24 @@ class AudioEngine: NSObject, ObservableObject {
                 AVEncoderBitRateKey: aacBitRate
             ]
         case .wav:
-            // 32-bit signed integer PCM — maximally compatible with
-            // AVAssetWriter's WAV container. The writer converts the float32
-            // CMSampleBuffers we supply; no lossless quality is sacrificed
-            // since int32 range fully covers the 24-bit source depth of any
-            // real-world interface. Float32 WAV causes canAdd() to return false
-            // on some macOS versions.
+            // 24-bit signed integer PCM — the professional-audio standard for
+            // uncompressed delivery. Universally compatible with podcast/DAW
+            // tooling, ~25% smaller than int32 with no audible loss. The
+            // writer converts the float32 CMSampleBuffers we supply down to
+            // int24 internally; AVAudioConverter is not needed because
+            // AVAssetWriter's WAV path handles float→int packing itself.
+            //
+            // The PCM sidecar (PCMSidecar.swift) stays at 32-bit float — it
+            // is only used as a crash-recovery fallback when the main writer
+            // never finalizes, and float32 preserves the source samples
+            // verbatim with no requantization loss. Recovered WAVs from the
+            // sidecar are written as 32-bit float; the main WAV is 24-bit int.
             fileType = .wav
             outputSettings = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: encoderRate,
                 AVNumberOfChannelsKey: 1,
-                AVLinearPCMBitDepthKey: 32,
+                AVLinearPCMBitDepthKey: 24,
                 AVLinearPCMIsBigEndianKey: false,
                 AVLinearPCMIsFloatKey: false,
                 AVLinearPCMIsNonInterleaved: false

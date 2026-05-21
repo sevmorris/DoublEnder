@@ -26,7 +26,7 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 
 ## Features
 
-- **One-button recording** to AAC (M4A, 256 kbps) or WAV (32-bit float), mono, at the input's native sample rate
+- **One-button recording** to AAC (M4A, 256 kbps) or WAV (24-bit PCM), mono, at the input's native sample rate
 - **Settings popover** (gear icon) — override the filename prefix, attach notes (written as file description metadata), or switch output format
 - **Input selector** — pick any system audio input from the mic dropdown
 - **Segmented LED level meter** — 40 segments with green / amber / red zones and a CLIP indicator
@@ -37,14 +37,14 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 - **Crash recovery** — if the app exits unexpectedly mid-record, the next launch offers to keep or delete the orphaned file
 - **Update checker** — Check for Updates… in the app menu polls GitHub releases for new versions
 
-**Output:** `DoublEnder_<timestamp>.m4a` saved to your Desktop (or `.wav` if WAV is selected). The filename prefix is overridable from the settings popover.
+**Output:** `DoublEnder_<timestamp>.m4a` saved to your Desktop (or `.wav` if WAV is selected — 24-bit PCM, mono, at the hardware's native sample rate). The filename prefix is overridable from the settings popover.
 
 ---
 
 ## Operational Specifications
 
 - **Environment:** macOS 14.0+ (Sonoma); Apple Silicon and Intel
-- **Output Format:** AAC/M4A (256 kbps) or WAV (32-bit float), mono
+- **Output Format:** AAC/M4A (256 kbps) or WAV (24-bit PCM), mono
 - **Dependencies:** None — fully self-contained
 
 ## Build

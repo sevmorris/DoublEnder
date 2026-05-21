@@ -56,7 +56,7 @@ struct HelpView: View {
                     """)
                     definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically.")
                     definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info.")
-                    definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (32-bit float, uncompressed). Defaults to AAC.")
+                    definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (24-bit PCM, uncompressed). Defaults to AAC.")
                 }
 
                 dividerRow
@@ -65,8 +65,8 @@ struct HelpView: View {
                     text("""
                     Recordings are saved to your Desktop as \
                     DoublEnder_<date>.m4a — AAC audio, 256 kbps, mono. If you \
-                    pick WAV in settings, the file is saved as .wav (32-bit \
-                    float, uncompressed) instead. The prefix follows whatever \
+                    pick WAV in settings, the file is saved as .wav (24-bit \
+                    PCM, uncompressed) instead. The prefix follows whatever \
                     you set under Filename.
                     """)
                     text("""
