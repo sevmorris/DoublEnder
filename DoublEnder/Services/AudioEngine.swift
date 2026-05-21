@@ -19,7 +19,7 @@ enum RecordingError: LocalizedError {
         case .engineNotRunning:
             return "Audio engine is not running. Select an input and try again."
         case .cannotAddInput:
-            return "Cannot add AAC audio input to asset writer."
+            return "Cannot add audio input to asset writer."
         case .writerFailedToStart(let reason):
             return "AVAssetWriter failed to start: \(reason)"
         case .noActiveRecording:
@@ -184,6 +184,19 @@ class AudioEngine: NSObject, ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] (buffer, _) in
             guard let self = self else { return }
+            // Meter: compute RMS on every buffer so the level display is live
+            // at all times, not only during recording. vDSP_rmsqv is pure
+            // math — RT-safe. The main-queue dispatch is the only non-RT
+            // operation; the overhead is negligible at 44–48 calls/sec.
+            if let data = buffer.floatChannelData?[0] {
+                var rms: Float = 0
+                vDSP_rmsqv(data, 1, &rms, vDSP_Length(buffer.frameLength))
+                let db = rms > 1e-9 ? 20.0 * log10f(rms) : -60
+                DispatchQueue.main.async { [weak self] in
+                    self?.rmsLevel = max(-60, min(0, db))
+                }
+            }
+
             // Skip the copy+dispatch overhead while not recording.
             guard self.isRecording else { return }
 
@@ -343,8 +356,12 @@ class AudioEngine: NSObject, ObservableObject {
                 AVEncoderBitRateKey: aacBitRate
             ]
         case .wav:
-            // 32-bit float PCM matches our source sample format exactly, so
-            // AVAssetWriter passes samples through with no conversion.
+            // 32-bit signed integer PCM — maximally compatible with
+            // AVAssetWriter's WAV container. The writer converts the float32
+            // CMSampleBuffers we supply; no lossless quality is sacrificed
+            // since int32 range fully covers the 24-bit source depth of any
+            // real-world interface. Float32 WAV causes canAdd() to return false
+            // on some macOS versions.
             fileType = .wav
             outputSettings = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
@@ -352,7 +369,7 @@ class AudioEngine: NSObject, ObservableObject {
                 AVNumberOfChannelsKey: 1,
                 AVLinearPCMBitDepthKey: 32,
                 AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsFloatKey: true,
+                AVLinearPCMIsFloatKey: false,
                 AVLinearPCMIsNonInterleaved: false
             ]
         }
@@ -416,7 +433,7 @@ class AudioEngine: NSObject, ObservableObject {
     /// confirmation path.
     func cancelRecording(completion: @escaping () -> Void) {
         isRecording = false
-        DispatchQueue.main.async { self.sidecarUnavailable = false; self.rmsLevel = -60 }
+        DispatchQueue.main.async { self.sidecarUnavailable = false }
         // Drain any buffer-copy dispatches that were already in flight on
         // writerQueue before isRecording was cleared.
         writerQueue.sync {}
@@ -539,16 +556,7 @@ class AudioEngine: NSObject, ObservableObject {
         if writerInput.append(sampleBuffer) {
             writerFrameCount += Int64(convertedBuffer.frameLength)
             consecutiveWriteErrors = 0
-            // Meter: compute RMS from the already-converted mono buffer.
-            // vDSP_rmsqv is fast and runs here on writerQueue, not the RT thread.
-            var rms: Float = 0
-            if let data = convertedBuffer.floatChannelData?[0] {
-                vDSP_rmsqv(data, 1, &rms, vDSP_Length(convertedBuffer.frameLength))
-            }
-            let db = rms > 1e-9 ? 20.0 * log10f(rms) : -60
-            let clamped = max(-60, min(0, db))
             writerLock.unlock()
-            DispatchQueue.main.async { self.rmsLevel = clamped }
         } else {
             consecutiveWriteErrors += 1
             if consecutiveWriteErrors >= writeErrorThreshold {
@@ -660,7 +668,7 @@ class AudioEngine: NSObject, ObservableObject {
     
     func stopRecording(completion: @escaping (Result<URL, Error>) -> Void) {
         isRecording = false
-        DispatchQueue.main.async { self.sidecarUnavailable = false; self.rmsLevel = -60 }
+        DispatchQueue.main.async { self.sidecarUnavailable = false }
         // Drain any buffer-copy dispatches that were already in flight on
         // writerQueue before isRecording was cleared.
         writerQueue.sync {}

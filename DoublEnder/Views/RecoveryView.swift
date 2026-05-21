@@ -6,6 +6,8 @@ private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/
 private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
 // Phosphor green — matches the counter digits in the main panel.
 private let appAccent       = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
+// Muted green border — matches the viewport screen boxes (#7FBF7F).
+private let vpBorder        = Color(red: 127/255,  green: 191/255,  blue: 127/255)
 
 /// Drives the crash-recovery dialog through its phases. The expensive
 /// sidecar→WAV conversion runs off the main thread so the window keeps
@@ -92,7 +94,7 @@ struct RecoveryView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(appAccent, lineWidth: 1.5)
+                .strokeBorder(vpBorder, lineWidth: 1.5)
         )
         .preferredColorScheme(.dark)
     }

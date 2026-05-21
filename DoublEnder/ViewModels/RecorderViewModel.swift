@@ -175,11 +175,11 @@ class RecorderViewModel: ObservableObject {
                 if let device = devices.first(where: { $0.uniqueID == self.selectedInputDeviceID }) {
                     // M1: selected device is still present — reconnect to it.
                     self.audioEngine.setDevice(device)
-                } else if let first = devices.first {
-                    // M2: selected device is gone — fall back to the first
-                    // available device. didSet persists the choice and
+                } else if let device = self.preferredDefaultDevice() {
+                    // M2: selected device is gone — fall back to the best
+                    // available hardware mic. didSet persists the choice and
                     // calls setDevice → rebuildEngine automatically.
-                    self.selectedInputDeviceID = first.uniqueID
+                    self.selectedInputDeviceID = device.uniqueID
                 }
                 // If no input devices are available at all, the engine stays
                 // stopped; the user will see the normal "no device" state.
@@ -187,6 +187,14 @@ class RecorderViewModel: ObservableObject {
         }
 
         requestPermissions()
+    }
+
+    /// First hardware mic (built-in, USB, Bluetooth) in discovery order,
+    /// falling back to the first virtual/aggregate device, then nil.
+    /// Used wherever the app needs to pick a sensible default without user input.
+    private func preferredDefaultDevice() -> AVCaptureDevice? {
+        let groups = audioEngine.groupedInputDevices()
+        return groups.microphones.first ?? groups.virtual.first
     }
 
     private func requestPermissions() {
@@ -203,8 +211,10 @@ class RecorderViewModel: ObservableObject {
                     // happened when the selection was restored afterwards.
                     if devices.contains(where: { $0.uniqueID == saved }) {
                         self.selectedInputDeviceID = saved  // triggers setDevice → rebuildEngine
-                    } else if let first = devices.first {
-                        self.selectedInputDeviceID = first.uniqueID
+                    } else if let device = self.preferredDefaultDevice() {
+                        // No saved device (or it's gone) — pick the best
+                        // hardware mic automatically, avoiding virtual devices.
+                        self.selectedInputDeviceID = device.uniqueID
                     } else {
                         // No devices at all — start with system default and
                         // wait for the user to plug something in.
