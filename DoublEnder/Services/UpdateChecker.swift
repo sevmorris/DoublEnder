@@ -83,7 +83,7 @@ actor UpdateChecker {
                 .flatMap { URL(string: $0.browserDownloadUrl) }
                 ?? releaseURL
 
-            if latestVersion.compare(currentVersion, options: .numeric) == .orderedDescending {
+            if latestVersion.compare(Self.numericVersion(currentVersion), options: .numeric) == .orderedDescending {
                 return .available(version: latestVersion, downloadURL: downloadURL, releaseURL: releaseURL)
             } else {
                 return .upToDate(version: currentVersion)
@@ -127,7 +127,7 @@ actor UpdateChecker {
                 return .error("Invalid download URL in manifest.")
             }
 
-            if Self.numericVersion(manifest.version).compare(currentVersion, options: .numeric) == .orderedDescending {
+            if Self.numericVersion(manifest.version).compare(Self.numericVersion(currentVersion), options: .numeric) == .orderedDescending {
                 return .available(version: manifest.version,
                                   downloadURL: downloadURL,
                                   releaseURL: downloadURL)
