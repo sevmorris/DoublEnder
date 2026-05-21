@@ -57,7 +57,7 @@ targets:
         # Independent of the public app's MARKETING_VERSION (settings.base).
         # release-cloud.sh auto-increments the patch on every run, preserving
         # the "ce" suffix that distinguishes Cloud builds from the public app.
-        MARKETING_VERSION: "1.5.10ce"
+        MARKETING_VERSION: "1.5.11ce"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIconCloud
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: GCS_ENABLED
         CODE_SIGN_STYLE: Automatic
