@@ -269,6 +269,11 @@ class RecorderViewModel: ObservableObject {
                     completion?()
                     return
                 }
+                // Notify the user that the recording is on disk — fires for both
+                // DoublEnder and DoublEnderCloud so every saved file gets a
+                // system notification with a Reveal in Finder action, regardless
+                // of whether an upload follows.
+                Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
                 #if GCS_ENABLED
                 // The file is finalized on disk. Hand off to the uploader and
                 // let the .uploading state drive the progress UI. The stop
@@ -278,7 +283,6 @@ class RecorderViewModel: ObservableObject {
                 self.state = .uploading
                 Task { await self.performUpload() }
                 #else
-                Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
                 self.recordingTime = 0
                 self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready

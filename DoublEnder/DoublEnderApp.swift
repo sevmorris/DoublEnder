@@ -126,6 +126,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
+        // Clear the NSHostingView's backing CALayer so transparent regions
+        // in the frame image (rounded outer corners) composite to genuine
+        // alpha-zero pixels rather than a system-default layer fill colour.
+        // Without this, macOS leaves an opaque patch visible in the bottom-
+        // right corner of the borderless transparent window.
+        if let cv = window.contentView {
+            cv.wantsLayer = true
+            cv.layer?.backgroundColor = NSColor.clear.cgColor
+        }
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
