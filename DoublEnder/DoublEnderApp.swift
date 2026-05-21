@@ -34,12 +34,6 @@ struct DoublEnderApp: App {
 
                 Divider()
 
-                Button("Send Feedback…") {
-                    if let url = URL(string: "https://sevmorris.github.io/DoublEnder/") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-
                 Button("Report an Issue…") {
                     if let url = URL(string: "https://github.com/sevmorris/DoublEnder/issues/new") {
                         NSWorkspace.shared.open(url)

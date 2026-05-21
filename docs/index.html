@@ -11,19 +11,21 @@
   <meta property="og:image" content="icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@400;600;700&family=Barlow:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Barlow+Condensed:wght@400;600;700&family=Barlow:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
   <style>
+    /* ── Design tokens — match app viewport palette ── */
     :root {
-      --black:     #0e0e0e;
-      --dark:      #1a1816;
-      --mid:       #242018;
-      --light:     #f2ead8;
-      --cream:     #e8dfc8;
-      --muted:     #9c8a6a;
-      --orange:    #d4520a;
-      --orange-lt: #e8641c;
-      --border:    rgba(156,138,106,0.2);
-      --font-disp: 'Bebas Neue', 'Arial Narrow', sans-serif;
+      --black:     #060606;
+      --dark:      #0d0d0d;
+      --panel:     #131313;
+      --mid:       #1a1a1a;
+      --amber:     #FFA500;
+      --amber-lt:  #FFB733;
+      --green:     #7FBF7F;
+      --light:     #c8c8c8;
+      --muted:     #585858;
+      --border:    rgba(127, 191, 127, 0.18);
+      --font-disp: 'Rajdhani', 'Eurostile', 'Arial Narrow', sans-serif;
       --font-ui:   'Barlow Condensed', 'Arial Narrow', sans-serif;
       --font-body: 'Barlow', Arial, sans-serif;
     }
@@ -40,19 +42,19 @@
       min-height: 100vh;
     }
 
+    /* Amber indicator stripe — instrument panel top edge */
     body::before {
       content: '';
       position: fixed;
-      inset: 0;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
-      background-size: 180px 180px;
-      opacity: 0.035;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--amber);
       pointer-events: none;
-      z-index: 999;
+      z-index: 1000;
     }
 
-    a { color: var(--orange); text-decoration: none; }
-    a:hover { color: var(--orange-lt); }
+    a { color: var(--amber); text-decoration: none; }
+    a:hover { color: var(--amber-lt); }
 
     /* ── Layout ── */
 
@@ -79,11 +81,12 @@
     }
 
     .topbar-brand {
-      font-family: var(--font-ui);
+      font-family: var(--font-disp);
       font-weight: 700;
-      font-size: 1.1rem;
-      letter-spacing: 0.06em;
-      color: var(--light);
+      font-size: 1.2rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--amber);
     }
 
     .topbar-links {
@@ -94,132 +97,139 @@
 
     .topbar-links a {
       font-family: var(--font-ui);
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 600;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.10em;
       text-transform: uppercase;
       color: var(--muted);
       transition: color 0.15s;
     }
 
-    .topbar-links a:hover { color: var(--orange-lt); }
+    .topbar-links a:hover { color: var(--amber-lt); }
 
     /* ── Hero ── */
 
     .hero {
-      padding: 80px 0 72px;
+      padding: 72px 0 64px;
       text-align: center;
     }
 
     .hero-icon {
-      width: 120px;
-      height: 120px;
-      border-radius: 26px;
-      margin-bottom: 28px;
+      width: 96px;
+      height: 96px;
+      border-radius: 4px;
+      margin-bottom: 24px;
     }
 
     .hero h1 {
-      font-family: var(--font-ui);
+      font-family: var(--font-disp);
       font-weight: 700;
-      font-size: clamp(2.8rem, 6vw, 5rem);
-      letter-spacing: 0.02em;
+      font-size: clamp(3rem, 6vw, 5.5rem);
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
       line-height: 1;
-      color: var(--light);
+      color: var(--amber);
       margin-bottom: 16px;
     }
 
     .hero-tagline {
-      font-size: 1.2rem;
-      color: var(--cream);
+      font-family: var(--font-ui);
+      font-size: 1.05rem;
+      font-weight: 400;
+      letter-spacing: 0.04em;
+      color: var(--light);
       max-width: 480px;
-      margin: 0 auto 32px;
-      line-height: 1.5;
+      margin: 0 auto 28px;
+      line-height: 1.6;
     }
 
     .hero-actions {
       display: flex;
-      gap: 12px;
+      gap: 10px;
       justify-content: center;
       flex-wrap: wrap;
     }
 
     .hero-meta {
-      margin-top: 20px;
+      margin-top: 18px;
       font-family: var(--font-ui);
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       font-weight: 600;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--muted);
     }
 
     .hero-portability {
-      margin-top: 24px;
+      margin-top: 28px;
       max-width: 520px;
       margin-left: auto;
       margin-right: auto;
-      padding: 14px 20px;
-      background: var(--mid);
+      padding: 12px 16px;
+      background: var(--panel);
       border: 1px solid var(--border);
-      border-left: 3px solid var(--orange);
-      font-size: 0.95rem;
-      color: var(--cream);
-      line-height: 1.5;
+      border-left: 2px solid var(--green);
+      font-size: 0.88rem;
+      color: var(--light);
+      line-height: 1.55;
       text-align: left;
     }
 
-    .hero-portability strong { color: var(--light); }
+    .hero-portability strong { color: var(--amber); }
 
     /* ── Buttons ── */
 
     .btn {
       display: inline-block;
-      padding: 11px 24px;
+      padding: 10px 22px;
       font-family: var(--font-ui);
-      font-size: 0.92rem;
+      font-size: 0.88rem;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
       text-decoration: none;
-      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      border-radius: 2px;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
     }
 
     .btn:hover { text-decoration: none; }
 
     .btn-primary {
-      background: var(--orange);
-      color: var(--black);
+      background: var(--amber);
+      color: #000;
     }
-    .btn-primary:hover { background: var(--orange-lt); color: var(--black); }
+    .btn-primary:hover { background: var(--amber-lt); color: #000; }
 
     .btn-secondary {
-      background: var(--mid);
+      background: transparent;
       color: var(--light);
       border: 1px solid var(--border);
     }
-    .btn-secondary:hover { border-color: var(--orange); color: var(--orange); }
+    .btn-secondary:hover { border-color: var(--green); color: var(--green); }
 
     /* ── Pinstripe divider ── */
 
     .pinstripe {
       border: none;
       height: 1px;
-      background: linear-gradient(to right, transparent, var(--border) 20%, var(--border) 80%, transparent);
+      background: var(--border);
     }
 
     /* ── How to use ── */
 
     .howto {
-      padding: 64px 0;
+      padding: 56px 0;
     }
 
     .howto h2 {
       font-family: var(--font-disp);
-      font-size: clamp(1.4rem, 2.5vw, 2rem);
-      letter-spacing: 0.06em;
-      color: var(--light);
-      margin-bottom: 24px;
-      padding-bottom: 10px;
+      font-size: clamp(1rem, 2vw, 1.35rem);
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 20px;
+      padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
     }
 
@@ -235,11 +245,11 @@
 
     .steps li {
       counter-increment: step;
-      background: var(--mid);
-      padding: 18px 24px 18px 64px;
+      background: var(--panel);
+      padding: 15px 20px 15px 58px;
       position: relative;
-      font-size: 0.95rem;
-      color: var(--cream);
+      font-size: 0.92rem;
+      color: var(--light);
       border-bottom: 1px solid var(--border);
     }
 
@@ -248,44 +258,48 @@
     .steps li::before {
       content: counter(step);
       position: absolute;
-      left: 20px;
+      left: 16px;
       top: 50%;
       transform: translateY(-50%);
-      width: 28px;
-      height: 28px;
-      background: var(--orange);
-      color: var(--black);
-      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      background: transparent;
+      color: var(--amber);
+      border: 1px solid var(--amber);
       font-family: var(--font-ui);
       font-weight: 700;
-      font-size: 0.9rem;
+      font-size: 0.78rem;
       display: flex;
       align-items: center;
       justify-content: center;
+      letter-spacing: 0;
     }
 
     .steps code {
-      background: rgba(0,0,0,0.3);
-      padding: 1px 6px;
-      border-radius: 3px;
-      font-size: 0.88em;
+      background: var(--mid);
+      padding: 1px 5px;
+      border-radius: 1px;
+      font-size: 0.87em;
       font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-      color: var(--light);
+      color: var(--green);
+      border: 1px solid rgba(127, 191, 127, 0.22);
     }
 
     /* ── Screenshots ── */
 
     .screenshots {
-      padding: 64px 0 72px;
+      padding: 56px 0 64px;
     }
 
     .screenshots h2 {
       font-family: var(--font-disp);
-      font-size: clamp(1.4rem, 2.5vw, 2rem);
-      letter-spacing: 0.06em;
-      color: var(--light);
-      margin-bottom: 24px;
-      padding-bottom: 10px;
+      font-size: clamp(1rem, 2vw, 1.35rem);
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 20px;
+      padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
     }
 
@@ -298,7 +312,7 @@
     .screenshot-item {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 6px;
     }
 
     .screenshot-item img {
@@ -309,9 +323,9 @@
 
     .screenshot-caption {
       font-family: var(--font-ui);
-      font-size: 0.78rem;
+      font-size: 0.72rem;
       font-weight: 600;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
       color: var(--muted);
     }
@@ -323,36 +337,38 @@
     /* ── Specs strip ── */
 
     .specs {
-      padding: 48px 0;
+      padding: 40px 0;
       border-top: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
-      margin-bottom: 64px;
+      margin-bottom: 56px;
     }
 
     .specs-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      gap: 32px;
+      gap: 24px;
       text-align: center;
     }
 
     .spec-item .spec-value {
-      font-family: var(--font-ui);
+      font-family: var(--font-disp);
       font-weight: 700;
-      font-size: 1.4rem;
-      color: var(--orange);
+      font-size: 1.25rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--amber);
       display: block;
       line-height: 1.1;
-      margin-bottom: 4px;
+      margin-bottom: 5px;
     }
 
     .spec-item .spec-label {
       font-family: var(--font-ui);
-      font-size: 0.72rem;
+      font-size: 0.70rem;
       font-weight: 600;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: var(--muted);
+      color: var(--green);
     }
 
     /* ── Footer ── */
@@ -360,7 +376,7 @@
     footer {
       background: var(--black);
       border-top: 1px solid var(--border);
-      padding: 36px 0;
+      padding: 28px 0;
     }
 
     .footer-inner {
@@ -376,9 +392,10 @@
 
     .footer-copy {
       font-family: var(--font-ui);
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       color: var(--muted);
-      letter-spacing: 0.04em;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
 
     .footer-links {
@@ -389,15 +406,15 @@
 
     .footer-links a {
       font-family: var(--font-ui);
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 600;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.10em;
       text-transform: uppercase;
       color: var(--muted);
       transition: color 0.15s;
     }
 
-    .footer-links a:hover { color: var(--orange-lt); }
+    .footer-links a:hover { color: var(--amber-lt); }
 
     /* ── Responsive ── */
 
@@ -405,7 +422,7 @@
       .page { padding: 0 20px; }
       .topbar-inner { padding: 0 20px; }
       .footer-inner { padding: 0 20px; }
-      .hero { padding: 56px 0 52px; }
+      .hero { padding: 48px 0 44px; }
       .hero h1 { font-size: 2.6rem; }
       .specs-grid { grid-template-columns: repeat(2, 1fr); }
       .topbar-links { gap: 14px; }

@@ -286,12 +286,6 @@ struct ContentView: View {
                 .tracking(3)
                 .foregroundColor(vpAmber)
                 .shadow(color: vpAmber.opacity(0.85), radius: 6)
-            Image("counter_reflection")
-                .resizable()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .opacity(0.4)
-                .blendMode(.screen)
-                .allowsHitTesting(false)
         }
         .frame(width: vpContentWidth, height: 70)
         .clipShape(RoundedRectangle(cornerRadius: 6))
