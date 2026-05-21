@@ -32,21 +32,10 @@ actor UpdateChecker {
     private struct Release: Decodable {
         let tagName: String
         let htmlUrl: String
-        let assets: [Asset]
-
-        struct Asset: Decodable {
-            let name: String
-            let browserDownloadUrl: String
-            enum CodingKeys: String, CodingKey {
-                case name
-                case browserDownloadUrl = "browser_download_url"
-            }
-        }
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
             case htmlUrl = "html_url"
-            case assets
         }
     }
 
@@ -79,9 +68,9 @@ actor UpdateChecker {
                     ?? URL(string: "https://github.com/sevmorris/DoublEnder/releases") else {
                 return .error("Invalid release URL in GitHub response.")
             }
-            let downloadURL = release.assets.first(where: { $0.name.hasSuffix(".dmg") })
-                .flatMap { URL(string: $0.browserDownloadUrl) }
-                ?? releaseURL
+            // Always use the GCS permalink so the user gets the current
+            // latest build at click-time, not a stale version-pinned URL.
+            let downloadURL = URL(string: "https://storage.googleapis.com/doublender-downloads/DoublEnder.dmg")!
 
             if latestVersion.compare(Self.numericVersion(currentVersion), options: .numeric) == .orderedDescending {
                 return .available(version: latestVersion, downloadURL: downloadURL, releaseURL: releaseURL)
