@@ -17,3 +17,9 @@ project.xcworkspace/
 # GCS service account key — client build only, never commit
 DoublEnderCloud/doublender-*.json
 doublender-*.json
+
+# Per-client branded build assets — confidential. The scaffolding
+# (_template/, README.md, this .gitignore) stays committed; actual
+# client subdirectories are gitignored. See Brands/README.md.
+/Brands/*/
+!/Brands/_template/

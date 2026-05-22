@@ -93,9 +93,18 @@ actor UpdateChecker {
     /// Cloud build: read a small JSON manifest published next to the DMG
     /// instead of GitHub, so clients are never pointed at the public app.
     /// release-cloud.sh writes cloud-latest.json on every release.
+    ///
+    /// The manifest URL is read from the bundle's `UpdateManifestURL` Info.plist
+    /// key so branded Cloud builds can point at their own update channel without
+    /// any Swift code changes (set per-brand via `INFOPLIST_KEY_UpdateManifestURL`
+    /// on the xcodebuild command line). Falls back to the standard Cloud manifest
+    /// for legacy builds that pre-date the key.
     private func checkCloud() async -> Result {
-        guard let manifestURL = URL(string:
-            "https://storage.googleapis.com/doublender-downloads/cloud-latest.json") else {
+        let defaultManifestURL = "https://storage.googleapis.com/doublender-downloads/cloud-latest.json"
+        let urlString = (Bundle.main.infoDictionary?["UpdateManifestURL"] as? String).flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? defaultManifestURL
+        guard let manifestURL = URL(string: urlString) else {
             return .error("Invalid update URL.")
         }
         do {
