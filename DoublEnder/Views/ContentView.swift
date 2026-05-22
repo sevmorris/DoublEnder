@@ -196,7 +196,7 @@ struct ContentView: View {
             // 5 ── LED — blinks on the shared 0.75 s timer while recording;
             //      dark/off when idle. RECORDING label is baked into faceplate.
             //      Identical position and size to CloudContentView.
-            Image(isRecordingState && ledFlashOn ? "led_on_2" : "led_off_2")
+            Image(isRecordingState && ledFlashOn ? "led_on" : "led_off")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 34, height: 34)

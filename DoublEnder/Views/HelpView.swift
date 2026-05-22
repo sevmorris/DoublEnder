@@ -1,11 +1,15 @@
 import SwiftUI
 
-// Palette kept in sync with ContentView / RecoveryView so the help window
-// reads as part of the same product rather than a generic system document.
-private let helpSurface  = Color(red: 0x1A/255, green: 0x1A/255, blue: 0x1A/255)
-private let helpText     = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
-private let helpAccent   = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
-private let helpSecondary = Color(red: 0xA0/255, green: 0xA0/255, blue: 0xA0/255)
+// Warm amber palette — matches ContentView / CloudContentView so the help
+// window reads as part of the same product, not a generic system document.
+/// Near-black warm background (#0D0800) — same as the chassis screen.
+private let helpSurface   = Color(red: 0x0D/255, green: 0x08/255, blue: 0x00/255)
+/// Warm off-white body text (#F0E0C0) — readable on the dark warm surface.
+private let helpText      = Color(red: 0xF0/255, green: 0xE0/255, blue: 0xC0/255)
+/// Warm amber (#FFD580) — section headings, matches clock-digit colour.
+private let helpAccent    = Color(red: 0xFF/255, green: 0xD5/255, blue: 0x80/255)
+/// Muted amber-tinted off-white for subtitle / definition detail.
+private let helpSecondary = Color(red: 0xE8/255, green: 0xD8/255, blue: 0xC0/255).opacity(0.55)
 
 struct HelpView: View {
     var body: some View {
