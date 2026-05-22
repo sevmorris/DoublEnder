@@ -27,6 +27,9 @@ targets:
         # Public app's display name — shown in Dock, About, Cmd-Tab.
         # Threaded through Info.plist via $(BUNDLE_DISPLAY_NAME).
         BUNDLE_DISPLAY_NAME: DoublEnder
+        # Default recording filename prefix when the user hasn't customized
+        # it. Branded Cloud builds override via DEFAULT_RECORDING_PREFIX.
+        DEFAULT_RECORDING_PREFIX: DoublEnder
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
@@ -41,6 +44,7 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
         CFBundleDisplayName: "$(BUNDLE_DISPLAY_NAME)"
+        DefaultRecordingPrefix: "$(DEFAULT_RECORDING_PREFIX)"
 
   DoublEnderCloud:
     type: application
@@ -62,6 +66,10 @@ targets:
         # Dock shows the per-client name. Threaded into Info.plist via
         # $(BUNDLE_DISPLAY_NAME).
         BUNDLE_DISPLAY_NAME: DoublEnder Cloud
+        # Default recording filename prefix when the user hasn't customized
+        # it. Branded Cloud builds override via DEFAULT_RECORDING_PREFIX
+        # (release-cloud-branded.sh) so files default to e.g. "HoT_<date>.m4a".
+        DEFAULT_RECORDING_PREFIX: DoublEnder
         # Standard Cloud update channel. Branded builds override this on
         # the xcodebuild command line so each client has its own update
         # manifest URL. UpdateChecker.checkCloud() reads UpdateManifestURL
@@ -86,5 +94,6 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
         CFBundleDisplayName: "$(BUNDLE_DISPLAY_NAME)"
+        DefaultRecordingPrefix: "$(DEFAULT_RECORDING_PREFIX)"
         UpdateManifestURL: "$(UPDATE_MANIFEST_URL)"
 

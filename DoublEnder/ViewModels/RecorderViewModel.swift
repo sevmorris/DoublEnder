@@ -75,9 +75,23 @@ class RecorderViewModel: ObservableObject {
     // MARK: - Settings (driven by the gear popover)
 
     /// Optional override for the filename prefix. The timestamp is always
-    /// appended; an empty string falls back to "DoublEnder".
+    /// appended; an empty string falls back to `defaultRecordingPrefix`.
     @Published var filenameBase: String = "" {
         didSet { UserDefaults.standard.set(filenameBase, forKey: Self.filenameBaseKey) }
+    }
+
+    /// Default filename prefix used when `filenameBase` is empty. Read from
+    /// the bundle's `DefaultRecordingPrefix` Info.plist key so branded Cloud
+    /// builds can ship with a per-client default (set via the
+    /// `DEFAULT_RECORDING_PREFIX` xcodebuild override in
+    /// release-cloud-branded.sh). Falls back to "DoublEnder" for any build
+    /// that doesn't supply the key.
+    static var defaultRecordingPrefix: String {
+        guard let value = Bundle.main.infoDictionary?["DefaultRecordingPrefix"] as? String,
+              !value.isEmpty else {
+            return "DoublEnder"
+        }
+        return value
     }
 
     /// Free-form notes written as the file's description metadata tag.
@@ -347,7 +361,7 @@ class RecorderViewModel: ObservableObject {
         // from 1 second to 1 ms — effectively impossible in practice.
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
         let prefix = filenameBase.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = prefix.isEmpty ? "DoublEnder" : prefix
+        let base = prefix.isEmpty ? Self.defaultRecordingPrefix : prefix
         let timestamp = formatter.string(from: Date())
         let ext = outputFormat.fileExtension
         let dir = Self.recordingsDirectory

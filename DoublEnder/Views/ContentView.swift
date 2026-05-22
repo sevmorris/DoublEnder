@@ -744,7 +744,7 @@ private struct SettingsPopover: View {
             VStack(alignment: .leading, spacing: 5) {
                 fieldLabel("FILENAME")
                 HStack(spacing: 8) {
-                    TextField("DoublEnder", text: $viewModel.filenameBase)
+                    TextField(RecorderViewModel.defaultRecordingPrefix, text: $viewModel.filenameBase)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14))
                         .foregroundColor(secondaryText)
