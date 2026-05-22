@@ -15,7 +15,11 @@ struct DoublEnderApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if GCS_ENABLED
+            CloudContentView()
+            #else
             ContentView()
+            #endif
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)   // fixed-size: content frame enforces 320×338
@@ -131,16 +135,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.hasShadow = true
 
         // ── 1. Hosting-view layer ────────────────────────────────────────────
-        // Cast explicitly to NSHostingView<ContentView> so we are certain we
-        // are clearing the SwiftUI hosting view's own CALayer, not a wrapper.
+        // Cast explicitly to the concrete NSHostingView generic so we are certain
+        // we are clearing the SwiftUI hosting view's own CALayer, not a wrapper.
         // SwiftUI sometimes initialises this layer with a non-zero fill colour
         // which shows through wherever the frame image has transparent pixels
         // (the rounded outer corners), most visibly in the bottom-right.
-        if let hv = window.contentView as? NSHostingView<ContentView> {
-            hv.wantsLayer = true
-            hv.layer?.backgroundColor = CGColor.clear
-            hv.layer?.isOpaque = false
-        } else {
+        // The cast target differs by build: CloudContentView for GCS_ENABLED,
+        // ContentView for the public app.
+        #if GCS_ENABLED
+        let hostingViewCleared = (window.contentView as? NSHostingView<CloudContentView>)
+            .map { hv -> Bool in
+                hv.wantsLayer = true
+                hv.layer?.backgroundColor = CGColor.clear
+                hv.layer?.isOpaque = false
+                return true
+            } ?? false
+        #else
+        let hostingViewCleared = (window.contentView as? NSHostingView<ContentView>)
+            .map { hv -> Bool in
+                hv.wantsLayer = true
+                hv.layer?.backgroundColor = CGColor.clear
+                hv.layer?.isOpaque = false
+                return true
+            } ?? false
+        #endif
+        if !hostingViewCleared {
             // Fallback for any build variant where the generic cast fails.
             window.contentView?.wantsLayer = true
             window.contentView?.layer?.backgroundColor = CGColor.clear
