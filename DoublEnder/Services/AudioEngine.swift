@@ -58,6 +58,11 @@ class AudioEngine: NSObject, ObservableObject {
 
     private var audioEngine: AVAudioEngine?
     private var engineConfigObserver: NSObjectProtocol?
+    // Always-on gentle compressor inserted upstream of the lookahead limiter.
+    // Lives inside the AVAudioEngine node graph so audio actually flows
+    // through it before reaching the tap. See `rebuildEngine` for the chain
+    // and the parameter rationale.
+    private var dynamicsProcessor: AVAudioUnitEffect?
     private var isRecording = false
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
@@ -129,6 +134,48 @@ class AudioEngine: NSObject, ObservableObject {
         refreshDevices()
     }
 
+    /// Build Apple's `kAudioUnitSubType_DynamicsProcessor` (the audio unit
+    /// behind what the spec colloquially calls "AVAudioUnitDynamicsProcessor"
+    /// — there is no Swift class by that literal name; you instantiate it via
+    /// `AVAudioUnitEffect` with the right `AudioComponentDescription`).
+    ///
+    /// The returned effect is NOT yet attached to an engine, and NO parameters
+    /// have been set. Setting AU parameters before the unit is attached to a
+    /// host has been observed to leave Apple's dynamics processor in a state
+    /// where `Initialize()` later fails with -10875. Parameters live in
+    /// `configureDynamicsProcessor(_:)` and are applied post-attach.
+    private func makeDynamicsProcessor() -> AVAudioUnitEffect {
+        let desc = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: kAudioUnitSubType_DynamicsProcessor,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        return AVAudioUnitEffect(audioComponentDescription: desc)
+    }
+
+    /// Apply the always-on transparent-leveler parameters to a dynamics
+    /// processor that has already been attached to an engine.
+    ///
+    /// • Threshold: -20 dBFS — compression starts well below clipping; quiet
+    ///   speech sits below threshold and is untouched.
+    /// • Head room: 10 dB — soft-knee region above threshold; smooths the
+    ///   onset of compression so transients don't pump.
+    /// • Attack: 1 ms — fast enough to catch plosives, slow enough to keep
+    ///   sibilance natural.
+    /// • Release: 100 ms — long enough to avoid pumping on speech rhythm.
+    /// • Overall gain: 0 dB — no make-up gain; the limiter downstream is the
+    ///   only place we re-touch level.
+    private func configureDynamicsProcessor(_ dyn: AVAudioUnitEffect) {
+        let au = dyn.audioUnit
+        AudioUnitSetParameter(au, kDynamicsProcessorParam_Threshold,   kAudioUnitScope_Global, 0, -20,   0)
+        AudioUnitSetParameter(au, kDynamicsProcessorParam_HeadRoom,    kAudioUnitScope_Global, 0,  10,   0)
+        AudioUnitSetParameter(au, kDynamicsProcessorParam_AttackTime,  kAudioUnitScope_Global, 0,   0.001, 0)
+        AudioUnitSetParameter(au, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0,   0.100, 0)
+        AudioUnitSetParameter(au, kDynamicsProcessorParam_OverallGain, kAudioUnitScope_Global, 0,   0,   0)
+    }
+
     func start() {
         if audioEngine?.isRunning == true { return }
         rebuildEngine(with: nil)
@@ -141,12 +188,21 @@ class AudioEngine: NSObject, ObservableObject {
         }
         if let engine = audioEngine {
             engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
+            // Tap lives on the dynamics-processor node when the chain is up;
+            // fall back to inputNode for safety on engines that never reached
+            // a fully built state.
+            if let dyn = dynamicsProcessor {
+                dyn.removeTap(onBus: 0)
+                engine.detach(dyn)
+            } else {
+                engine.inputNode.removeTap(onBus: 0)
+            }
             audioEngine = nil
+            dynamicsProcessor = nil
         }
 
         let newEngine = AVAudioEngine()
-        
+
         if let deviceID = deviceID {
             do {
                 // Must be called before accessing inputNode for the first time or before prepare
@@ -154,13 +210,31 @@ class AudioEngine: NSObject, ObservableObject {
             } catch {
                 logger.error("Failed to set device ID: \(error.localizedDescription, privacy: .public)")
             }
+            // AUHAL's CoreAudio-side device binding updates synchronously,
+            // but AVAudioEngine's cached view of outputFormat(forBus:) does
+            // NOT refresh until the inputNode is actually pulled. Installing
+            // a no-op tap forces that refresh: AUHAL queries the newly-set
+            // device for its real format and propagates it to the engine.
+            //
+            // Without this, the first launch path (setDeviceID called) reads
+            // a stale format, uses it to wire up the chain, and engine.start
+            // later fails with kAudioUnitErr_FailedInitialization (-10875)
+            // because the dynamics processor's bus format disagrees with
+            // what's actually being pushed in.
+            newEngine.inputNode.installTap(onBus: 0, bufferSize: 256, format: nil) { _, _ in }
+            newEngine.inputNode.removeTap(onBus: 0)
         }
-        
-        let inputNode = newEngine.inputNode
-        let hwFormat = inputNode.inputFormat(forBus: 0)
 
-        guard hwFormat.channelCount > 0, hwFormat.sampleRate > 0 else {
-            let message = "Selected input device reports no usable format (channels=\(hwFormat.channelCount), rate=\(hwFormat.sampleRate))."
+        let inputNode = newEngine.inputNode
+        // outputFormat (not inputFormat) is what the inputNode emits to
+        // downstream nodes — i.e. the format that any subsequent connect()
+        // must agree with. On most macOS mics input/output formats are the
+        // same, but on devices where they diverge, giving connect() the
+        // wrong one makes the downstream AU fail to initialize with -10875.
+        let nativeFormat = inputNode.outputFormat(forBus: 0)
+
+        guard nativeFormat.channelCount > 0, nativeFormat.sampleRate > 0 else {
+            let message = "Selected input device reports no usable format (channels=\(nativeFormat.channelCount), rate=\(nativeFormat.sampleRate))."
             DispatchQueue.main.async { self.lastError = message }
             return
         }
@@ -168,21 +242,71 @@ class AudioEngine: NSObject, ObservableObject {
         // M5: flag sample rates ≤ 16 kHz — almost always Bluetooth SCO (8 kHz)
         // or a misconfigured device. Doesn't block recording; just surfaces the
         // warning so the user can switch to a better input.
-        let isLowQuality = hwFormat.sampleRate <= 16_000
+        let isLowQuality = nativeFormat.sampleRate <= 16_000
         if isLowQuality {
-            logger.warning("Input rate \(hwFormat.sampleRate, privacy: .public) Hz — possible Bluetooth SCO or low-quality device.")
+            logger.warning("Input rate \(nativeFormat.sampleRate, privacy: .public) Hz — possible Bluetooth SCO or low-quality device.")
         }
         DispatchQueue.main.async { self.lowQualityInput = isLowQuality }
 
-        guard let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: hwFormat.sampleRate, channels: hwFormat.channelCount, interleaved: false) else {
-            let message = "Could not create tap format for selected input."
+        // One canonical Float32 deinterleaved format used for every
+        // connection in the chain AND for the tap. Apple's audio-unit
+        // effects (incl. the dynamics processor) require Float32
+        // deinterleaved on their buses; using a single explicit format
+        // eliminates any chance of a mismatch between connect() and the
+        // node's actual stream description.
+        guard let chainFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate:   nativeFormat.sampleRate,
+            channels:     nativeFormat.channelCount,
+            interleaved:  false
+        ) else {
+            let message = "Could not create canonical chain format for selected input."
             DispatchQueue.main.async { self.lastError = message }
             return
         }
-        
-        currentTapFormat = tapFormat
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] (buffer, _) in
+        currentTapFormat = chainFormat
+
+        // ── Audio graph ──────────────────────────────────────────────────────
+        //
+        //  inputNode ─→ dynamicsProcessor ─→ AVAudioSinkNode (no-op terminator)
+        //                       │
+        //                       └─→ tap (post-compression buffers)
+        //                              ├─ RMS meter
+        //                              └─ writerQueue → LookaheadLimiter
+        //                                            → AVAudioConverter
+        //                                            → PCMSidecar + AVAssetWriter
+        //
+        // We terminate the graph with AVAudioSinkNode rather than mainMixerNode
+        // because DoublEnder never plays audio back through the speakers — and
+        // routing through mainMixerNode/outputNode activates the output
+        // hardware path, which on first launch can leave AVAudioEngineGraph
+        // init failing with -10875 (IsFormatSampleRateAndChannelCountValid on
+        // outputHWFormat) before the system output device has finished
+        // enumeration. Sink-terminating avoids the output hardware entirely.
+        //
+        // The dynamics processor is engine-scoped (lives across recordings)
+        // so the meter reads post-compression at all times. The tap is
+        // installed on the processor's output bus.
+        //
+        // Order matters: attach → configure (set parameters) → connect →
+        // installTap → prepare → start. Configuring before attach left the
+        // dynamics processor in a state where Initialize() failed (-10875).
+        let dynamics = makeDynamicsProcessor()
+        newEngine.attach(dynamics)
+        configureDynamicsProcessor(dynamics)
+        newEngine.connect(inputNode, to: dynamics, format: chainFormat)
+
+        // Engine-scoped no-op sink. The render block has to be present but
+        // can immediately return noErr — the audio it would otherwise consume
+        // is already being captured by the tap installed on `dynamics` below.
+        let sink = AVAudioSinkNode { _, _, _ in noErr }
+        newEngine.attach(sink)
+        newEngine.connect(dynamics, to: sink, format: chainFormat)
+
+        dynamicsProcessor = dynamics
+
+        dynamics.installTap(onBus: 0, bufferSize: 1024, format: chainFormat) { [weak self] (buffer, _) in
             guard let self = self else { return }
             // Meter: compute RMS on every buffer so the level display is live
             // at all times, not only during recording. vDSP_rmsqv is pure
@@ -228,6 +352,16 @@ class AudioEngine: NSObject, ObservableObject {
                 queue: .main
             ) { [weak self] _ in self?.handleEngineConfigurationChange() }
         } catch {
+            // Capture format snapshots so the unified log shows the format we
+            // wired the chain with vs. what the inputNode actually reports now.
+            // If they differ, we hit the AUHAL setDeviceID staleness window
+            // and the warm-up tap didn't take. If they match, -10875 came
+            // from something else (e.g. channel count > 2 on the dynamics
+            // processor) and we'll know to look further.
+            let postFailFormat = newEngine.inputNode.outputFormat(forBus: 0)
+            logger.error(
+                "engine.start failed (-10875 family): connect-time format \(chainFormat, privacy: .public) — post-failure inputNode.outputFormat \(postFailFormat, privacy: .public) — error: \(error.localizedDescription, privacy: .public)"
+            )
             let message = "Failed to start audio engine: \(error.localizedDescription)"
             DispatchQueue.main.async { self.lastError = message }
         }
