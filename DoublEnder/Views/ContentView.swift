@@ -7,32 +7,40 @@ import AppKit
 /// New window size — matches frame.png aspect ratio (5480 : 4680 ≈ 1.17 : 1).
 private let windowSize = CGSize(width: 504, height: 430)
 
-// Viewport insets — derived from exact pixel measurement of frame.png
-// (5480×4680 image, transparent cutout at px 985–4508 x, 867–3821 y,
-//  scaled to the 420×358 window at 13.05 px/pt).
-//   left bezel:  985/13.048  = 75.5 → 75 pt
-//   right bezel: (5480-4508)/13.048 = 74.5 → 75 pt  (symmetric)
-//   top bezel:   867/13.073  = 66.3 → 67 pt
-//   bottom bezel:(4680-3821)/13.073 = 65.7 → 66 pt
-private let vpTop:      CGFloat = 80
+// Viewport insets — derived from pixel measurement of del_faceplate.png
+// (screen cutout measured in central column strip, scaled to 504×430 pt window).
+//   top bezel:    79 pt
+//   bottom bezel: 82 pt
+//   left bezel:   90 pt  (symmetric)
+//   right bezel:  90 pt
+private let vpTop:      CGFloat = 79
 private let vpLeading:  CGFloat = 90
 private let vpTrailing: CGFloat = 90
-private let vpBottom:   CGFloat = 79
-// Resulting viewport interior: 324 × 271 pt  (420×358 × 1.2)
+private let vpBottom:   CGFloat = 82
 
-/// Amber: counter digits, record button text, meter segments, labels.
-private let vpAmber  = Color(red: 1.0,        green: 165/255, blue: 0)
-/// Muted green border matching the counter outline in the mockup (#7FBF7F).
-private let vpBorder = Color(red: 127/255,    green: 191/255, blue: 127/255)
-/// Very dark warm surface — slightly warmer than pure black.
-private let vpSurface = Color(red: 18/255,    green: 15/255,  blue: 10/255)
-
-/// Phosphor green accent kept for secondary surfaces (popovers, error card borders).
-private let appAccent      = Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255)
-private let panelStroke    = Color(red: 0xC0/255, green: 0xC0/255, blue: 0xC0/255)
-private let secondarySurface = Color(red: 0x2A/255, green: 0x2A/255, blue: 0x2A/255)
-private let secondaryText    = Color(red: 0xE8/255, green: 0xE8/255, blue: 0xE8/255)
-private let secondaryFieldBg = Color(red: 0x14/255, green: 0x14/255, blue: 0x14/255)
+// Warm amber palette — mirrors the CloudContentView screen aesthetic.
+/// Warm amber (#FFD580) — clock digits, title text.
+private let vpAmber  = Color(red: 0xFF/255, green: 0xD5/255, blue: 0x80/255)
+/// Amber card-edge stroke (#FFB347 @40%).
+private let vpBorder = Color(red: 0xFF/255, green: 0xB3/255, blue: 0x47/255).opacity(0.40)
+/// Near-black warm background (#0D0800).
+private let vpSurface = Color(red: 0x0D/255, green: 0x08/255, blue: 0x00/255)
+/// Primary amber (#F5A623) — icon tint, button border, accent.
+private let appAccent      = Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)
+/// Amber field stroke (#FFB347 @28%).
+private let panelStroke    = Color(red: 0xFF/255, green: 0xB3/255, blue: 0x47/255).opacity(0.28)
+/// Dark warm secondary surface (#180E00).
+private let secondarySurface = Color(red: 0x18/255, green: 0x0E/255, blue: 0x00/255)
+/// Warm off-white body text (#E8D8C0).
+private let secondaryText    = Color(red: 0xE8/255, green: 0xD8/255, blue: 0xC0/255)
+/// Very dark warm field background (#0D0800).
+private let secondaryFieldBg = Color(red: 0x0D/255, green: 0x08/255, blue: 0x00/255)
+/// VU meter colour zones — identical to CloudContentView.
+private let meterSafe     = Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)  // #F5A623
+private let meterWarning  = Color(red: 0xFF/255, green: 0x8C/255, blue: 0x00/255)  // #FF8C00
+private let meterDanger   = Color(red: 0xE0/255, green: 0x5C/255, blue: 0x1A/255)  // #E05C1A
+private let meterClipRed  = Color(red: 0xCC/255, green: 0x00/255, blue: 0x00/255)  // #CC0000
+private let meterInactive = Color(red: 0x2A/255, green: 0x1A/255, blue: 0x00/255)  // #2A1A00
 
 // MARK: - CRT font helper
 
@@ -177,38 +185,38 @@ struct ContentView: View {
                     bottom: vpBottom, trailing: vpTrailing
                 ))
 
-            // 3 ── Metal frame overlay (transparent cutout reveals content)
-            Image("frame")
+            // 3 ── Faceplate overlay (transparent cutout reveals content)
+            Image("del_faceplate")
                 .resizable()
                 .frame(width: windowSize.width, height: windowSize.height)
                 .allowsHitTesting(false)
 
-            // 4 ── LED — blinks on the shared 0.75 s timer while recording;
+            // 4 ── Screen glow — amber light spills from cutout onto inner bezel.
+            screenGlow
+
+            // 5 ── LED — blinks on the shared 0.75 s timer while recording;
             //      dark/off when idle. RECORDING label is baked into faceplate.
             Image(isRecordingState && ledFlashOn ? "led_on_2" : "led_off_2")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 26, height: 26)
-                .position(x: 101, y: 41)
+                .frame(width: 34, height: 34)
+                .position(x: 78, y: 63)
                 .allowsHitTesting(false)
 
-            // 5 ── Input selector — nudged 5 pt toward outer frame edge so it
-            //      reads as set into the faceplate rather than crowding the bezel.
+            // 6 ── Input selector
             inputSelector
                 .position(x: 40, y: 215)
 
-            // 6 ── Settings — symmetric nudge toward outer frame edge.
+            // 7 ── Settings
             gearButton
                 .position(x: 464, y: 215)
 
-            // 7 ── Version overlay — sits just below the baked "DoublEnder" text
-            //      in the lower-left bezel (measured: text bottom ~327 pt).
-            //      x=79 pt aligns with the baked text left edge; bottom=18 pt
-            //      leaves a ~13 pt gap between DoublEnder bottom and version top.
+            // 8 ── Version overlay — below the baked "DoublEnder" text in the
+            //      lower-left bezel (measured from del_faceplate.png).
             versionOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                .padding(.leading, 95)
-                .padding(.bottom, 17)
+                .padding(.leading, 94)
+                .padding(.bottom, 34)
                 .allowsHitTesting(false)
         }
         .frame(width: windowSize.width, height: windowSize.height)
@@ -222,7 +230,7 @@ struct ContentView: View {
 
     // MARK: - Viewport background
 
-    /// Warm dark grey with subtle scanlines — sells the physical-screen illusion.
+    /// Near-black warm surface with scanlines and radial vignette — matches Cloud screen aesthetic.
     private var viewportBackground: some View {
         ZStack {
             vpSurface
@@ -238,7 +246,21 @@ struct ContentView: View {
                 }
             }
             .allowsHitTesting(false)
+            RadialGradient(colors: [.clear, .black.opacity(0.52)],
+                           center: .center, startRadius: 80, endRadius: 215)
+            .allowsHitTesting(false)
         }
+    }
+
+    /// Amber screen glow — a faint lit rectangle whose shadow bleeds outward
+    /// onto the inner bezel, simulating warm light spilling from the screen cutout.
+    private var screenGlow: some View {
+        Rectangle()
+            .fill(Color(red: 0xC9/255, green: 0x6A/255, blue: 0x00/255).opacity(0.04))
+            .padding(EdgeInsets(top: vpTop, leading: vpLeading,
+                                bottom: vpBottom, trailing: vpTrailing))
+            .shadow(color: Color(red: 0xC9/255, green: 0x6A/255, blue: 0x00/255).opacity(0.40), radius: 18)
+            .allowsHitTesting(false)
     }
 
     // MARK: - State switch
@@ -286,7 +308,8 @@ struct ContentView: View {
                 .font(crtFont(size: 41))
                 .tracking(3)
                 .foregroundColor(vpAmber)
-                .shadow(color: vpAmber.opacity(0.85), radius: 6)
+                .shadow(color: Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255).opacity(0.90), radius: 8)
+                .shadow(color: Color(red: 0xC8/255, green: 0x78/255, blue: 0x00/255).opacity(0.50), radius: 22)
         }
         .frame(width: vpContentWidth, height: 70)
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -321,29 +344,35 @@ struct ContentView: View {
     private var recordStopButton: some View {
         Button { handleRecordTap() } label: {
             ZStack {
-                // Solid red fill while recording — no animation, no timer.
-                if isRecordingState {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(red: 0.8, green: 0.0, blue: 0.0))
-                }
+                // Idle: transparent amber-dark fill. Recording: burnt-amber fill.
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isRecordingState
+                          ? Color(red: 0xBF/255, green: 0x48/255, blue: 0x00/255)
+                          : Color(red: 0x1A/255, green: 0x0A/255, blue: 0x00/255))
                 Text(isRecordingState ? "STOP" : "RECORD")
                     .font(panelFont(size: 41))
                     .tracking(3)
-                    .foregroundColor(vpAmber)
-                    .shadow(color: vpAmber.opacity(0.75), radius: 5)
+                    .foregroundColor(isRecordingState
+                                     ? .white
+                                     : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255))
+                    .shadow(color: isRecordingState
+                            ? Color.white.opacity(0.30)
+                            : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255).opacity(0.75),
+                            radius: 5)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .multilineTextAlignment(.center)
                     // Cap-only text sits optically high; nudge down to compensate
                     // for the descender whitespace the font reserves below baseline.
                     .offset(y: 6)
+                // Idle: solid 2 pt amber outline. Recording: subtle 1.5 pt border.
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isRecordingState
+                            ? vpBorder
+                            : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255),
+                            lineWidth: isRecordingState ? 1.5 : 2.0)
             }
             .frame(width: vpContentWidth, height: 72)
-            .background(vpSurface)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(vpBorder, lineWidth: 1.5)
-            )
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -384,7 +413,7 @@ struct ContentView: View {
             Image(popovers.showingInput ? "input_on" : "input_off")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 62, height: 62)
+                .frame(width: 52, height: 52)
                 .contentShape(Rectangle())
                 // Capture the button's backing NSView for popover anchoring.
                 .background(ViewAnchor { inputAnchorView = $0 })
@@ -407,7 +436,7 @@ struct ContentView: View {
             Image(popovers.showingSettings ? "settings_on" : "settings_off")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 62, height: 62)
+                .frame(width: 52, height: 52)
                 .contentShape(Rectangle())
                 // Capture the button's backing NSView for popover anchoring.
                 .background(ViewAnchor { settingsAnchorView = $0 })
@@ -523,12 +552,12 @@ private struct LevelMeter: View {
                     for i in 0..<n {
                         let db  = Self.dbMin + Float(i) / Float(n) * (Self.dbMax - Self.dbMin)
                         let lit = level >= db
-                        // Colour zones: green ≤ −12 | amber ≤ −6 | red > −6
+                        // Colour zones: amber ≤ −18 | orange ≤ −6 | red > −6
                         let base: Color
-                        if      db < -12 { base = vpBorder }
-                        else if db <  -6 { base = vpAmber  }
-                        else             { base = Color(red: 0.85, green: 0.04, blue: 0.0) }
-                        let c = lit ? base : base.opacity(0.15)
+                        if      db < -18 { base = meterSafe    }
+                        else if db <  -6 { base = meterWarning }
+                        else             { base = meterDanger   }
+                        let c = lit ? base : meterInactive
                         let x = inset + CGFloat(i) * (sw + gap)
                         let rect = CGRect(x: x, y: inset, width: max(sw, 1), height: availH)
                         ctx.fill(RoundedRectangle(cornerRadius: 1).path(in: rect), with: .color(c))
@@ -543,9 +572,7 @@ private struct LevelMeter: View {
                     .tracking(0.4)
                     .foregroundColor(clipping ? .white : vpAmber.opacity(0.22))
                     .frame(width: clipW, height: containerH)
-                    .background(clipping
-                        ? Color(red: 0.8, green: 0, blue: 0)
-                        : vpSurface)
+                    .background(clipping ? meterClipRed : vpSurface)
             }
             .frame(width: vpContentWidth, height: containerH)
             .background(vpSurface)
@@ -634,11 +661,11 @@ private struct SecondaryButton: View {
             Text(label)
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.5)
-                .foregroundColor(secondaryText)
+                .foregroundColor(appAccent)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
