@@ -178,6 +178,12 @@ gh release create "$TAG" "$DMG" \
     --notes "$RELEASE_NOTES"
 ok "Release published"
 
+# ── Publish GCS permalink ─────────────────────────────────────────────────────
+step "Publishing GCS download permalink"
+gsutil cp "$DMG" gs://doublender-downloads/DoublEnder.dmg
+gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
+ok "GCS permalink updated → DoublEnder.dmg"
+
 # ── Remove old releases ───────────────────────────────────────────────────────
 step "Removing old releases"
 OLD_TAGS=$(gh release list --repo "$REPO" --limit 100 --json tagName \
