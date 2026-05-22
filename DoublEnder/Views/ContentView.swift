@@ -7,16 +7,16 @@ import AppKit
 /// New window size — matches frame.png aspect ratio (5480 : 4680 ≈ 1.17 : 1).
 private let windowSize = CGSize(width: 504, height: 430)
 
-// Viewport insets — derived from pixel measurement of del_faceplate.png
-// (screen cutout measured in central column strip, scaled to 504×430 pt window).
+// Viewport insets — identical to CloudContentView so Local and Cloud share
+// the same viewport geometry; only the faceplate image differs.
 //   top bezel:    79 pt
-//   bottom bezel: 82 pt
-//   left bezel:   90 pt  (symmetric)
+//   bottom bezel: 81 pt
+//   left bezel:   91 pt
 //   right bezel:  90 pt
 private let vpTop:      CGFloat = 79
-private let vpLeading:  CGFloat = 90
+private let vpLeading:  CGFloat = 91
 private let vpTrailing: CGFloat = 90
-private let vpBottom:   CGFloat = 82
+private let vpBottom:   CGFloat = 81
 
 // Warm amber palette — mirrors the CloudContentView screen aesthetic.
 /// Warm amber (#FFD580) — clock digits, title text.
@@ -25,8 +25,6 @@ private let vpAmber  = Color(red: 0xFF/255, green: 0xD5/255, blue: 0x80/255)
 private let vpBorder = Color(red: 0xFF/255, green: 0xB3/255, blue: 0x47/255).opacity(0.40)
 /// Near-black warm background (#0D0800).
 private let vpSurface = Color(red: 0x0D/255, green: 0x08/255, blue: 0x00/255)
-/// Primary amber (#F5A623) — icon tint, button border, accent.
-private let appAccent      = Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)
 /// Amber field stroke (#FFB347 @28%).
 private let panelStroke    = Color(red: 0xFF/255, green: 0xB3/255, blue: 0x47/255).opacity(0.28)
 /// Dark warm secondary surface (#180E00).
@@ -77,9 +75,10 @@ private func handelFont(size: CGFloat) -> Font {
     return .system(size: size, weight: .light, design: .default)
 }
 
-// Viewport interior = 324 pt wide.  14 pt inner padding each side → 296 pt.
+/// Inner padding on all four sides of the viewport; content width derived from it.
 private let vpInnerPad:     CGFloat = 14
-private let vpContentWidth: CGFloat = 296   // 324 − 14 − 14
+/// (504 − 91 − 90) − 14 − 14 = 295 pt — matches Cloud.
+private let vpContentWidth: CGFloat = 295
 
 // MARK: - NSPopover manager
 
@@ -196,11 +195,12 @@ struct ContentView: View {
 
             // 5 ── LED — blinks on the shared 0.75 s timer while recording;
             //      dark/off when idle. RECORDING label is baked into faceplate.
+            //      Identical position and size to CloudContentView.
             Image(isRecordingState && ledFlashOn ? "led_on_2" : "led_off_2")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 34, height: 34)
-                .position(x: 78, y: 63)
+                .position(x: 84, y: 40)
                 .allowsHitTesting(false)
 
             // 6 ── Input selector
@@ -212,11 +212,11 @@ struct ContentView: View {
                 .position(x: 464, y: 215)
 
             // 8 ── Version overlay — below the baked "DoublEnder" text in the
-            //      lower-left bezel (measured from del_faceplate.png).
+            //      lower-left bezel. Identical padding to Cloud.
             versionOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .padding(.leading, 94)
-                .padding(.bottom, 34)
+                .padding(.bottom, 21)
                 .allowsHitTesting(false)
         }
         .frame(width: windowSize.width, height: windowSize.height)
@@ -344,35 +344,36 @@ struct ContentView: View {
     private var recordStopButton: some View {
         Button { handleRecordTap() } label: {
             ZStack {
-                // Idle: transparent amber-dark fill. Recording: burnt-amber fill.
+                // Fill = something is happening. Idle/ready: near-transparent
+                // dark bg + amber outline. Active/recording: burnt-orange fill.
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isRecordingState
-                          ? Color(red: 0xBF/255, green: 0x48/255, blue: 0x00/255)
-                          : Color(red: 0x1A/255, green: 0x0A/255, blue: 0x00/255))
+                          ? Color(red: 0xBF/255, green: 0x48/255, blue: 0x00/255)  // #BF4800 STOP
+                          : Color(red: 0x1A/255, green: 0x0A/255, blue: 0x00/255)) // #1A0A00 idle
                 Text(isRecordingState ? "STOP" : "RECORD")
                     .font(panelFont(size: 41))
                     .tracking(3)
                     .foregroundColor(isRecordingState
                                      ? .white
-                                     : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255))
-                    .shadow(color: isRecordingState
-                            ? Color.white.opacity(0.30)
-                            : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255).opacity(0.75),
-                            radius: 5)
+                                     : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)) // #F5A623
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .multilineTextAlignment(.center)
-                    // Cap-only text sits optically high; nudge down to compensate
-                    // for the descender whitespace the font reserves below baseline.
+                    // Cap-only text sits optically high; nudge down for the
+                    // descender whitespace the font reserves below baseline.
                     .offset(y: 6)
-                // Idle: solid 2 pt amber outline. Recording: subtle 1.5 pt border.
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isRecordingState
-                            ? vpBorder
-                            : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255),
-                            lineWidth: isRecordingState ? 1.5 : 2.0)
             }
             .frame(width: vpContentWidth, height: 72)
+            .background(vpSurface)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(
+                        isRecordingState
+                            ? vpBorder
+                            : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255), // #F5A623
+                        lineWidth: isRecordingState ? 1.5 : 2.0
+                    )
+            )
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -448,21 +449,16 @@ struct ContentView: View {
 
     // MARK: - Version overlay
 
-    /// Dynamic version number rendered below the baked "DoublEnder" / app-name
-    /// text in de_faceplate_2.png. Handel Gothic matches the faceplate's own
-    /// typeface; same dark engraved colour and opacity as the former bezel label.
+    /// Dynamic version number rendered below the baked app-name text in
+    /// del_faceplate.png. Identical typography to CloudContentView.
     private var versionOverlay: some View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         return Text("v\(version)")
-            .font(handelFont(size: 17))
-            // Reduce one weight step (Regular → Light) so the version string
-            // reads as subordinate to the baked app-name text above it.
-            // fontWeight hints SwiftUI/CoreText to pick a lighter variant within
-            // the font family; if none exists the fallback stays at Regular.
-            .fontWeight(.light)
-            .foregroundColor(Color(red: 0x08/255, green: 0x08/255, blue: 0x08/255))
-            .shadow(color: .white.opacity(0.12), radius: 0, x: 0, y: 1)
-            .opacity(0.85)
+            .font(handelFont(size: 14))
+            .fontWeight(.thin)
+            .foregroundColor(Color(red: 0x18/255, green: 0x18/255, blue: 0x18/255))
+            .shadow(color: .white.opacity(0.10), radius: 0, x: 0, y: 1)
+            .opacity(0.65)
     }
 
     // MARK: - Secondary state views
@@ -476,7 +472,7 @@ struct ContentView: View {
                     .foregroundColor(secondaryText)
                 ProgressView(value: viewModel.uploadProgress)
                     .progressViewStyle(.linear)
-                    .tint(appAccent)
+                    .tint(vpAmber)
                     .frame(width: 168)
                 Text("\(Int(viewModel.uploadProgress * 100))%")
                     .font(.system(size: 14, weight: .bold))
@@ -491,7 +487,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.icloud.fill")
                     .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(appAccent)
+                    .foregroundStyle(vpAmber)
                 Text("Recording saved to Desktop. Upload failed — tap Retry to try again.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(secondaryText)
@@ -509,7 +505,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(appAccent)
+                    .foregroundStyle(vpAmber)
                 Text(message)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(secondaryText)
@@ -661,11 +657,11 @@ private struct SecondaryButton: View {
             Text(label)
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.5)
-                .foregroundColor(appAccent)
+                .foregroundColor(secondaryText)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 4).fill(secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(appAccent, lineWidth: 1.5))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(vpAmber, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -720,7 +716,7 @@ private struct DevicePickerPopover: View {
                 if selectedID == device.uniqueID {
                     Image(systemName: "checkmark")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(appAccent)
+                        .foregroundColor(vpAmber)
                 }
             }
             .contentShape(Rectangle())
@@ -805,7 +801,7 @@ private struct SettingsPopover: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .tint(appAccent)
+                .tint(vpAmber)
                 Text(viewModel.outputFormat == .aac
                      ? "Recorded as mono, 256 kbps. Smaller file size, transparent quality for voice."
                      : "Uncompressed 24-bit PCM at the hardware's native sample rate. Professional quality, universally compatible.")
