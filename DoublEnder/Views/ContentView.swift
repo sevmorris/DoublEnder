@@ -160,10 +160,6 @@ struct ContentView: View {
     @StateObject private var popovers = PopoverManager()
     /// Drives the RECORD-button red pulse.
     @State private var ledFlashOn = false
-    /// Backing NSViews for the side buttons — captured via ViewAnchor so
-    /// NSPopover can be anchored without relying on NSApp.keyWindow.
-    @State private var inputAnchorView:    NSView?
-    @State private var settingsAnchorView: NSView?
 
     private let flashPublisher = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
@@ -204,15 +200,7 @@ struct ContentView: View {
                 .position(x: 383, y: 390)
                 .allowsHitTesting(false)
 
-            // 6 ── Input selector
-            inputSelector
-                .position(x: 40, y: 215)
-
-            // 7 ── Settings
-            gearButton
-                .position(x: 464, y: 215)
-
-            // 8 ── Version overlay — below the baked "DoublEnder" text in the
+            // 6 ── Version overlay — below the baked "DoublEnder" text in the
             //      lower-left bezel. Identical padding to Cloud.
             versionOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
@@ -285,8 +273,6 @@ struct ContentView: View {
     // MARK: - Main layout
 
     private var mainView: some View {
-        // Viewport interior: 270 × 225 pt.  vpInnerPad (12) on all sides
-        // → content area 246 × 201 pt.  Elements have explicit vpContentWidth.
         VStack(spacing: 0) {
             Spacer(minLength: vpInnerPad)
             counterWindow
@@ -294,7 +280,31 @@ struct ContentView: View {
             Spacer(minLength: 10)
             recordStopButton
             Spacer(minLength: 10)
-            LevelMeter(level: viewModel.rmsLevel)
+            MeterRow(
+                level: viewModel.rmsLevel,
+                inputActive: popovers.showingInput,
+                settingsActive: popovers.showingSettings,
+                onInputTap: { anchorView in
+                    popovers.toggleInput(
+                        buttonView: anchorView,
+                        content: AnyView(DevicePickerPopover(
+                            microphones: viewModel.inputDeviceGroups.microphones,
+                            virtualDevices: viewModel.inputDeviceGroups.virtual,
+                            selectedID: viewModel.selectedInputDeviceID,
+                            onSelect: { id in
+                                viewModel.selectedInputDeviceID = id
+                                popovers.closeInput()
+                            }
+                        ))
+                    )
+                },
+                onSettingsTap: { anchorView in
+                    popovers.toggleSettings(
+                        buttonView: anchorView,
+                        content: AnyView(SettingsPopover(viewModel: viewModel))
+                    )
+                }
+            )
             Spacer(minLength: vpInnerPad)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -349,14 +359,14 @@ struct ContentView: View {
                 // dark bg + amber outline. Active/recording: burnt-orange fill.
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isRecordingState
-                          ? Color(red: 0xBF/255, green: 0x48/255, blue: 0x00/255)  // #BF4800 STOP
+                          ? Color(red: 0xBC/255, green: 0x38/255, blue: 0x18/255)  // #BC3818 STOP — warm red, brown undertones
                           : Color(red: 0x1A/255, green: 0x0A/255, blue: 0x00/255)) // #1A0A00 idle
                 Text(isRecordingState ? "STOP" : "RECORD")
                     .font(panelFont(size: 41))
                     .tracking(3)
                     .foregroundColor(isRecordingState
                                      ? .white
-                                     : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)) // #F5A623
+                                     : Color(red: 0xE5/255, green: 0x5F/255, blue: 0x25/255)) // #E55F25 RECORD — red-amber, hue-shifted toward STOP
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .multilineTextAlignment(.center)
                     // Cap-only text sits optically high; nudge down for the
@@ -371,7 +381,7 @@ struct ContentView: View {
                     .stroke(
                         isRecordingState
                             ? vpBorder
-                            : Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255), // #F5A623
+                            : Color(red: 0xE5/255, green: 0x5F/255, blue: 0x25/255), // #E55F25 RECORD outline
                         lineWidth: isRecordingState ? 1.5 : 2.0
                     )
             )
@@ -392,60 +402,6 @@ struct ContentView: View {
         default:
             break
         }
-    }
-
-    // MARK: - Input selector (left bezel)
-
-    private var inputSelector: some View {
-        Button {
-            guard let av = inputAnchorView else { return }
-            popovers.toggleInput(
-                buttonView: av,
-                content: AnyView(DevicePickerPopover(
-                    microphones: viewModel.inputDeviceGroups.microphones,
-                    virtualDevices: viewModel.inputDeviceGroups.virtual,
-                    selectedID: viewModel.selectedInputDeviceID,
-                    onSelect: { id in
-                        viewModel.selectedInputDeviceID = id
-                        popovers.closeInput()
-                    }
-                ))
-            )
-        } label: {
-            Image(popovers.showingInput ? "input_on" : "input_off")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 52, height: 52)
-                .contentShape(Rectangle())
-                // Capture the button's backing NSView for popover anchoring.
-                .background(ViewAnchor { inputAnchorView = $0 })
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .help("Select input device")
-    }
-
-    // MARK: - Settings (right bezel)
-
-    private var gearButton: some View {
-        Button {
-            guard let av = settingsAnchorView else { return }
-            popovers.toggleSettings(
-                buttonView: av,
-                content: AnyView(SettingsPopover(viewModel: viewModel))
-            )
-        } label: {
-            Image(popovers.showingSettings ? "settings_on" : "settings_off")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 52, height: 52)
-                .contentShape(Rectangle())
-                // Capture the button's backing NSView for popover anchoring.
-                .background(ViewAnchor { settingsAnchorView = $0 })
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .help("Settings")
     }
 
     // MARK: - Version overlay
@@ -519,33 +475,89 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Level meter
+// MARK: - Meter row (input button + level meter + settings button — detached)
 
-private struct LevelMeter: View {
-    let level: Float  // -60 … 0 dBFS
+/// Three independent controls in a single horizontal zone at the bottom of
+/// the viewport: input-selector button (own border), level meter with CLIP
+/// (own border, dBFS labels under it), settings button (own border). Gaps
+/// between elements make each read as a standalone tappable control rather
+/// than a fused chrome strip.
+///
+/// Layout (sum to vpContentWidth = 295 pt):
+///   input box (34) | gap (6) | meter (215 = 181 canvas + 34 CLIP) | gap (6) | settings box (34)
+///
+/// HStack alignment is .top — the icon buttons line up with the meter's
+/// bar; the meter's dBFS labels dangle below at their canvas-only width.
+///
+/// The popover-trigger logic lives outside this view — the caller passes
+/// closures invoked with the captured NSView so NSPopover can anchor to it.
+private struct MeterRow: View {
+    let level: Float                            // -60 … 0 dBFS
+    let inputActive: Bool                       // popover currently open?
+    let settingsActive: Bool
+    var onInputTap:    (NSView) -> Void
+    var onSettingsTap: (NSView) -> Void
+
+    @State private var inputAnchor:    NSView?
+    @State private var settingsAnchor: NSView?
 
     private static let segCount = 40
     private static let dbMin: Float = -60
     private static let dbMax: Float =   0
 
     var body: some View {
-        // CLIP box sits inside the same bordered container as the segment bar.
-        // Total width = vpContentWidth (246); canvas takes everything left of CLIP.
-        let clipW:      CGFloat = 34
         let containerH: CGFloat = 34
-        let canvasW:    CGFloat = vpContentWidth - clipW   // 262 pt
-        let clipping = level >= -0.1
+        let iconBoxW:   CGFloat = 34
+        let gap:        CGFloat = 6
+        let clipW:      CGFloat = 34
+        // meterW absorbs the rest: 295 − (2·34 + 2·6) = 215 pt
+        let meterW:     CGFloat = vpContentWidth - (iconBoxW * 2) - (gap * 2)
+        let canvasW:    CGFloat = meterW - clipW   // 181 pt
+        let clipping   = level >= -0.1
 
+        HStack(alignment: .top, spacing: gap) {
+            iconButton(
+                name: "input_icon",
+                active: inputActive,
+                width: iconBoxW, height: containerH,
+                help: "Select input device",
+                capture: { inputAnchor = $0 },
+                onTap: { if let av = inputAnchor { onInputTap(av) } }
+            )
+            meterUnit(meterW: meterW, canvasW: canvasW, clipW: clipW,
+                      containerH: containerH, clipping: clipping)
+            iconButton(
+                name: "settings_icon",
+                active: settingsActive,
+                width: iconBoxW, height: containerH,
+                help: "Settings",
+                capture: { settingsAnchor = $0 },
+                onTap: { if let av = settingsAnchor { onSettingsTap(av) } }
+            )
+        }
+        .frame(width: vpContentWidth)
+    }
+
+    /// Standalone meter unit: bordered container with segment bar + CLIP cell,
+    /// dBFS labels stacked below. Extracted from the row body so the Swift
+    /// type-checker can finish in reasonable time.
+    @ViewBuilder
+    private func meterUnit(
+        meterW: CGFloat,
+        canvasW: CGFloat,
+        clipW: CGFloat,
+        containerH: CGFloat,
+        clipping: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            // ── Single bordered container: segment bar + CLIP ───────────
             HStack(spacing: 0) {
                 Canvas { ctx, size in
                     let n = Self.segCount
-                    let gap: CGFloat = 1.5
-                    let inset: CGFloat = 3
+                    let segGap: CGFloat = 1.5
+                    let inset:  CGFloat = 3
                     let availW = size.width - inset * 2
                     let availH = size.height - inset * 2
-                    let sw = (availW - CGFloat(n - 1) * gap) / CGFloat(n)
+                    let sw = (availW - CGFloat(n - 1) * segGap) / CGFloat(n)
                     for i in 0..<n {
                         let db  = Self.dbMin + Float(i) / Float(n) * (Self.dbMax - Self.dbMin)
                         let lit = level >= db
@@ -555,15 +567,13 @@ private struct LevelMeter: View {
                         else if db <  -6 { base = meterWarning }
                         else             { base = meterDanger   }
                         let c = lit ? base : meterInactive
-                        let x = inset + CGFloat(i) * (sw + gap)
+                        let x = inset + CGFloat(i) * (sw + segGap)
                         let rect = CGRect(x: x, y: inset, width: max(sw, 1), height: availH)
                         ctx.fill(RoundedRectangle(cornerRadius: 1).path(in: rect), with: .color(c))
                     }
                 }
                 .frame(width: canvasW, height: containerH)
 
-                // CLIP indicator — shares the outer border; its background
-                // flips to red when the signal hits 0 dBFS.
                 Text("CLIP")
                     .font(.system(size: 7, weight: .bold))
                     .tracking(0.4)
@@ -571,12 +581,12 @@ private struct LevelMeter: View {
                     .frame(width: clipW, height: containerH)
                     .background(clipping ? meterClipRed : vpSurface)
             }
-            .frame(width: vpContentWidth, height: containerH)
+            .frame(width: meterW, height: containerH)
             .background(vpSurface)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(vpBorder, lineWidth: 1.2))
 
-            // ── dBFS scale labels ───────────────────────────────────────
+            // dBFS scale labels — span only the canvas, not the CLIP cell.
             GeometryReader { _ in
                 let labels: [(Float, String)] = [
                     (-60, "-60"), (-48, "-48"), (-36, "-36"),
@@ -591,9 +601,40 @@ private struct LevelMeter: View {
                         .position(x: frac * canvasW, y: 5)
                 }
             }
-            .frame(height: 12)
+            .frame(width: meterW, height: 12)
         }
-        .frame(width: vpContentWidth)
+    }
+
+    /// Standalone tappable amber icon in its own bordered box — matches the
+    /// meter's chrome so the row reads as three sibling controls rather than
+    /// three regions of one strip. Icon alpha brightens 0.65 → 1.0 when its
+    /// popover is open.
+    @ViewBuilder
+    private func iconButton(
+        name: String,
+        active: Bool,
+        width: CGFloat,
+        height: CGFloat,
+        help: String,
+        capture: @escaping (NSView) -> Void,
+        onTap: @escaping () -> Void
+    ) -> some View {
+        Button(action: onTap) {
+            Image(name)
+                .resizable()
+                .scaledToFit()
+                .foregroundColor(vpAmber.opacity(active ? 1.0 : 0.65))
+                .frame(width: 20, height: 20)
+                .frame(width: width, height: height, alignment: .center)
+                .background(vpSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(vpBorder, lineWidth: 1.2))
+                .contentShape(Rectangle())
+                .background(ViewAnchor { capture($0) })
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .help(help)
     }
 }
 
