@@ -48,6 +48,13 @@ class RecorderViewModel: ObservableObject {
     private static let selectedDeviceKey = "selectedInputDeviceID"
     private static let filenameBaseKey = "filenameBase"
     private static let outputFormatKey = "outputFormat"
+    /// UID → first-seen timestamp (seconds since 1970) for every USB device
+    /// the app has ever observed. Used at launch to break ties when multiple
+    /// USB devices are present — the device with the most recent timestamp
+    /// wins, capturing "I just plugged this in" intent. Entries are never
+    /// pruned (UIDs are stable per physical device, so the map is bounded
+    /// by the user's actual hardware history).
+    private static let usbFirstSeenKey = "usbDeviceFirstSeenAt"
     #if GCS_ENABLED
     /// Path of a recording whose upload is pending or has failed. Survives
     /// quit so the next launch can offer to finish it.
@@ -211,6 +218,36 @@ class RecorderViewModel: ObservableObject {
         return groups.microphones.first ?? groups.virtual.first
     }
 
+    /// Stamp every currently-present USB device that we haven't seen before
+    /// with a first-seen timestamp. Idempotent on devices we already know
+    /// about. Call this whenever the device list refreshes so the launch-time
+    /// tie-break has accurate data for any device the user has ever plugged in.
+    func recordCurrentUSBDevicesFirstSeen() {
+        var map = UserDefaults.standard.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
+        let now = Date().timeIntervalSince1970
+        var changed = false
+        for device in audioEngine.usbInputDevices() {
+            if map[device.uniqueID] == nil {
+                map[device.uniqueID] = now
+                changed = true
+            }
+        }
+        if changed {
+            UserDefaults.standard.set(map, forKey: Self.usbFirstSeenKey)
+        }
+    }
+
+    /// USB input device with the most recent first-seen timestamp among
+    /// currently-present USB devices. Returns nil if none are present. The
+    /// timestamp comes from `recordCurrentUSBDevicesFirstSeen`; devices we've
+    /// never stamped fall back to a 0 timestamp, so unknown devices lose
+    /// every tie-break to known ones.
+    private func mostRecentlyConnectedUSBDevice() -> AVCaptureDevice? {
+        let map = UserDefaults.standard.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
+        let usb = audioEngine.usbInputDevices()
+        return usb.max { (map[$0.uniqueID] ?? 0) < (map[$1.uniqueID] ?? 0) }
+    }
+
     private func requestPermissions() {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
@@ -218,21 +255,32 @@ class RecorderViewModel: ObservableObject {
                 if granted {
                     self.audioEngine.refreshDevices()
                     let devices = self.audioEngine.availableInputDevices
-                    let saved = UserDefaults.standard.string(forKey: Self.selectedDeviceKey) ?? ""
-                    // m7: restore the saved device ID *before* starting the
-                    // engine so it builds with the right device directly —
-                    // avoids the start-then-immediately-rebuild churn that
-                    // happened when the selection was restored afterwards.
-                    if devices.contains(where: { $0.uniqueID == saved }) {
-                        self.selectedInputDeviceID = saved  // triggers setDevice → rebuildEngine
-                    } else if let device = self.preferredDefaultDevice() {
-                        // No saved device (or it's gone) — pick the best
-                        // hardware mic automatically, avoiding virtual devices.
-                        self.selectedInputDeviceID = device.uniqueID
+                    self.recordCurrentUSBDevicesFirstSeen()
+
+                    // USB-mic hard override: podcast guests who plug in a USB
+                    // mic almost always want to record with it, so a present
+                    // USB device beats any saved preference. Multiple USB
+                    // devices break the tie by most-recent first-seen
+                    // timestamp, which captures "I just plugged this in"
+                    // intent across launches.
+                    if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
+                        self.selectedInputDeviceID = usbDevice.uniqueID
                     } else {
-                        // No devices at all — start with system default and
-                        // wait for the user to plug something in.
-                        self.audioEngine.start()
+                        // No USB — restore saved preference if it's still
+                        // present, otherwise fall back to the best hardware
+                        // mic (built-in / Bluetooth), avoiding virtual
+                        // devices. m7: restoring the saved device ID *before*
+                        // starting the engine avoids start-then-rebuild churn.
+                        let saved = UserDefaults.standard.string(forKey: Self.selectedDeviceKey) ?? ""
+                        if devices.contains(where: { $0.uniqueID == saved }) {
+                            self.selectedInputDeviceID = saved  // triggers setDevice → rebuildEngine
+                        } else if let device = self.preferredDefaultDevice() {
+                            self.selectedInputDeviceID = device.uniqueID
+                        } else {
+                            // No devices at all — start with system default
+                            // and wait for the user to plug something in.
+                            self.audioEngine.start()
+                        }
                     }
                     self.state = .ready
                 } else {

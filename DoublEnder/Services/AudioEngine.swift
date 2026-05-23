@@ -445,6 +445,22 @@ class AudioEngine: NSObject, ObservableObject {
         }
     }
 
+    /// True if `device` is connected via USB transport per CoreAudio.
+    /// Hardware mics built into the Mac, Bluetooth headsets, Thunderbolt
+    /// interfaces, and aggregate/virtual devices all return false.
+    func isUSBDevice(_ device: AVCaptureDevice) -> Bool {
+        guard let id = audioDeviceID(forUID: device.uniqueID),
+              let transport = transportType(for: id) else {
+            return false
+        }
+        return transport == kAudioDeviceTransportTypeUSB
+    }
+
+    /// Currently-present USB input devices, in discovery order.
+    func usbInputDevices() -> [AVCaptureDevice] {
+        availableInputDevices.filter { isUSBDevice($0) }
+    }
+
     /// Hardware mics vs. aggregate/virtual devices, preserving discovery
     /// order within each group. Driven by the cache built in
     /// `refreshDevices()`, with a lazy fallback for safety.
