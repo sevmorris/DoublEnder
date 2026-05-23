@@ -15,16 +15,16 @@
   <style>
     /* ── Design tokens — match app viewport palette ── */
     :root {
-      --black:     #060606;
-      --dark:      #0d0d0d;
-      --panel:     #131313;
-      --mid:       #1a1a1a;
-      --amber:     #FFA500;
-      --amber-lt:  #FFB733;
-      --green:     #7FBF7F;
-      --light:     #c8c8c8;
-      --muted:     #585858;
-      --border:    rgba(127, 191, 127, 0.18);
+      --black:     #0D0800;
+      --dark:      #0D0800;
+      --panel:     #130900;
+      --mid:       #1A0D00;
+      --amber:     #F5A623;
+      --amber-lt:  #F7BC55;
+      --action:    #C03520;
+      --light:     #CEC0AA;
+      --muted:     #6B5C44;
+      --border:    rgba(245, 166, 35, 0.15);
       --font-disp: 'Rajdhani', 'Eurostile', 'Arial Narrow', sans-serif;
       --font-ui:   'Barlow Condensed', 'Arial Narrow', sans-serif;
       --font-body: 'Barlow', Arial, sans-serif;
@@ -168,7 +168,7 @@
       padding: 12px 16px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-left: 2px solid var(--green);
+      border-left: 2px solid var(--action);
       font-size: 0.88rem;
       color: var(--light);
       line-height: 1.55;
@@ -205,7 +205,7 @@
       color: var(--light);
       border: 1px solid var(--border);
     }
-    .btn-secondary:hover { border-color: var(--green); color: var(--green); }
+    .btn-secondary:hover { border-color: var(--amber); color: var(--amber); }
 
     /* ── Pinstripe divider ── */
 
@@ -227,7 +227,7 @@
       font-weight: 700;
       letter-spacing: 0.18em;
       text-transform: uppercase;
-      color: var(--green);
+      color: var(--amber);
       margin-bottom: 20px;
       padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
@@ -281,8 +281,8 @@
       border-radius: 1px;
       font-size: 0.87em;
       font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-      color: var(--green);
-      border: 1px solid rgba(127, 191, 127, 0.22);
+      color: var(--amber-lt);
+      border: 1px solid rgba(245, 166, 35, 0.22);
     }
 
     /* ── Screenshots ── */
@@ -297,7 +297,7 @@
       font-weight: 700;
       letter-spacing: 0.18em;
       text-transform: uppercase;
-      color: var(--green);
+      color: var(--amber);
       margin-bottom: 20px;
       padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
@@ -368,7 +368,7 @@
       font-weight: 600;
       letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: var(--green);
+      color: var(--muted);
     }
 
     /* ── Footer ── */
@@ -467,7 +467,7 @@
         <li>Launch <strong>DoublEnder</strong>. The first time you record, macOS will ask for microphone access — click <em>Allow</em>.</li>
         <li>Click the mic icon to pick your input device. Speak normally and watch the level meter — aim for green, avoid red.</li>
         <li><em>Optional:</em> tap the gear icon to set a custom filename, add notes, or switch the output format to WAV.</li>
-        <li>Hit the <strong>RECORD</strong> button to start. The timer counts up and the button turns red. Hit it again to stop.</li>
+        <li>Click the <strong>RECORD</strong> button to start — the timer counts up and the button fills deep orange-red. Click it again to stop.</li>
         <li>A macOS notification confirms the save and offers <strong>Reveal in Finder</strong>. The recording lives on your <strong>Desktop</strong> as <code>DoublEnder_&lt;date&gt;.m4a</code>. Send that file to your host.</li>
       </ol>
     </section>
