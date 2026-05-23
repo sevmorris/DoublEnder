@@ -191,7 +191,14 @@ ok "Release published"
 step "Publishing GCS download permalink"
 gsutil cp "$DMG" gs://doublender-downloads/DoublEnder.dmg
 gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
-ok "GCS permalink updated → DoublEnder.dmg"
+# Force browsers/CDNs to revalidate on every fetch. Without this, GCS's
+# default Cache-Control: public, max-age=3600 means a user who downloaded
+# the previous build within the last hour keeps getting it from cache even
+# after we've uploaded a new one — which silently sabotages the in-app
+# updater's "Download" button. release-cloud-lib.sh sets the same header
+# on the Cloud manifest for the same reason.
+gsutil setmeta -h "Cache-Control:no-cache" gs://doublender-downloads/DoublEnder.dmg
+ok "GCS permalink updated → DoublEnder.dmg (no-cache)"
 
 # ── Remove old releases ───────────────────────────────────────────────────────
 step "Removing old releases"
