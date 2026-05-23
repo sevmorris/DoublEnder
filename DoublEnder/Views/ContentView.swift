@@ -200,15 +200,17 @@ struct ContentView: View {
             // 4 ── Screen glow — amber light spills from cutout onto inner bezel.
             screenGlow
 
-            // 5 ── LED — blinks on the shared 0.75 s timer while recording;
-            //      dark/off when idle. Identical position and size to
-            //      CloudContentView: bottom-right bezel, x-centred below the
-            //      CLIP indicator (x = 383, y = 390).
-            Image(isRecordingState && ledFlashOn ? "led_on" : "led_off")
+            // 5 ── Recording LED — same position, size, and asset as the
+            //      Cloud build's red LED (CloudContentView lines ~210-215).
+            //      Cloud stacks a blue cloud-status LED above this one;
+            //      Local has no cloud LED so the bezel above stays empty.
+            //      Coordinates derived from de_faceplate_mockup.png at
+            //      10.87 px/pt — see CloudContentView for the full derivation.
+            Image(isRecordingState && ledFlashOn ? "de_red-led_on" : "de_red-led_off")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 34, height: 34)
-                .position(x: 383, y: 390)
+                .frame(width: 22, height: 22)
+                .position(x: 461, y: 378)
                 .allowsHitTesting(false)
 
             // 6 ── Version overlay — below the baked "DoublEnder" text in the
@@ -419,14 +421,33 @@ struct ContentView: View {
 
     /// Dynamic version number rendered below the baked "DoublEnder"
     /// wordmark in de_faceplate.png. Identical typography to CloudContentView.
+    ///
+    /// Numeric "v1.6.18" sits at the main size; any trailing letter suffix
+    /// ("le" for Local, "ce" for Cloud, brand-specific for branded builds)
+    /// is uppercased and rendered ~64% size on the same baseline so it
+    /// reads as a typographic build-flavour tag, not a word.
     private var versionOverlay: some View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
-        return Text("v\(version)")
-            .font(handelFont(size: 14))
+        let (numeric, suffix) = splitVersionSuffix(version)
+        return (Text("v\(numeric)").font(handelFont(size: 14))
+                + Text(suffix.uppercased()).font(handelFont(size: 9)))
             .fontWeight(.thin)
             .foregroundColor(Color(red: 0x18/255, green: 0x18/255, blue: 0x18/255))
             .shadow(color: .white.opacity(0.10), radius: 0, x: 0, y: 1)
             .opacity(0.65)
+    }
+
+    /// Split a version string into its numeric prefix and trailing letter
+    /// suffix. Mirrors UpdateChecker.numericVersion's stripping logic so the
+    /// two never disagree on what counts as "the suffix".
+    ///   "1.6.18le"   → ("1.6.18", "le")
+    ///   "1.5.17hot"  → ("1.5.17", "hot")
+    ///   "1.6.18"     → ("1.6.18", "")
+    private func splitVersionSuffix(_ raw: String) -> (numeric: String, suffix: String) {
+        guard let range = raw.range(of: #"[A-Za-z]+$"#, options: .regularExpression) else {
+            return (raw, "")
+        }
+        return (String(raw[..<range.lowerBound]), String(raw[range]))
     }
 
     // MARK: - Secondary state views
