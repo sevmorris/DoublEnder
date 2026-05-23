@@ -185,6 +185,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
+
+        // Re-class the SwiftUI-created NSWindow instance to a subclass that
+        // overrides canBecomeKey / canBecomeMain → true. Stock NSWindow with
+        // styleMask == [.borderless] returns canBecomeKey = false by default
+        // (Apple's documented behavior), which means clicks on the window
+        // while the app is in the background fail to activate the app.
+        //
+        // CRITICAL: this MUST run AFTER setStyleMask. setStyleMask triggers
+        // SwiftUI's NSHostingView.viewWillMove(toWindow:) cleanup, which
+        // calls removeObserver:forKeyPath: on the window. KVO bookkeeping is
+        // class-keyed; swapping the class BEFORE setStyleMask makes the
+        // observer table un-findable and crashes with
+        //   "Cannot remove an observer … is not registered as an observer".
+        // After all window mutations are complete, no further code path on
+        // our side triggers a KVO cleanup, so the swap is safe.
+        object_setClass(window, KeyableBorderlessWindow.self)
     }
 
     // MARK: - Quit-during-recording alert
@@ -342,6 +358,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 /// Borderless windows refuse key/main status by default, which would block
 /// button clicks and keyboard focus in the modal recovery dialog.
 final class RecoveryWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+// MARK: - Main window class (key-capable borderless)
+
+/// SwiftUI's WindowGroup creates a stock NSWindow. After we set its style
+/// mask to [.borderless] in AppDelegate, the AppKit default for
+/// canBecomeKey returns false — which means clicks on the window while the
+/// app is backgrounded fail to activate it. AppDelegate `object_setClass`-es
+/// the SwiftUI-created instance to this subclass so the OS reads
+/// canBecomeKey = true and click-to-activate works from any state.
+final class KeyableBorderlessWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
