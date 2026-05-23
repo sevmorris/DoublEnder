@@ -38,6 +38,18 @@ struct DoublEnderApp: App {
 
                 Divider()
 
+                #if GCS_ENABLED
+                // Cloud users are typically podcast guests recording for a
+                // specific producer — but the free Local recorder is a useful
+                // fallback for any other recording they need to do. Point them
+                // to the landing page so they can grab it.
+                Button("Get DoublEnder (Local Recorder)") {
+                    if let url = URL(string: "https://sevmorris.github.io/DoublEnder/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                #endif
+
                 Button("Report an Issue…") {
                     if let url = URL(string: "https://github.com/sevmorris/DoublEnder/issues/new") {
                         NSWorkspace.shared.open(url)
