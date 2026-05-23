@@ -225,10 +225,21 @@ class RecorderViewModel: ObservableObject {
         requestPermissions()
     }
 
-    /// Window-modal NSAlert offering to switch input to a newly-arrived USB
+    /// App-modal NSAlert offering to switch input to a newly-arrived USB
     /// device. Bails silently for any guard miss so callers can fire this
     /// unconditionally from the engine-side detection.
     private func presentUSBSwitchPrompt(for device: AVCaptureDevice) {
+        // NSAlert MUST be driven from the main thread or button clicks
+        // never reach the response handler. The CoreAudio listener is
+        // configured with DispatchQueue.main so callers already arrive on
+        // main, but defend against any future caller that doesn't.
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.presentUSBSwitchPrompt(for: device)
+            }
+            return
+        }
+
         // Don't interrupt a take in progress — the new device shows up in
         // the picker dropdown immediately and the user can switch manually
         // after stopping. (Per spec: "If currently recording, do nothing".)
@@ -251,25 +262,23 @@ class RecorderViewModel: ObservableObject {
         alert.addButton(withTitle: "Switch")            // .alertFirstButtonReturn
         alert.addButton(withTitle: "Keep Current")      // .alertSecondButtonReturn
 
-        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self = self else { return }
-            if response == .alertFirstButtonReturn {
-                self.selectedInputDeviceID = device.uniqueID
-            } else {
-                // "Keep Current" implies "don't ask again for this device"
-                // for the rest of the session.
-                self.dismissedUSBDevices.insert(device.uniqueID)
-            }
-        }
-
-        // Sheet-attach to the main recorder window when possible so the
-        // alert is associated with the app rather than floating loose. The
-        // help window has identifier "help"; the recorder window has nil.
-        let mainWindow = NSApp.windows.first { $0.identifier?.rawValue != "help" && $0.contentView != nil }
-        if let window = mainWindow {
-            alert.beginSheetModal(for: window, completionHandler: handler)
+        // App-modal runModal() rather than beginSheetModal(for:) — the
+        // DoublEnder main window is borderless ([.borderless] styleMask in
+        // AppDelegate.configureMainWindow) and AppKit's sheet machinery
+        // expects a titled parent to anchor the sheet and route button-click
+        // events to the response handler. On a borderless parent the sheet
+        // renders but never delivers clicks, leaving the alert visible but
+        // unresponsive (force-quit only). runModal() spins its own nested
+        // event loop independent of the parent window's style — same pattern
+        // AppDelegate.presentRecordingInProgressAlert already uses for the
+        // quit-during-recording alert.
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            selectedInputDeviceID = device.uniqueID
         } else {
-            handler(alert.runModal())
+            // "Keep Current" implies "don't ask again for this device"
+            // for the rest of the session.
+            dismissedUSBDevices.insert(device.uniqueID)
         }
     }
 

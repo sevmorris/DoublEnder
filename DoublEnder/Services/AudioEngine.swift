@@ -518,9 +518,17 @@ class AudioEngine: NSObject, ObservableObject {
         // launch policy separately. Subsequent refreshes (from the CoreAudio
         // listener, app activation, system wake, or engine config change)
         // fire onNewUSBDeviceDetected for any USB UID that wasn't there before.
+        //
+        // Order matters: update `knownInputDeviceUIDs` BEFORE firing the
+        // callback. The VM's handler runs an app-modal NSAlert which spins a
+        // nested event loop, and any re-entrant refreshDevices that lands
+        // during that loop (app activation, another hot-plug, engine config
+        // change) would otherwise see the same UID as "new" again and stack
+        // duplicate prompts.
         let currentUIDs = Set(session.devices.map { $0.uniqueID })
         if hasSeededKnownDevices {
             let newUIDs = currentUIDs.subtracting(knownInputDeviceUIDs)
+            knownInputDeviceUIDs = currentUIDs
             for uid in newUIDs {
                 if let device = session.devices.first(where: { $0.uniqueID == uid }),
                    isUSBDevice(device) {
@@ -529,8 +537,8 @@ class AudioEngine: NSObject, ObservableObject {
             }
         } else {
             hasSeededKnownDevices = true
+            knownInputDeviceUIDs = currentUIDs
         }
-        knownInputDeviceUIDs = currentUIDs
 
         if selectedInputDevice == nil {
             selectedInputDevice = AVCaptureDevice.default(for: .audio)
