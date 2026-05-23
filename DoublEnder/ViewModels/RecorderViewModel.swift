@@ -127,6 +127,13 @@ class RecorderViewModel: ObservableObject {
         return nil
     }
 
+    /// UIDs of USB devices the user explicitly dismissed during this app
+    /// session ("Keep Current" in the hot-plug prompt). We never re-prompt
+    /// for these for the rest of the session. Memory-only — cleared when
+    /// the app quits, so a fresh launch will offer again if the device is
+    /// still present (or has been re-plugged).
+    private var dismissedUSBDevices: Set<String> = []
+
     private let audioEngine = AudioEngine()
     #if GCS_ENABLED
     private let uploader = Uploader()
@@ -207,7 +214,63 @@ class RecorderViewModel: ObservableObject {
             }
         }
 
+        // USB hot-plug: AudioEngine fires this on the main thread when a new
+        // USB input device appears while the app is running. We offer to
+        // switch unless recording (don't interrupt), it's already the
+        // selected device, or the user dismissed it this session.
+        audioEngine.onNewUSBDeviceDetected = { [weak self] device in
+            self?.presentUSBSwitchPrompt(for: device)
+        }
+
         requestPermissions()
+    }
+
+    /// Window-modal NSAlert offering to switch input to a newly-arrived USB
+    /// device. Bails silently for any guard miss so callers can fire this
+    /// unconditionally from the engine-side detection.
+    private func presentUSBSwitchPrompt(for device: AVCaptureDevice) {
+        // Don't interrupt a take in progress — the new device shows up in
+        // the picker dropdown immediately and the user can switch manually
+        // after stopping. (Per spec: "If currently recording, do nothing".)
+        if isCurrentlyRecording { return }
+        // Already the current input — nothing to switch to.
+        if device.uniqueID == selectedInputDeviceID { return }
+        // User said "Keep Current" for this device earlier this session.
+        if dismissedUSBDevices.contains(device.uniqueID) { return }
+
+        // Refresh first-seen tracking so this device is timestamped — any
+        // future launch with multiple USB devices will weight this one as
+        // the most recent under Task 3's tie-break.
+        recordCurrentUSBDevicesFirstSeen()
+
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .informational
+        alert.messageText = "USB mic detected: \(device.localizedName)"
+        alert.informativeText = "Switch input to this device?"
+        alert.addButton(withTitle: "Switch")            // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Keep Current")      // .alertSecondButtonReturn
+
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self = self else { return }
+            if response == .alertFirstButtonReturn {
+                self.selectedInputDeviceID = device.uniqueID
+            } else {
+                // "Keep Current" implies "don't ask again for this device"
+                // for the rest of the session.
+                self.dismissedUSBDevices.insert(device.uniqueID)
+            }
+        }
+
+        // Sheet-attach to the main recorder window when possible so the
+        // alert is associated with the app rather than floating loose. The
+        // help window has identifier "help"; the recorder window has nil.
+        let mainWindow = NSApp.windows.first { $0.identifier?.rawValue != "help" && $0.contentView != nil }
+        if let window = mainWindow {
+            alert.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            handler(alert.runModal())
+        }
     }
 
     /// First hardware mic (built-in, USB, Bluetooth) in discovery order,

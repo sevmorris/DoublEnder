@@ -115,6 +115,27 @@ class AudioEngine: NSObject, ObservableObject {
     /// / upload path rather than having AudioEngine duplicate that logic.
     var onDisconnectedDuringRecording: (() -> Void)?
 
+    /// Called on the main thread when a USB input device appears in the
+    /// system while the app is running. Fires only for genuinely new UIDs;
+    /// the engine seeds its known-UID set on its first device refresh, so
+    /// the launch-time population does NOT trigger this callback.
+    /// RecorderViewModel sets this to offer a "switch input?" prompt.
+    var onNewUSBDeviceDetected: ((AVCaptureDevice) -> Void)?
+
+    /// Snapshot of every input device UID present at last `refreshDevices`,
+    /// used to diff against the next refresh and detect newly-arrived USB
+    /// devices for the hot-plug prompt.
+    private var knownInputDeviceUIDs: Set<String> = []
+    /// First `refreshDevices` seeds `knownInputDeviceUIDs` without firing
+    /// any "new device" callbacks — the launch-time device population is
+    /// not a "new" arrival from the user's perspective.
+    private var hasSeededKnownDevices = false
+    /// Held strong reference to the CoreAudio device-list listener block so
+    /// it can be removed in deinit. `AudioObjectAddPropertyListenerBlock`
+    /// retains the block too, but we need to pass the same reference back
+    /// to `AudioObjectRemovePropertyListenerBlock`.
+    private var deviceListBlock: AudioObjectPropertyListenerBlock?
+
     // AAC-LC's allowed input sample rates per the standard. Anything else
     // makes the encoder reject samples with "Cannot Encode Media."
     private static let aacSupportedSampleRates: Set<Double> = [
@@ -145,6 +166,55 @@ class AudioEngine: NSObject, ObservableObject {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        // Live device-add/remove notifications. Without this, USB devices
+        // that appear while the app is foregrounded — and while the engine
+        // is running on an unrelated input — go undetected until the next
+        // app-activation or wake notification, missing the moment the user
+        // expects the new mic to be picked up.
+        installDeviceListListener()
+    }
+
+    deinit {
+        removeDeviceListListener()
+    }
+
+    /// Register a CoreAudio listener on the system-wide device list so that
+    /// `refreshDevices` runs whenever any audio device is added or removed
+    /// anywhere on the system. The listener block dispatches to the main
+    /// queue before touching engine state, matching every other entry into
+    /// `refreshDevices` (notification observers, engine config change).
+    private func installDeviceListListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refreshDevices() }
+        }
+        deviceListBlock = block
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.main,
+            block
+        )
+    }
+
+    private func removeDeviceListListener() {
+        guard let block = deviceListBlock else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.main,
+            block
+        )
+        deviceListBlock = nil
     }
 
     @objc private func handleRefreshTrigger() {
@@ -440,6 +510,28 @@ class AudioEngine: NSObject, ObservableObject {
         deviceKindCache = Dictionary(
             uniqueKeysWithValues: session.devices.map { ($0.uniqueID, classify($0)) }
         )
+
+        // Diff against the previous device list to detect hot-plug arrivals.
+        // The first pass after init seeds the known-set without firing any
+        // callbacks — launch-time device population is not a "new arrival"
+        // from the user's perspective and is handled by the VM's USB-on-
+        // launch policy separately. Subsequent refreshes (from the CoreAudio
+        // listener, app activation, system wake, or engine config change)
+        // fire onNewUSBDeviceDetected for any USB UID that wasn't there before.
+        let currentUIDs = Set(session.devices.map { $0.uniqueID })
+        if hasSeededKnownDevices {
+            let newUIDs = currentUIDs.subtracting(knownInputDeviceUIDs)
+            for uid in newUIDs {
+                if let device = session.devices.first(where: { $0.uniqueID == uid }),
+                   isUSBDevice(device) {
+                    onNewUSBDeviceDetected?(device)
+                }
+            }
+        } else {
+            hasSeededKnownDevices = true
+        }
+        knownInputDeviceUIDs = currentUIDs
+
         if selectedInputDevice == nil {
             selectedInputDevice = AVCaptureDevice.default(for: .audio)
         }
