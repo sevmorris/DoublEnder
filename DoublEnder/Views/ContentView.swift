@@ -186,6 +186,17 @@ struct ContentView: View {
                 .frame(width: windowSize.width, height: windowSize.height)
                 .allowsHitTesting(false)
 
+            // 3.5 ── Diamond badge — sits on the faceplate's top bezel, centred.
+            //        Source is 750×640 (1.17:1); rendered at 66×56 pt with top
+            //        edge at y=6 (6 pt of bezel above) — fully inside the 79 pt
+            //        top bezel and clear of the screen cutout at y=79.
+            Image("de_badge")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 66, height: 56)
+                .position(x: windowSize.width / 2, y: 34)
+                .allowsHitTesting(false)
+
             // 4 ── Screen glow — amber light spills from cutout onto inner bezel.
             screenGlow
 
