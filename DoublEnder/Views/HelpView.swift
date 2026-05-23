@@ -18,6 +18,18 @@ struct HelpView: View {
                 header
 
                 section("Overview") {
+                    #if GCS_ENABLED
+                    text("""
+                    DoublEnder Cloud is a minimal audio recorder for macOS. Pick your \
+                    microphone, hit record, and your file is saved to your Desktop and \
+                    uploaded to your producer's cloud bucket automatically.
+                    """)
+                    text("""
+                    Designed for podcast guests who shouldn't need to know anything about \
+                    audio — or how the file gets to their producer. No accounts, no \
+                    file-sharing services, no manual upload step.
+                    """)
+                    #else
                     text("""
                     DoublEnder is a minimal audio recorder for macOS. Pick your microphone, \
                     hit record, and get an AAC file on your Desktop. That's the whole app.
@@ -27,6 +39,7 @@ struct HelpView: View {
                     audio. No setup, no account, no cloud. Record your side of the \
                     conversation and send the file back to your host.
                     """)
+                    #endif
                 }
 
                 dividerRow
@@ -42,12 +55,37 @@ struct HelpView: View {
                 dividerRow
 
                 section("Quick Start") {
+                    #if GCS_ENABLED
                     steps([
-                        "Click the mic icon (left) to pick your input device.",
-                        "Hit the RECORD button to start. The timer counts up and the button turns red.",
-                        "Hit the button again to stop. Your file is saved to the Desktop.",
+                        "Click the mic icon (left) to pick your input device. Watch the 40-segment level meter — aim for green, avoid red.",
+                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED above the timer lights up.",
+                        "Click the button again to stop. Your file saves to the Desktop and uploads automatically. The blue LED above the timer indicates when the cloud connection is ready.",
+                        "A confirmation dialog appears when the upload finishes. The local file stays on your Desktop as a backup."
+                    ])
+                    #else
+                    steps([
+                        "Click the mic icon (left) to pick your input device. Watch the 40-segment level meter — aim for green, avoid red.",
+                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED above the timer lights up.",
+                        "Click the button again to stop. Your file is saved to the Desktop.",
                         "A macOS notification appears with a Reveal in Finder action — use it to jump straight to the file, then send it to your host."
                     ])
+                    #endif
+                }
+
+                dividerRow
+
+                section("Audio Processing") {
+                    text("""
+                    DoublEnder applies a gentle, always-on compressor (transparent \
+                    leveling) followed by a -1 dBFS lookahead limiter before recording. \
+                    Both run with sensible defaults that prevent clipping without \
+                    colouring your voice — there's nothing to tune.
+                    """)
+                    text("""
+                    The level meter shows the post-compression signal, so what you see \
+                    is what gets recorded. Aim for the green range and trust the limiter \
+                    to catch any unexpected peaks.
+                    """)
                 }
 
                 dividerRow
@@ -78,6 +116,21 @@ struct HelpView: View {
                     VoiceNotes, and any podcast editing app.
                     """)
                 }
+
+                #if GCS_ENABLED
+                dividerRow
+
+                section("Cloud Upload") {
+                    text("""
+                    Every recording uploads automatically to your producer's bucket \
+                    after saving. A progress indicator runs during the upload and a \
+                    confirmation dialog appears when it finishes.
+                    """)
+                    definition("Connection status", "The blue LED above the timer indicates cloud readiness: solid blue when the network is reachable and the embedded credential is present, off otherwise. You can still record offline — uploads will be retried with the same file when the connection returns.")
+                    definition("Local backup", "Your file is saved to the Desktop first, then uploaded. The local copy is never deleted automatically — keep or remove it as you prefer.")
+                    definition("Pending uploads", "If an upload fails or is interrupted (network drop, app quit, retries exhausted), the next launch offers to retry it. The original file always stays on your Desktop until the upload succeeds.")
+                }
+                #endif
 
                 dividerRow
 
@@ -112,12 +165,21 @@ struct HelpView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
+            #if GCS_ENABLED
+            Text("DoublEnder Cloud Help")
+                .font(.largeTitle.bold())
+                .foregroundColor(helpText)
+            Text("Cloud-Connected Audio Recorder for macOS")
+                .font(.title3)
+                .foregroundColor(helpSecondary)
+            #else
             Text("DoublEnder Help")
                 .font(.largeTitle.bold())
                 .foregroundColor(helpText)
             Text("Simple Audio Recorder for macOS")
                 .font(.title3)
                 .foregroundColor(helpSecondary)
+            #endif
         }
     }
 
