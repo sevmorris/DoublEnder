@@ -302,7 +302,18 @@ class RecorderViewModel: ObservableObject {
                 self.state = .ready
                 #endif
             case .failure(let error):
-                self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
+                // noAudioCaptured already carries a complete user-facing
+                // message ("…the recording was too brief. Try again.") so
+                // don't double-prefix it with "Failed to finalize…". The
+                // writer was cancelled in that path, so the recorded URL
+                // no longer points at anything — clear it.
+                if let recError = error as? RecordingError, case .noAudioCaptured = recError {
+                    self.recordingTime = 0
+                    self.recordedFileURL = nil
+                    self.state = .error(error.localizedDescription)
+                } else {
+                    self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
+                }
             }
             completion?()
         }

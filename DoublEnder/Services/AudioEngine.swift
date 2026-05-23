@@ -13,6 +13,13 @@ enum RecordingError: LocalizedError {
     case writerFailedToStart(String)
     case noActiveRecording
     case writerFinishedWithError(String)
+    /// The writer was opened and immediately closed with no buffers ever
+    /// appended. Typically happens when the user taps RECORD then STOP
+    /// faster than the engine takes to deliver its first buffer on a
+    /// freshly-built graph (first launch, or post device hot-swap).
+    /// startRecording briefly blocks on the first tap delivery to make
+    /// this rare; this case is the safety net for the residue.
+    case noAudioCaptured
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +33,8 @@ enum RecordingError: LocalizedError {
             return "Stop called without an active recording."
         case .writerFinishedWithError(let reason):
             return "Recording could not be finalized: \(reason)"
+        case .noAudioCaptured:
+            return "No audio was captured — the recording was too brief. Try again."
         }
     }
 }
@@ -75,6 +84,15 @@ class AudioEngine: NSObject, ObservableObject {
     private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
     private let writeErrorThreshold = 5
+    // First-buffer signalling. Reset on every rebuildEngine; signalled
+    // exactly once by the tap closure on its first invocation after that.
+    // startRecording briefly blocks on the semaphore so the writer never
+    // opens before the engine is actually delivering audio — without this,
+    // a tap-RECORD-then-tap-STOP within ~50–200 ms of launch produces a
+    // zero-frame file and surfaces a misleading "empty file" error.
+    private let firstBufferLock = NSLock()
+    private var firstBufferDelivered = false
+    private let firstBufferSemaphore = DispatchSemaphore(value: 0)
     private var limiter: LookaheadLimiter?
     // Conditional resampler / mono downmixer that bridges the tap format to
     // an AAC-friendly mono PCM stream. Nil for WAV at the hardware rate.
@@ -203,6 +221,15 @@ class AudioEngine: NSObject, ObservableObject {
 
         let newEngine = AVAudioEngine()
 
+        // Reset first-buffer state for the fresh engine. Drain any stale
+        // semaphore signal from a prior rebuild so the next startRecording
+        // waits only for THIS engine's first tap callback, not a leftover
+        // signal from the previous one.
+        firstBufferLock.lock()
+        while firstBufferSemaphore.wait(timeout: .now()) == .success {}
+        firstBufferDelivered = false
+        firstBufferLock.unlock()
+
         if let deviceID = deviceID {
             do {
                 // Must be called before accessing inputNode for the first time or before prepare
@@ -308,6 +335,20 @@ class AudioEngine: NSObject, ObservableObject {
 
         dynamics.installTap(onBus: 0, bufferSize: 1024, format: chainFormat) { [weak self] (buffer, _) in
             guard let self = self else { return }
+
+            // Signal first-buffer arrival exactly once per engine lifetime so
+            // startRecording can stop waiting. Fast path: an unsynchronised
+            // bool read on every subsequent call — benign because the only
+            // transition is false→true and a momentarily-stale false just
+            // costs one extra (idempotent) lock acquisition.
+            if !self.firstBufferDelivered {
+                self.firstBufferLock.lock()
+                let firstTime = !self.firstBufferDelivered
+                if firstTime { self.firstBufferDelivered = true }
+                self.firstBufferLock.unlock()
+                if firstTime { self.firstBufferSemaphore.signal() }
+            }
+
             // Meter: compute RMS on every buffer so the level display is live
             // at all times, not only during recording. vDSP_rmsqv is pure
             // math — RT-safe. The main-queue dispatch is the only non-RT
@@ -435,6 +476,21 @@ class AudioEngine: NSObject, ObservableObject {
     func startRecording(to fileURL: URL, format: OutputFormat = .aac, notes: String = "") throws {
         guard let tapFormat = currentTapFormat else {
             throw RecordingError.engineNotRunning
+        }
+
+        // First-buffer wait. On a freshly-built engine (first launch, or
+        // post device hot-swap) engine.start() returns before the tap has
+        // actually fired — there's a 50–200 ms cold-start window where
+        // AUHAL is opening the device and the dynamics-processor + sink
+        // graph is settling its first render cycle. If the writer opens
+        // and the user hits STOP inside that window, the file finalises
+        // with zero frames and we'd surface a misleading "empty file"
+        // error. Block here briefly so the writer never opens until the
+        // engine is delivering audio. 250 ms covers typical first-launch
+        // warmup with margin; past that, the zero-frame guard in
+        // stopRecording catches the residue with a clearer message.
+        if !firstBufferDelivered {
+            _ = firstBufferSemaphore.wait(timeout: .now() + .milliseconds(250))
         }
 
         // AVAssetWriter refuses to start if the file already exists.
@@ -817,6 +873,7 @@ class AudioEngine: NSObject, ObservableObject {
         let writer = assetWriter
         let input = assetWriterInput
         let sidecar = pcmSidecar
+        let appendedFrameCount = writerFrameCount
         assetWriter = nil
         assetWriterInput = nil
         pcmSidecar = nil
@@ -831,6 +888,24 @@ class AudioEngine: NSObject, ObservableObject {
             sidecar?.close()
             DispatchQueue.main.async {
                 completion(.failure(RecordingError.noActiveRecording))
+            }
+            return
+        }
+
+        // Zero-frame guard. If the tap never delivered a buffer to the
+        // writer (either because the engine was still warming up — see the
+        // first-buffer wait in startRecording — or because STOP fired
+        // inside the same render cycle as RECORD), finishWriting() would
+        // happily produce a 0-byte file and the caller's size>0 check
+        // would blame the mic. Cancel the writer, drop the sidecar, and
+        // surface a specific error so the caller can show a useful
+        // "recording too brief" message.
+        if appendedFrameCount == 0 {
+            logger.warning("stopRecording with zero frames appended — cancelling writer (no audio captured)")
+            sidecar?.discard()
+            writer.cancelWriting()
+            DispatchQueue.main.async {
+                completion(.failure(RecordingError.noAudioCaptured))
             }
             return
         }
