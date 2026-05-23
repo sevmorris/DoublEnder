@@ -44,7 +44,7 @@ struct HelpView: View {
                 section("Quick Start") {
                     steps([
                         "Click the mic icon (left) to pick your input device.",
-                        "Hit the big red button to start recording. The timer counts up.",
+                        "Hit the RECORD button to start. The timer counts up and the button turns red.",
                         "Hit the button again to stop. Your file is saved to the Desktop.",
                         "A macOS notification appears with a Reveal in Finder action — use it to jump straight to the file, then send it to your host."
                     ])

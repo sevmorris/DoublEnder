@@ -484,12 +484,6 @@ class RecorderViewModel: ObservableObject {
 }
 
 extension TimeInterval {
-    var mmss: String {
-        let minutes = Int(self) / 60
-        let seconds = Int(self) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
     var hhmmss: String {
         let total = Int(self)
         let h = total / 3600

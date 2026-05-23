@@ -181,7 +181,7 @@ struct ContentView: View {
                 ))
 
             // 3 ── Faceplate overlay (transparent cutout reveals content)
-            Image("del_faceplate")
+            Image("de_faceplate")
                 .resizable()
                 .frame(width: windowSize.width, height: windowSize.height)
                 .allowsHitTesting(false)
@@ -417,8 +417,8 @@ struct ContentView: View {
 
     // MARK: - Version overlay
 
-    /// Dynamic version number rendered below the baked app-name text in
-    /// del_faceplate.png. Identical typography to CloudContentView.
+    /// Dynamic version number rendered below the baked "DoublEnder"
+    /// wordmark in de_faceplate.png. Identical typography to CloudContentView.
     private var versionOverlay: some View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         return Text("v\(version)")

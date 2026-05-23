@@ -9,7 +9,7 @@ private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", categor
 struct DoublEnderApp: App {
     // AppDelegate owns window chrome, quit intercept, and crash recovery so
     // the window is fully borderless/transparent before its first paint —
-    // eliminating the chrome flash that the old WindowChromeStripper produced.
+    // eliminating the chrome flash an earlier post-paint cleanup pass produced.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 

@@ -4,9 +4,9 @@
 <p align="center">
   <strong>Dead-simple guest recording for podcasters</strong>
   <br />
-  <strong>Version:</strong> 1.6.3
+  <strong>Version:</strong> 1.6.18le
   <br />
-  <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.6.18.dmg"><strong>Download Latest (DMG)</strong></a>
+  <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.6.18le.dmg"><strong>Download Latest (DMG)</strong></a>
   ·
   <a href="https://sevmorris.github.io/DoublEnder/">App Page</a>
 </p>

@@ -10,7 +10,11 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
-    MARKETING_VERSION: "1.6.18"
+    # Public DoublEnder ("Local") build. The "le" suffix mirrors Cloud's "ce"
+    # so the build flavour is visible at a glance in the version overlay,
+    # download filenames, and crash reports. release.sh's regex rewrites
+    # match an optional letter suffix so future bumps stay self-consistent.
+    MARKETING_VERSION: "1.6.18le"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
@@ -53,6 +57,12 @@ targets:
     sources:
       - path: DoublEnder
         excludes:
+          # Public-only flavour assets (AppIcon, de_badge) live in their
+          # own catalog so the Cloud bundle never carries them. The shared
+          # faceplate, mic/gear icons, and LED PNGs live in
+          # SharedAssets.xcassets and ship to both flavours. Cloud-only
+          # assets come in via CloudAssets.xcassets below.
+          - "Assets.xcassets"
           - "DoublEnder.entitlements"
       - path: DoublEnderCloud/doublender-10af32ff2d11.json
         buildPhase: resources
@@ -85,8 +95,10 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_ENTITLEMENTS: DoublEnderCloud/DoublEnderCloud.entitlements
+    # Cloud has its own Info.plist so the UpdateManifestURL key doesn't leak
+    # into the public DoublEnder bundle (which never reads it).
     info:
-      path: DoublEnder/Info.plist
+      path: DoublEnderCloud/Info.plist
       properties:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."

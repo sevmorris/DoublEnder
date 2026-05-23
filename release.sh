@@ -72,12 +72,16 @@ else
     sed -i '' "s/MARKETING_VERSION: \"${ESC_CURRENT}\"/MARKETING_VERSION: \"${ESC_VERSION}\"/g" \
         "$PROJECT_DIR/project.yml"
     sed -i '' "s|\*\*Version:\*\* ${ESC_CURRENT}|**Version:** ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
-    sed -i '' "s|DoublEnder-v[0-9][0-9.]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/README.md"
-    sed -i '' "s|DoublEnder-v[0-9][0-9.]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
-    sed -i '' "s|Download v[0-9][0-9.]*|Download ${TAG}|g" "$PROJECT_DIR/docs/index.html"
+    # Patterns accept an optional trailing letter suffix (e.g. "le") so that
+    # "DoublEnder-v1.6.18le.dmg" or "Download v1.6.18le" rewrite cleanly on
+    # the next bump. The suffix matches the convention public DoublEnder
+    # ("le") and Cloud ("ce") share — see settings.base MARKETING_VERSION.
+    sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/README.md"
+    sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
+    sed -i '' "s|Download v[0-9][0-9.]*[a-z]*|Download ${TAG}|g" "$PROJECT_DIR/docs/index.html"
 
     # Sanity-check: nothing should still reference the old version.
-    if grep -E "DoublEnder-v[0-9]+\.[0-9]+\.[0-9]+\.dmg" \
+    if grep -E "DoublEnder-v[0-9]+\.[0-9]+\.[0-9]+[a-z]*\.dmg" \
             "$PROJECT_DIR/README.md" "$PROJECT_DIR/docs/index.html" \
             | grep -v "${TAG}\.dmg" >/dev/null 2>&1; then
         fail "Stale version references remain after rewrite — check sed patterns"
