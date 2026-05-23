@@ -71,7 +71,12 @@ else
     ESC_VERSION=$(printf '%s'  "$VERSION" | sed 's/[.[\*^$]/\\&/g')
     sed -i '' "s/MARKETING_VERSION: \"${ESC_CURRENT}\"/MARKETING_VERSION: \"${ESC_VERSION}\"/g" \
         "$PROJECT_DIR/project.yml"
+    # README's "Version:" line is currently HTML (<strong>) not Markdown
+    # (**); the old Markdown-only pattern silently no-op'd from v1.6.18
+    # onward, leaving the display text stale. Handle both so reformatting
+    # the README later doesn't quietly resurrect the bug.
     sed -i '' "s|\*\*Version:\*\* ${ESC_CURRENT}|**Version:** ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
+    sed -i '' "s|<strong>Version:</strong> ${ESC_CURRENT}|<strong>Version:</strong> ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
     # Patterns accept an optional trailing letter suffix (e.g. "le") so that
     # "DoublEnder-v1.6.18le.dmg" or "Download v1.6.18le" rewrite cleanly on
     # the next bump. The suffix matches the convention public DoublEnder
