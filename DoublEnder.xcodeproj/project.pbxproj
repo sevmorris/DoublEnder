@@ -17,6 +17,7 @@
 		3722B563F5B354ED5B3C0CAC /* CloudConnectivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */; };
 		47E9C2CFC8E04E705E0F01A3 /* RecorderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */; };
 		5F28705E9B2DD1D817669872 /* Uploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90AD773FEA0D06C86AB9AB8B /* Uploader.swift */; };
+		612E0FB574D966C9EFBABCEA /* ExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = B8A3205E83943E87CB00FBDD /* ExceptionCatcher.m */; };
 		659D2142D79F4B86571C6426 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F427670EB2DAF640994599 /* AudioEngine.swift */; };
 		6C5E1D1E6EB79B934C41611A /* DoublEnderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A664098C4701B731F134D15A /* DoublEnderApp.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
@@ -29,6 +30,7 @@
 		A85B19E56271B2D00C591845 /* doublender-10af32ff2d11.json in Resources */ = {isa = PBXBuildFile; fileRef = 34514E952E2515C16AB6E129 /* doublender-10af32ff2d11.json */; };
 		AD897B6712A20B76D54D3DFE /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */; };
 		B7672703234ADBF249BD117F /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */; };
+		B99226874D2FE62CC02B9F9B /* ExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = B8A3205E83943E87CB00FBDD /* ExceptionCatcher.m */; };
 		B9EEE532D5B7876A5BE55860 /* SharedAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */; };
 		BB66D98FB9F2F69F8A4F7672 /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */; };
 		BEC5B335D7B46CA37EAC1FE4 /* CloudContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B4A265917EEC4F22FFB80F /* CloudContentView.swift */; };
@@ -45,10 +47,12 @@
 
 /* Begin PBXFileReference section */
 		06752EA9DBBABCB91FEF26D3 /* DSEG7Classic-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "DSEG7Classic-Regular.ttf"; sourceTree = "<group>"; };
+		0CD1C0C12FDD280DF72C6D2C /* DoublEnder-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "DoublEnder-Bridging-Header.h"; sourceTree = "<group>"; };
 		1B8331841FA32B270066E651 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMSidecar.swift; sourceTree = "<group>"; };
 		24F205435D2498D70D023299 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		26F427670EB2DAF640994599 /* AudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngine.swift; sourceTree = "<group>"; };
+		294DB7CBF694DD77E7E0D400 /* ExceptionCatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ExceptionCatcher.h; sourceTree = "<group>"; };
 		2BE7DD783227A69761C9C390 /* CloudAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = CloudAssets.xcassets; sourceTree = "<group>"; };
 		34514E952E2515C16AB6E129 /* doublender-10af32ff2d11.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "doublender-10af32ff2d11.json"; sourceTree = "<group>"; };
 		3992791273426B06C5A56DA1 /* DoublEnder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoublEnder.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -57,6 +61,7 @@
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
 		B4AE2D23315EF40087853727 /* DoublEnderCloud.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoublEnderCloud.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B8A3205E83943E87CB00FBDD /* ExceptionCatcher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ExceptionCatcher.m; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConnectivity.swift; sourceTree = "<group>"; };
 		C7B4A265917EEC4F22FFB80F /* CloudContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudContentView.swift; sourceTree = "<group>"; };
@@ -90,6 +95,8 @@
 			children = (
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
 				C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */,
+				294DB7CBF694DD77E7E0D400 /* ExceptionCatcher.h */,
+				B8A3205E83943E87CB00FBDD /* ExceptionCatcher.m */,
 				1B8331841FA32B270066E651 /* NotificationService.swift */,
 				1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */,
 				F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */,
@@ -122,6 +129,7 @@
 			isa = PBXGroup;
 			children = (
 				CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */,
+				0CD1C0C12FDD280DF72C6D2C /* DoublEnder-Bridging-Header.h */,
 				EC47A7DBFE3560714B1EABA7 /* DoublEnder.entitlements */,
 				A664098C4701B731F134D15A /* DoublEnderApp.swift */,
 				BEFC981AFE64B7F016D02E37 /* Info.plist */,
@@ -272,6 +280,7 @@
 				2A9EBBCFD99813C885037E02 /* CloudContentView.swift in Sources */,
 				7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */,
 				2060C7480B61F1F8CB1634C5 /* DoublEnderApp.swift in Sources */,
+				B99226874D2FE62CC02B9F9B /* ExceptionCatcher.m in Sources */,
 				D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */,
 				E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */,
 				9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */,
@@ -292,6 +301,7 @@
 				BEC5B335D7B46CA37EAC1FE4 /* CloudContentView.swift in Sources */,
 				0D7A9149AE4287459D75FB53 /* ContentView.swift in Sources */,
 				6C5E1D1E6EB79B934C41611A /* DoublEnderApp.swift in Sources */,
+				612E0FB574D966C9EFBABCEA /* ExceptionCatcher.m in Sources */,
 				88D729B32497100812D42566 /* HelpView.swift in Sources */,
 				9ED5E3F5CC22C17DED51993D /* NotificationService.swift in Sources */,
 				9ABF1CCABA4963286B4EC5A2 /* PCMSidecar.swift in Sources */,
@@ -366,6 +376,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OBJC_BRIDGING_HEADER = "DoublEnder/DoublEnder-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
@@ -498,6 +509,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OBJC_BRIDGING_HEADER = "DoublEnder/DoublEnder-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
 			};

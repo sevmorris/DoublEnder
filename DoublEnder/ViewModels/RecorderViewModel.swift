@@ -66,6 +66,41 @@ class RecorderViewModel: ObservableObject {
     /// Current input level in dBFS (-60…0), forwarded from AudioEngine.
     /// Used by the viewport level meter; resets to -60 when recording stops.
     @Published var rmsLevel: Float = -60
+    /// True when buffers are actively being appended to the writer.
+    /// Drives the on-screen write-flow indicator dot. Forwarded from
+    /// AudioEngine.isWritingData.
+    @Published var isWritingData: Bool = false
+
+    /// Localized device name shown below the meter. Derived from
+    /// `selectedInputDeviceID` (user intent — completely reliable text from
+    /// AVCaptureDevice.localizedName) gated on `audioEngine.engineHealthy`
+    /// (the engine reached .start without throwing). When the engine
+    /// failed to bind / had no usable format / threw during connect, the
+    /// label shows "(no input)" so the user knows their pick didn't take.
+    ///
+    /// Computed rather than stored because there is no single AudioEngine
+    /// event that can reliably produce a name string — the AUHAL deviceID
+    /// races device-default propagation, the CoreAudio name lookup can
+    /// silently fail, and several rebuild paths exit early without ever
+    /// reaching the "publish a name" line. Driving the label from intent +
+    /// health makes it impossible for any code path to leave the label
+    /// stale: any change to `selectedInputDeviceID`, `availableInputDevices`,
+    /// or `audioEngine.engineHealthy` triggers `objectWillChange` and the
+    /// view re-evaluates this property.
+    var boundInputDeviceName: String? {
+        guard let device = audioEngine.availableInputDevices
+            .first(where: { $0.uniqueID == selectedInputDeviceID })
+        else {
+            return nil  // SwiftUI shows "—" via the ?? fallback
+        }
+        // Two independent reasons the label shows "(no input)":
+        //   1. The picked device has no input streams — setDevice rejected
+        //      it pre-switch so we never even handed it to AUHAL. The
+        //      previously-bound device is still active.
+        //   2. The engine itself failed to build/start (rebuild error path).
+        if !audioEngine.selectedDeviceUsable { return "(no input)" }
+        return audioEngine.engineHealthy ? device.localizedName : "(no input)"
+    }
     #if GCS_ENABLED
     @Published var uploadProgress: Double = 0
     #endif
@@ -114,6 +149,24 @@ class RecorderViewModel: ObservableObject {
     var isCurrentlyRecording: Bool {
         if case .recording = state { return true }
         return false
+    }
+
+    /// True when tapping RECORD will reliably produce a recording.
+    /// Gates the RECORD button — STOP during an active recording is
+    /// always allowed regardless, so the view should only consult this
+    /// when transitioning from idle into recording.
+    ///
+    /// Combines every engine-side reason recording could be unsafe:
+    ///   - The engine hasn't built successfully yet (engineHealthy)
+    ///   - The most recent device pick had no input streams and was
+    ///     rejected (selectedDeviceUsable) — even if the previous engine
+    ///     is still running, starting a recording while the label says
+    ///     "(no input)" would mislead the user about what's being captured
+    ///   - The engine is mid-rebuild (isRebuilding)
+    var canStartRecording: Bool {
+        audioEngine.engineHealthy
+            && audioEngine.selectedDeviceUsable
+            && !audioEngine.isRebuilding
     }
 
     /// Non-fatal condition worth surfacing in the UI, or nil.
@@ -166,6 +219,30 @@ class RecorderViewModel: ObservableObject {
         audioEngine.$rmsLevel
             .receive(on: DispatchQueue.main)
             .assign(to: &$rmsLevel)
+        audioEngine.$isWritingData
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isWritingData)
+        // engineHealthy and selectedDeviceUsable are read by the computed
+        // `boundInputDeviceName`. We don't store their values on the VM —
+        // we just need objectWillChange to fire when either changes so
+        // SwiftUI re-evaluates the label.
+        audioEngine.$engineHealthy
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        audioEngine.$selectedDeviceUsable
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // isRebuilding is read by `canStartRecording` — fire objectWillChange
+        // when it flips so the RECORD button updates within the same runloop
+        // tick that the engine transitions from "in flux" to "ready" (or
+        // vice-versa). Without this the button could remain enabled for a
+        // tick after a rebuild started.
+        audioEngine.$isRebuilding
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         #if GCS_ENABLED
         uploader.$progress.receive(on: DispatchQueue.main).assign(to: &$uploadProgress)
         #endif
@@ -230,9 +307,9 @@ class RecorderViewModel: ObservableObject {
     /// unconditionally from the engine-side detection.
     private func presentUSBSwitchPrompt(for device: AVCaptureDevice) {
         // NSAlert MUST be driven from the main thread or button clicks
-        // never reach the response handler. The CoreAudio listener is
-        // configured with DispatchQueue.main so callers already arrive on
-        // main, but defend against any future caller that doesn't.
+        // never reach the response handler. CoreAudio listener already
+        // dispatches to DispatchQueue.main, but defend against any future
+        // caller that doesn't.
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
                 self?.presentUSBSwitchPrompt(for: device)
@@ -265,19 +342,25 @@ class RecorderViewModel: ObservableObject {
         // App-modal runModal() rather than beginSheetModal(for:) — the
         // DoublEnder main window is borderless ([.borderless] styleMask in
         // AppDelegate.configureMainWindow) and AppKit's sheet machinery
-        // expects a titled parent to anchor the sheet and route button-click
-        // events to the response handler. On a borderless parent the sheet
-        // renders but never delivers clicks, leaving the alert visible but
-        // unresponsive (force-quit only). runModal() spins its own nested
-        // event loop independent of the parent window's style — same pattern
-        // AppDelegate.presentRecordingInProgressAlert already uses for the
-        // quit-during-recording alert.
+        // expects a titled parent to route button-click events to the
+        // response handler. On a borderless parent the sheet renders but
+        // never delivers clicks, leaving the alert visible but unresponsive
+        // (force-quit only). runModal() spins its own nested event loop
+        // independent of the parent window's style.
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            selectedInputDeviceID = device.uniqueID
+            // Defer to the next runloop tick so we're not running engine
+            // teardown from inside the CoreAudio device-list listener's
+            // call frame (which previously crashed via NSException out of
+            // SetOutputFormat). AudioEngine.setDevice now goes through the
+            // system-default-device CoreAudio API rather than AUHAL's
+            // setDeviceID — see the comment in AudioEngine.setDevice for
+            // the full rationale.
+            let uid = device.uniqueID
+            DispatchQueue.main.async { [weak self] in
+                self?.selectedInputDeviceID = uid
+            }
         } else {
-            // "Keep Current" implies "don't ask again for this device"
-            // for the rest of the session.
             dismissedUSBDevices.insert(device.uniqueID)
         }
     }
@@ -395,14 +478,7 @@ class RecorderViewModel: ObservableObject {
                 return
             }
             switch result {
-            case .success(let url):
-                let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-                guard size > 0 else {
-                    self.state = .error("Recording produced an empty file. Check microphone permission and input device.")
-                    completion?()
-                    return
-                }
+            case .success(.some(let url)):
                 // Notify the user that the recording is on disk — fires for both
                 // DoublEnder and DoublEnderCloud so every saved file gets a
                 // system notification with a Reveal in Finder action, regardless
@@ -421,19 +497,17 @@ class RecorderViewModel: ObservableObject {
                 self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready
                 #endif
+            case .success(.none):
+                // Silent discard — AudioEngine captured zero frames and
+                // cancelled the writer (no file on disk). Return to .ready
+                // without surfacing an error: per the architectural
+                // requirement, the user must never see an error for a
+                // session where they did nothing wrong.
+                self.recordingTime = 0
+                self.recordedFileURL = nil
+                self.state = .ready
             case .failure(let error):
-                // noAudioCaptured already carries a complete user-facing
-                // message ("…the recording was too brief. Try again.") so
-                // don't double-prefix it with "Failed to finalize…". The
-                // writer was cancelled in that path, so the recorded URL
-                // no longer points at anything — clear it.
-                if let recError = error as? RecordingError, case .noAudioCaptured = recError {
-                    self.recordingTime = 0
-                    self.recordedFileURL = nil
-                    self.state = .error(error.localizedDescription)
-                } else {
-                    self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
-                }
+                self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
             }
             completion?()
         }

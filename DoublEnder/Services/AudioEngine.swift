@@ -13,13 +13,6 @@ enum RecordingError: LocalizedError {
     case writerFailedToStart(String)
     case noActiveRecording
     case writerFinishedWithError(String)
-    /// The writer was opened and immediately closed with no buffers ever
-    /// appended. Typically happens when the user taps RECORD then STOP
-    /// faster than the engine takes to deliver its first buffer on a
-    /// freshly-built graph (first launch, or post device hot-swap).
-    /// startRecording briefly blocks on the first tap delivery to make
-    /// this rare; this case is the safety net for the residue.
-    case noAudioCaptured
 
     var errorDescription: String? {
         switch self {
@@ -33,8 +26,6 @@ enum RecordingError: LocalizedError {
             return "Stop called without an active recording."
         case .writerFinishedWithError(let reason):
             return "Recording could not be finalized: \(reason)"
-        case .noAudioCaptured:
-            return "No audio was captured — the recording was too brief. Try again."
         }
     }
 }
@@ -62,6 +53,48 @@ class AudioEngine: NSObject, ObservableObject {
     /// which typically indicates Bluetooth SCO (8 kHz narrowband) or another
     /// low-quality path. Does not stop recording — surfaces a UI warning. (M5)
     @Published var lowQualityInput: Bool = false
+
+    /// True when the most recent `rebuildEngine` call reached a fully
+    /// started engine successfully. The RecorderViewModel derives the
+    /// on-screen device label from this — when true, the label shows the
+    /// localized name of `selectedInputDeviceID`; when false, it shows
+    /// "(no input)" because the engine couldn't bind / had no usable
+    /// format / threw during connect or start.
+    ///
+    /// Starts `true` so the initial UI (before requestPermissions has
+    /// driven the first rebuild) doesn't flash "(no input)". The first
+    /// rebuild flips it accordingly.
+    ///
+    /// We deliberately do NOT compare AUHAL's reported deviceID against
+    /// the intended device ID — that comparison fires intermittently on
+    /// freshly-bound devices because `auAudioUnit.deviceID` lags AUHAL's
+    /// actual commit (returns the sentinel 0 in the system-default path
+    /// and races the propagation of system-default changes). The "engine
+    /// reached .start" signal is much more reliable.
+    @Published var engineHealthy: Bool = true
+
+    /// False when `setDevice` rejected the most recent user pick because
+    /// the CoreAudio device has no input streams (output-only device,
+    /// disabled aggregate sub-device, etc.). We don't change the system
+    /// default and don't rebuild — the previously-bound device stays
+    /// active — but the UI label reads "(no input)" so the user knows
+    /// their pick can't actually record. `engineHealthy` remains true
+    /// because the engine itself is fine; the issue is the user's choice.
+    @Published var selectedDeviceUsable: Bool = true
+
+    /// True while `rebuildEngine` is executing, including the gap between
+    /// a failed attempt and its scheduled retry. The RecorderViewModel
+    /// gates RECORD on `!isRebuilding` so a tap during this transient
+    /// window can't race a half-built engine. Set true at the top of
+    /// rebuildEngine; set false on every exit path — success, failure,
+    /// retry scheduled — so it accurately tracks "is the engine in flux
+    /// right now."
+    @Published var isRebuilding: Bool = false
+    /// True when buffers are actively being appended to the writer (within
+    /// the last ~150 ms). Drives the on-screen write-flow indicator dot.
+    /// Distinct from `isRecording` (record-button state) — this only goes
+    /// true when AVAssetWriterInput.append actually returns true.
+    @Published var isWritingData: Bool = false
 
     private let aacBitRate: Int = 256_000
 
@@ -109,6 +142,10 @@ class AudioEngine: NSObject, ObservableObject {
         label: "io.github.sevmorris.DoublEnder.writer",
         qos: .userInitiated
     )
+    /// Scheduled "clear write indicator" task; cancelled and re-scheduled on
+    /// every successful writer append so isWritingData only flips to false
+    /// when buffers stop arriving for 150 ms.
+    private var writeIndicatorClearWork: DispatchWorkItem?
 
     /// Called on the main thread when a device disconnects mid-recording.
     /// RecorderViewModel sets this so it can run the full stop / notification
@@ -222,6 +259,62 @@ class AudioEngine: NSObject, ObservableObject {
         refreshDevices()
     }
 
+    /// Run `engine` briefly with a minimal input→sink chain so AUHAL commits
+    /// the bound device's HW stream description before the caller reads
+    /// `inputNode.outputFormat` for the real chain. Returns when the sink
+    /// has received its first buffer (proof the device is delivering audio)
+    /// or after a 250 ms safety timeout — whichever comes first. Any
+    /// AVFoundation NSException raised during the warm-up is caught and
+    /// logged; the function returns and the caller proceeds with whatever
+    /// format `outputFormat` reports.
+    ///
+    /// Caller must NOT have built any other chain on `engine` yet.
+    private func forceAUHALCommit(on engine: AVAudioEngine) {
+        let firstBufferSem = DispatchSemaphore(value: 0)
+        var signaled = false
+        let signalLock = NSLock()
+        let sink = AVAudioSinkNode { _, _, _ in
+            signalLock.lock()
+            if !signaled {
+                signaled = true
+                firstBufferSem.signal()
+            }
+            signalLock.unlock()
+            return noErr
+        }
+        engine.attach(sink)
+
+        let connectExc = ExceptionCatcher.try({
+            engine.connect(engine.inputNode, to: sink, format: nil)
+        })
+        if let exc = connectExc {
+            logger.warning("AUHAL warm-up connect failed: \(exc.reason ?? exc.name.rawValue, privacy: .public)")
+            engine.detach(sink)
+            return
+        }
+
+        let startExc = ExceptionCatcher.try({
+            do {
+                try engine.start()
+            } catch {
+                logger.warning("AUHAL warm-up start failed: \(error.localizedDescription, privacy: .public)")
+            }
+        })
+        if let exc = startExc {
+            logger.warning("AUHAL warm-up start NSException: \(exc.reason ?? exc.name.rawValue, privacy: .public)")
+        }
+
+        // Wait for first buffer (proof AUHAL pushed data through) or the
+        // safety timeout. The vast majority of devices commit inside 30–50 ms;
+        // 250 ms is the same window startRecording uses for first-buffer wait.
+        _ = firstBufferSem.wait(timeout: .now() + .milliseconds(250))
+
+        engine.stop()
+        // disconnect before detach so the input bus is released cleanly.
+        engine.disconnectNodeInput(sink)
+        engine.detach(sink)
+    }
+
     /// Build Apple's `kAudioUnitSubType_DynamicsProcessor` (the audio unit
     /// behind what the spec colloquially calls "AVAudioUnitDynamicsProcessor"
     /// — there is no Swift class by that literal name; you instantiate it via
@@ -269,7 +362,25 @@ class AudioEngine: NSObject, ObservableObject {
         rebuildEngine(with: nil)
     }
     
-    private func rebuildEngine(with deviceID: AudioDeviceID? = nil) {
+    /// Max retries for the AUHAL "Input HW format and tap format not matching"
+    /// race. Each retry waits `auhalRetryDelay` to give CoreAudio more time
+    /// to finalize device-format negotiation. Three attempts × 150ms covers
+    /// a generous window without making a real failure feel hung.
+    private static let auhalMaxRetries = 3
+    private static let auhalRetryDelay: DispatchTimeInterval = .milliseconds(150)
+
+    private func rebuildEngine(
+        with deviceID: AudioDeviceID? = nil,
+        intendedDeviceID: AudioDeviceID? = nil,
+        attempt: Int = 1
+    ) {
+        // Mark the engine as in-flux for the duration of this call.
+        // Every exit path below (success, hard failure, retry-scheduled)
+        // is responsible for flipping this back to false. Doing it here
+        // at the top covers the first attempt; recursive retries from
+        // the connect-race path re-enter this function and re-set it.
+        DispatchQueue.main.async { self.isRebuilding = true }
+
         if let obs = engineConfigObserver {
             NotificationCenter.default.removeObserver(obs)
             engineConfigObserver = nil
@@ -288,6 +399,14 @@ class AudioEngine: NSObject, ObservableObject {
             audioEngine = nil
             dynamicsProcessor = nil
         }
+        // Clear `currentTapFormat` BEFORE any early-return path can fire.
+        // startRecording's `guard let tapFormat = currentTapFormat` is the
+        // only thing standing between a failed rebuild and the writer
+        // opening on a dead engine — leaving the previous build's format
+        // here would let recording proceed against a torn-down engine and
+        // silently produce empty files. The format gets re-set further
+        // down only after a fully successful rebuild reaches the chain.
+        currentTapFormat = nil
 
         let newEngine = AVAudioEngine()
 
@@ -307,19 +426,25 @@ class AudioEngine: NSObject, ObservableObject {
             } catch {
                 logger.error("Failed to set device ID: \(error.localizedDescription, privacy: .public)")
             }
-            // AUHAL's CoreAudio-side device binding updates synchronously,
-            // but AVAudioEngine's cached view of outputFormat(forBus:) does
-            // NOT refresh until the inputNode is actually pulled. Installing
-            // a no-op tap forces that refresh: AUHAL queries the newly-set
-            // device for its real format and propagates it to the engine.
+            // AUHAL warm-up. After setDeviceID, AUHAL's CoreAudio-side device
+            // binding updates synchronously but AVAudioEngine's cached view of
+            // outputFormat(forBus:) does NOT refresh until the inputNode is
+            // actually pulled — leaving the chain we build below using a
+            // format that doesn't match what the hardware actually delivers.
+            // The original fix was install-tap-then-remove-tap, which is
+            // enough to surface a format on built-in mics (always-on, already
+            // committed in CoreAudio) but NOT enough on freshly-bound USB
+            // devices: AUHAL hasn't fully committed the device's HW stream
+            // description yet, and the connect() in the real chain later
+            // trips "Input HW format and tap format not matching" — even
+            // though outputFormat reads a plausible-looking format.
             //
-            // Without this, the first launch path (setDeviceID called) reads
-            // a stale format, uses it to wire up the chain, and engine.start
-            // later fails with kAudioUnitErr_FailedInitialization (-10875)
-            // because the dynamics processor's bus format disagrees with
-            // what's actually being pushed in.
-            newEngine.inputNode.installTap(onBus: 0, bufferSize: 256, format: nil) { _, _ in }
-            newEngine.inputNode.removeTap(onBus: 0)
+            // Force AUHAL to commit by running the engine briefly with a
+            // minimal input→sink chain. The sink's render block firing once
+            // proves AUHAL has pushed real data through and the HW stream
+            // description is now stable. Stop + tear down the warm-up chain
+            // before building the real one.
+            forceAUHALCommit(on: newEngine)
         }
 
         let inputNode = newEngine.inputNode
@@ -332,7 +457,11 @@ class AudioEngine: NSObject, ObservableObject {
 
         guard nativeFormat.channelCount > 0, nativeFormat.sampleRate > 0 else {
             let message = "Selected input device reports no usable format (channels=\(nativeFormat.channelCount), rate=\(nativeFormat.sampleRate))."
-            DispatchQueue.main.async { self.lastError = message }
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
             return
         }
 
@@ -345,23 +474,25 @@ class AudioEngine: NSObject, ObservableObject {
         }
         DispatchQueue.main.async { self.lowQualityInput = isLowQuality }
 
-        // One canonical Float32 deinterleaved format used for every
-        // connection in the chain AND for the tap. Apple's audio-unit
-        // effects (incl. the dynamics processor) require Float32
-        // deinterleaved on their buses; using a single explicit format
-        // eliminates any chance of a mismatch between connect() and the
-        // node's actual stream description.
-        guard let chainFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate:   nativeFormat.sampleRate,
-            channels:     nativeFormat.channelCount,
-            interleaved:  false
-        ) else {
-            let message = "Could not create canonical chain format for selected input."
-            DispatchQueue.main.async { self.lastError = message }
-            return
-        }
-
+        // Use the inputNode's own outputFormat as the chain format.
+        //
+        // AVAudioEngine standardizes input-bus output to Float32 deinterleaved
+        // at the device's native sample rate and channel count — exactly the
+        // canonical format the dynamics processor (and every other Apple AU
+        // effect) requires. We previously rebuilt our own AVAudioFormat with
+        // matching SR / channels / Float32-deinterleaved, on the theory that
+        // an explicit format eliminates connect() mismatches. The opposite
+        // turned out to be true: AVAudioEngine.connect compares the FULL
+        // stream description, INCLUDING channel layout. The inputNode's
+        // outputFormat carries the device's channel layout (e.g.
+        // kAudioChannelLayoutTag_Mono for mono); the format produced by
+        // AVAudioFormat(commonFormat:sampleRate:channels:interleaved:) has
+        // no layout at all. Two formats that look identical in every visible
+        // field then fail with "Input HW format and tap format not matching"
+        // — a reliable repro on USB mics whose layout AUHAL fills in
+        // explicitly. Using inputNode.outputFormat directly carries the
+        // layout through and the validation passes.
+        let chainFormat = nativeFormat
         currentTapFormat = chainFormat
 
         // ── Audio graph ──────────────────────────────────────────────────────
@@ -392,14 +523,76 @@ class AudioEngine: NSObject, ObservableObject {
         let dynamics = makeDynamicsProcessor()
         newEngine.attach(dynamics)
         configureDynamicsProcessor(dynamics)
-        newEngine.connect(inputNode, to: dynamics, format: chainFormat)
+
+        // AVAudioEngine.connect raises NSException (NOT NSError) out of
+        // AVAudioIONodeImpl::SetOutputFormat when the format passed disagrees
+        // with what the input node can actually deliver. Reliably triggered
+        // when binding to a freshly-arrived USB device whose AUHAL format
+        // negotiation hasn't fully settled — the warm-up tap above gets a
+        // best-effort refresh but CoreAudio sometimes needs another beat to
+        // commit the device's real stream description. The exception reason
+        // is "Input HW format and tap format not matching" in that case.
+        //
+        // Swift's do/try/catch can't catch NSException; without this wrapper
+        // the throw rides straight to __cxa_throw → std::terminate → abort.
+        if let exc = ExceptionCatcher.try({
+            newEngine.connect(inputNode, to: dynamics, format: chainFormat)
+        }) {
+            let postFailFormat = newEngine.inputNode.outputFormat(forBus: 0)
+            let reason = exc.reason ?? ""
+            // Race-with-AUHAL signature: the format we just queried doesn't
+            // match what the IO node will actually deliver. Retry the whole
+            // rebuild after a brief delay so CoreAudio can finish negotiation.
+            let isFormatRace = reason.contains("format") && reason.contains("matching")
+            if isFormatRace && attempt < Self.auhalMaxRetries {
+                logger.info(
+                    "connect raced AUHAL device negotiation (attempt \(attempt, privacy: .public)/\(Self.auhalMaxRetries, privacy: .public)); retrying after delay"
+                )
+                // Detach what we attached so far before the new engine spins
+                // up — leaving an orphaned dynamics on a stopped engine is
+                // harmless but noisy in instruments.
+                newEngine.detach(dynamics)
+                // isRebuilding stays true across the 150 ms gap to the
+                // retry — the recursive rebuildEngine call re-asserts it
+                // at the top, and either succeeds (sets false) or fails
+                // again (sets false on the final-failure branch). RECORD
+                // stays disabled throughout the whole retry chain.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.auhalRetryDelay) { [weak self] in
+                    self?.rebuildEngine(with: deviceID, intendedDeviceID: intendedDeviceID, attempt: attempt + 1)
+                }
+                return
+            }
+            logger.error(
+                "connect(input → dynamics) NSException: \(exc.name.rawValue, privacy: .public) — \(reason, privacy: .public). chainFormat: \(chainFormat, privacy: .public) — inputNode.outputFormat: \(postFailFormat, privacy: .public)"
+            )
+            let message = "Could not bind to the selected input. \(reason.isEmpty ? exc.name.rawValue : reason)"
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
 
         // Engine-scoped no-op sink. The render block has to be present but
         // can immediately return noErr — the audio it would otherwise consume
         // is already being captured by the tap installed on `dynamics` below.
         let sink = AVAudioSinkNode { _, _, _ in noErr }
         newEngine.attach(sink)
-        newEngine.connect(dynamics, to: sink, format: chainFormat)
+        if let exc = ExceptionCatcher.try({
+            newEngine.connect(dynamics, to: sink, format: chainFormat)
+        }) {
+            logger.error(
+                "connect(dynamics → sink) NSException: \(exc.name.rawValue, privacy: .public) — \(exc.reason ?? "no reason", privacy: .public)"
+            )
+            let message = "Could not build audio chain. \(exc.reason ?? exc.name.rawValue)"
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
 
         dynamicsProcessor = dynamics
 
@@ -453,16 +646,46 @@ class AudioEngine: NSObject, ObservableObject {
             }
         }
 
-        newEngine.prepare()
-        do {
-            try newEngine.start()
-            self.audioEngine = newEngine
-            engineConfigObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange,
-                object: newEngine,
-                queue: .main
-            ) { [weak self] _ in self?.handleEngineConfigurationChange() }
-        } catch {
+        // newEngine.prepare() can also raise NSException on AUHAL format
+        // disputes — same wrapper rationale as the connects above.
+        if let exc = ExceptionCatcher.try({ newEngine.prepare() }) {
+            logger.error(
+                "engine.prepare NSException: \(exc.name.rawValue, privacy: .public) — \(exc.reason ?? "no reason", privacy: .public)"
+            )
+            let message = "Could not prepare audio engine. \(exc.reason ?? exc.name.rawValue)"
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
+
+        // engine.start can fail two ways: NSError (try/catch path) for the
+        // -10875 family, AND NSException for format disputes that surface
+        // out of Start() in some AUHAL versions. Catch both.
+        var startNSError: Error?
+        let startExc = ExceptionCatcher.try({
+            do {
+                try newEngine.start()
+            } catch {
+                startNSError = error
+            }
+        })
+        if let exc = startExc {
+            let postFailFormat = newEngine.inputNode.outputFormat(forBus: 0)
+            logger.error(
+                "engine.start NSException: \(exc.name.rawValue, privacy: .public) — \(exc.reason ?? "no reason", privacy: .public). chainFormat: \(chainFormat, privacy: .public) — inputNode.outputFormat: \(postFailFormat, privacy: .public)"
+            )
+            let message = "Failed to start audio engine. \(exc.reason ?? exc.name.rawValue)"
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
+        if let error = startNSError {
             // Capture format snapshots so the unified log shows the format we
             // wired the chain with vs. what the inputNode actually reports now.
             // If they differ, we hit the AUHAL setDeviceID staleness window
@@ -474,8 +697,79 @@ class AudioEngine: NSObject, ObservableObject {
                 "engine.start failed (-10875 family): connect-time format \(chainFormat, privacy: .public) — post-failure inputNode.outputFormat \(postFailFormat, privacy: .public) — error: \(error.localizedDescription, privacy: .public)"
             )
             let message = "Failed to start audio engine: \(error.localizedDescription)"
-            DispatchQueue.main.async { self.lastError = message }
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
         }
+
+        self.audioEngine = newEngine
+        engineConfigObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: newEngine,
+            queue: .main
+        ) { [weak self] _ in self?.handleEngineConfigurationChange() }
+
+        // Verify the rebuild landed on the device the caller intended.
+        //
+        // `setSystemDefaultInputDevice` returns noErr for some virtual
+        // devices (ZoomAudioDevice, Descript Loopback Recorder, others)
+        // even though CoreAudio quietly refuses the change — the system
+        // default property stays at the previous value, and AUHAL binds
+        // the new engine to that previous device. The meter and writer
+        // then capture from the wrong source. Pre-check via
+        // `kAudioDevicePropertyStreams` can't filter these out: they
+        // honestly report input streams with channels.
+        //
+        // The reliable detector is to re-read the system default after
+        // the rebuild and compare to what the caller asked for. If they
+        // differ, CoreAudio silently rejected the switch. The engine is
+        // still on the previous (working) device — no restore needed —
+        // but the user's pick was not honoured, so flip `selectedDeviceUsable`
+        // false. The VM's computed label then reads "(no input)" and the
+        // RECORD button is disabled via the existing `canStartRecording`
+        // gate (which AND-s on `selectedDeviceUsable`).
+        //
+        // `engineHealthy` stays true because the engine itself is fine;
+        // it's the user's pick that's unusable.
+        let resolvedSystemDefault = currentSystemDefaultInputDevice()
+        let silentFallback: Bool
+        if let intended = intendedDeviceID {
+            silentFallback = (resolvedSystemDefault ?? 0) != intended
+            if silentFallback {
+                logger.warning(
+                    "CoreAudio silently rejected setSystemDefaultInputDevice — intended=\(intended, privacy: .public) but systemDefault=\(resolvedSystemDefault ?? 0, privacy: .public). Engine remains on the previously bound device."
+                )
+            }
+        } else {
+            silentFallback = false
+        }
+
+        // Engine reached .start without throwing — that's "healthy" enough
+        // to drive the UI label.
+        DispatchQueue.main.async {
+            self.engineHealthy = true
+            self.isRebuilding = false
+            if silentFallback {
+                self.selectedDeviceUsable = false
+            }
+        }
+    }
+
+    /// Called on every successful AVAssetWriterInput.append. Bumps
+    /// isWritingData true (if needed) and reschedules the "clear after
+    /// 150 ms" task so the indicator stays lit while buffers keep arriving
+    /// and goes dark only when the flow actually stops.
+    private func markDataFlowing() {
+        if !isWritingData { isWritingData = true }
+        writeIndicatorClearWork?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.isWritingData = false
+        }
+        writeIndicatorClearWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: item)
     }
 
     private func handleEngineConfigurationChange() {
@@ -506,9 +800,19 @@ class AudioEngine: NSObject, ObservableObject {
             mediaType: .audio,
             position: .unspecified
         )
-        self.availableInputDevices = session.devices
+        // Filter out macOS's internal "CADefaultDeviceAggregate-*" devices.
+        // These are wrapper aggregates CoreAudio auto-creates around the
+        // current system default whenever AUHAL needs to bind via the
+        // default-device path. They have user-visible names like
+        // "CADefaultDeviceAggregate-84517-1" that mean nothing to the user;
+        // picking one is functionally a no-op (it re-points at whatever the
+        // real default already is) but visually confusing in the picker.
+        let visibleDevices = session.devices.filter {
+            !$0.localizedName.hasPrefix("CADefaultDeviceAggregate")
+        }
+        self.availableInputDevices = visibleDevices
         deviceKindCache = Dictionary(
-            uniqueKeysWithValues: session.devices.map { ($0.uniqueID, classify($0)) }
+            uniqueKeysWithValues: visibleDevices.map { ($0.uniqueID, classify($0)) }
         )
 
         // Diff against the previous device list to detect hot-plug arrivals.
@@ -525,12 +829,15 @@ class AudioEngine: NSObject, ObservableObject {
         // during that loop (app activation, another hot-plug, engine config
         // change) would otherwise see the same UID as "new" again and stack
         // duplicate prompts.
-        let currentUIDs = Set(session.devices.map { $0.uniqueID })
+        // Diff against the filtered list — we don't want to fire the
+        // hot-plug callback for macOS-internal aggregates appearing
+        // (which happens every time CoreAudio rebuilds them under us).
+        let currentUIDs = Set(visibleDevices.map { $0.uniqueID })
         if hasSeededKnownDevices {
             let newUIDs = currentUIDs.subtracting(knownInputDeviceUIDs)
             knownInputDeviceUIDs = currentUIDs
             for uid in newUIDs {
-                if let device = session.devices.first(where: { $0.uniqueID == uid }),
+                if let device = visibleDevices.first(where: { $0.uniqueID == uid }),
                    isUSBDevice(device) {
                     onNewUSBDeviceDetected?(device)
                 }
@@ -745,7 +1052,11 @@ class AudioEngine: NSObject, ObservableObject {
     /// confirmation path.
     func cancelRecording(completion: @escaping () -> Void) {
         isRecording = false
-        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        DispatchQueue.main.async {
+            self.sidecarUnavailable = false
+            self.writeIndicatorClearWork?.cancel()
+            self.isWritingData = false
+        }
         // Drain any buffer-copy dispatches that were already in flight on
         // writerQueue before isRecording was cleared.
         writerQueue.sync {}
@@ -869,6 +1180,11 @@ class AudioEngine: NSObject, ObservableObject {
             writerFrameCount += Int64(convertedBuffer.frameLength)
             consecutiveWriteErrors = 0
             writerLock.unlock()
+            // Bump the write-flow indicator. Goes on main; the indicator's
+            // own work-item rate-limits the off transition.
+            DispatchQueue.main.async { [weak self] in
+                self?.markDataFlowing()
+            }
         } else {
             consecutiveWriteErrors += 1
             if consecutiveWriteErrors >= writeErrorThreshold {
@@ -978,9 +1294,22 @@ class AudioEngine: NSObject, ObservableObject {
         return sampleBuffer
     }
     
-    func stopRecording(completion: @escaping (Result<URL, Error>) -> Void) {
+    /// Finalize the in-progress recording.
+    ///
+    /// Completion delivers `.success(url)` for a saved file, `.success(nil)`
+    /// when nothing was captured (silent discard — no error surfaced to the
+    /// user), or `.failure(error)` for an actual failure during finalization.
+    /// The zero-frame case is treated as a silent discard rather than an
+    /// error because by spec the user should never see a failure screen for
+    /// a session where the meter showed real signal — and if the meter saw
+    /// nothing either, the take is simply empty and unworth surfacing.
+    func stopRecording(completion: @escaping (Result<URL?, Error>) -> Void) {
         isRecording = false
-        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        DispatchQueue.main.async {
+            self.sidecarUnavailable = false
+            self.writeIndicatorClearWork?.cancel()
+            self.isWritingData = false
+        }
         // Drain any buffer-copy dispatches that were already in flight on
         // writerQueue before isRecording was cleared.
         writerQueue.sync {}
@@ -1008,20 +1337,17 @@ class AudioEngine: NSObject, ObservableObject {
             return
         }
 
-        // Zero-frame guard. If the tap never delivered a buffer to the
-        // writer (either because the engine was still warming up — see the
-        // first-buffer wait in startRecording — or because STOP fired
-        // inside the same render cycle as RECORD), finishWriting() would
-        // happily produce a 0-byte file and the caller's size>0 check
-        // would blame the mic. Cancel the writer, drop the sidecar, and
-        // surface a specific error so the caller can show a useful
-        // "recording too brief" message.
+        // Zero-frame guard — silent discard, no error. The writer never got a
+        // buffer (engine still warming up, or STOP fired inside the same
+        // render cycle as RECORD). Drop the sidecar, cancel the writer, and
+        // return `.success(nil)` so the VM treats it as "nothing to do" and
+        // returns to .ready without an error screen.
         if appendedFrameCount == 0 {
-            logger.warning("stopRecording with zero frames appended — cancelling writer (no audio captured)")
+            logger.info("stopRecording with zero frames appended — silently discarding")
             sidecar?.discard()
             writer.cancelWriting()
             DispatchQueue.main.async {
-                completion(.failure(RecordingError.noAudioCaptured))
+                completion(.success(nil))
             }
             return
         }
@@ -1044,11 +1370,125 @@ class AudioEngine: NSObject, ObservableObject {
     }
     
     func setDevice(_ device: AVCaptureDevice) {
-        if let id = audioDeviceID(forUID: device.uniqueID) {
-            rebuildEngine(with: id)
-        } else {
+        guard let id = audioDeviceID(forUID: device.uniqueID) else {
             logger.error("Failed to translate device UID to AudioDeviceID: \(device.uniqueID, privacy: .public)")
+            return
         }
+
+        // Pre-check: does this device actually have input streams?
+        //
+        // AUHAL silently falls back to a previously-bound device when asked
+        // to bind to one with no input streams (output-only devices,
+        // aggregate devices whose sub-devices have no input, broken
+        // virtuals). The engine "succeeds" but feeds audio from the wrong
+        // source — the meter shows signal that doesn't match the user's
+        // pick. Reject the switch here before AUHAL gets a chance.
+        //
+        // Note: this is a NECESSARY but not SUFFICIENT check. Some virtual
+        // devices (Zoom, Descript loopback) honestly report input streams
+        // but CoreAudio still refuses them as the system default — the
+        // post-rebuild systemDefault re-read in rebuildEngine catches
+        // those.
+        if !deviceHasInputStreams(id) {
+            logger.info("Selected device has no input streams — refusing switch: \(device.localizedName, privacy: .public)")
+            DispatchQueue.main.async { self.selectedDeviceUsable = false }
+            return
+        }
+        DispatchQueue.main.async { self.selectedDeviceUsable = true }
+
+        // Change the macOS system default input device, then rebuild the
+        // engine with `deviceID: nil` so AVAudioEngine binds the inputNode
+        // via the system-default path.
+        //
+        // We deliberately avoid AVAudioEngine's setDeviceID route here.
+        // setDeviceID races AUHAL's HW-stream-description commit on
+        // freshly-arrived USB devices: the new inputNode reports a
+        // plausible-looking outputFormat, but the underlying HW format
+        // isn't yet what AUHAL has actually committed. AVAudioEngine.connect
+        // then throws an NSException ("Input HW format and tap format not
+        // matching") from AVAudioIONodeImpl::SetOutputFormat — uncatchable
+        // from Swift do/try/catch, crashing without the ExceptionCatcher
+        // wrapper. Even running the engine briefly to force commit, with
+        // multiple retries, doesn't reliably win the race on all devices.
+        //
+        // The default-device path bypasses the issue entirely because
+        // AVAudioEngine binds the inputNode through AUHAL's default-device
+        // resolution at engine construction time, which doesn't race the
+        // same way. The "Try Again" recovery in the UI proves this: it
+        // calls audioEngine.start() which goes down this same rebuild-with-
+        // nil path and reliably succeeds.
+        //
+        // Side effect: the macOS system default input changes. For
+        // DoublEnder's single-purpose use case (a podcast guest recording
+        // their side of a remote interview) this is acceptable — the user
+        // explicitly picked this mic and any other audio app honoring the
+        // system default will follow that choice too.
+        if setSystemDefaultInputDevice(id) {
+            // intendedDeviceID lets rebuildEngine's post-rebuild verification
+            // detect AUHAL silently falling back to a different device when
+            // the requested one has no usable input streams.
+            rebuildEngine(with: nil, intendedDeviceID: id)
+        } else {
+            // Fall back to the setDeviceID path with ExceptionCatcher
+            // protection. May still surface a format error on a freshly-
+            // arrived USB device, but at least it won't crash.
+            logger.warning("Could not set system default input — falling back to setDeviceID for \(device.uniqueID, privacy: .public)")
+            rebuildEngine(with: id)
+        }
+    }
+
+    /// Read the current macOS system-wide default input device via
+    /// CoreAudio. Used by `rebuildEngine` to detect silent fallback:
+    /// `setSystemDefaultInputDevice` returns noErr for some virtual devices
+    /// (ZoomAudioDevice, Descript Loopback Recorder, others) but CoreAudio
+    /// quietly refuses the change and leaves the property at its previous
+    /// value. Re-reading after the rebuild tells us what the engine is
+    /// actually on. Returns nil on query failure.
+    private func currentSystemDefaultInputDevice() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address, 0, nil, &size, &deviceID
+        )
+        return (status == noErr && deviceID != 0) ? deviceID : nil
+    }
+
+    /// Set the macOS system-wide default input device via CoreAudio.
+    /// Returns true on success. The change is synchronous — once this
+    /// returns, a freshly-constructed AVAudioEngine will see the new device
+    /// as its inputNode's bound device.
+    ///
+    /// Caveat: returning true does NOT guarantee CoreAudio actually applied
+    /// the change. Some virtual devices accept the call (no error) but
+    /// CoreAudio silently leaves the system default at its previous value.
+    /// Callers must re-read via `currentSystemDefaultInputDevice` to verify.
+    private func setSystemDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var id = deviceID
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0, nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &id
+        )
+        if status != noErr {
+            logger.error(
+                "Set system default input failed: status \(status, privacy: .public)"
+            )
+            return false
+        }
+        return true
     }
 
     /// Resolve an `AVCaptureDevice.uniqueID` to its CoreAudio device ID.
@@ -1072,6 +1512,63 @@ class AudioEngine: NSObject, ObservableObject {
             )
         }
         return status == noErr ? deviceID : nil
+    }
+
+    /// True when the CoreAudio device has at least one input stream.
+    /// Output-only devices, aggregate devices with no input sub-devices,
+    /// and broken virtuals return false. Returns true on query failure to
+    /// avoid false rejections — better to let AUHAL try and surface its
+    /// own error than to block a device because we couldn't enumerate.
+    private func deviceHasInputStreams(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        guard status == noErr else {
+            logger.warning("Could not query input streams for device \(deviceID, privacy: .public): status \(status, privacy: .public) — assuming usable")
+            return true
+        }
+        let streamCount = Int(dataSize) / MemoryLayout<AudioStreamID>.size
+        return streamCount > 0
+    }
+
+    /// Sum of `mNumberChannels` across every buffer in the device's input
+    /// stream-configuration AudioBufferList. This is the *real* input
+    /// channel count — aggregate devices sometimes report nonzero
+    /// `kAudioDevicePropertyStreams` even when no member device contributes
+    /// channels, but this property reflects the actual buffer layout AUHAL
+    /// will use. Returns -1 on query failure (distinct from 0 so the log
+    /// can disambiguate "query failed" from "really zero channels").
+    /// Diagnostic-only at the moment — not consulted for the
+    /// `selectedDeviceUsable` decision.
+    private func deviceInputChannelCount(_ deviceID: AudioDeviceID) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        guard sizeStatus == noErr, dataSize > 0 else {
+            logger.warning("[DIAG deviceInputChannelCount] dataSize query failed device=\(deviceID, privacy: .public) status=\(sizeStatus, privacy: .public)")
+            return -1
+        }
+        let buf = UnsafeMutableRawPointer.allocate(byteCount: Int(dataSize), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { buf.deallocate() }
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, buf)
+        guard status == noErr else {
+            logger.warning("[DIAG deviceInputChannelCount] get failed device=\(deviceID, privacy: .public) status=\(status, privacy: .public)")
+            return -1
+        }
+        let bufferList = UnsafeMutableAudioBufferListPointer(buf.assumingMemoryBound(to: AudioBufferList.self))
+        var total = 0
+        for buffer in bufferList {
+            total += Int(buffer.mNumberChannels)
+        }
+        return total
     }
 
     private func transportType(for deviceID: AudioDeviceID) -> UInt32? {

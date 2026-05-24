@@ -213,13 +213,9 @@ struct ContentView: View {
                 .position(x: 461, y: 378)
                 .allowsHitTesting(false)
 
-            // 6 ── Version overlay — below the baked "DoublEnder" text in the
-            //      lower-left bezel. Identical padding to Cloud.
-            versionOverlay
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                .padding(.leading, 94)
-                .padding(.bottom, 21)
-                .allowsHitTesting(false)
+            // (Version overlay was previously drawn here on the faceplate;
+            // it now lives inside the touchscreen at the bottom-left of the
+            // content area — see `mainView` / `deviceLabelRow`.)
         }
         .frame(width: windowSize.width, height: windowSize.height)
         .background(Color.clear)
@@ -318,9 +314,77 @@ struct ContentView: View {
                     )
                 }
             )
+            deviceLabelRow
             Spacer(minLength: vpInnerPad)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Bottom info row (version + device label + write indicator)
+
+    /// Bottom row inside the touchscreen, three elements sharing one
+    /// horizontal line: app version at the left edge, active input device
+    /// name centered, "WRITING •" indicator at the right edge. All three
+    /// share the same monospaced 7pt type so the row reads as a single
+    /// strip of secondary metadata.
+    ///
+    /// ZStack rather than HStack so the device label is truly centred on
+    /// the full content width — the version (left) and the writing
+    /// indicator (right) sit on top with their own alignment frames and
+    /// don't push the centre element off-axis.
+    private var deviceLabelRow: some View {
+        ZStack {
+            Text(viewModel.boundInputDeviceName ?? "—")
+                .font(metadataFont)
+                .foregroundColor(secondaryAmber)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            versionInScreen
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            writeIndicator
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(width: vpContentWidth)
+        .padding(.top, 4)
+    }
+
+    /// In-screen version label, e.g. "v1.6.21LE". Numeric prefix +
+    /// uppercased suffix concatenated in one run.
+    private var versionInScreen: some View {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let (numeric, suffix) = splitVersionSuffix(version)
+        return Text("v\(numeric)\(suffix.uppercased())")
+            .font(metadataFont)
+            .foregroundColor(secondaryAmber)
+            .lineLimit(1)
+    }
+
+    /// "WRITING" indicator. Bright amber when the writer is actively
+    /// appending buffers, muted amber when idle. Label text is always
+    /// present — only the colour changes between states.
+    private var writeIndicator: some View {
+        Text("WRITING")
+            .font(metadataFont)
+            .foregroundColor(viewModel.isWritingData ? activeAmber : secondaryAmber)
+    }
+
+    /// Shared typography for the bottom-row metadata strip.
+    private var metadataFont: Font {
+        .system(size: 7, weight: .medium, design: .monospaced)
+    }
+
+    /// Muted amber #A0600A — idle colour for the bottom-row metadata strip.
+    private var secondaryAmber: Color {
+        Color(red: 0xA0/255, green: 0x60/255, blue: 0x0A/255)
+    }
+
+    /// Bright amber #F5A623 — active colour for the WRITING indicator
+    /// when buffers are landing in the writer.
+    private var activeAmber: Color {
+        Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)
     }
 
     // MARK: - Counter window
@@ -401,7 +465,12 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .disabled(isStopping)
+        // RECORD is disabled when the engine isn't ready to capture (e.g.,
+        // last rebuild failed, picked device has no input streams). STOP
+        // during an active recording is always allowed — `canStartRecording`
+        // is only consulted when NOT already recording, so a partial engine
+        // failure during a take doesn't strand the user without a STOP.
+        .disabled(isStopping || (!isRecordingState && !viewModel.canStartRecording))
     }
 
     private func handleRecordTap() {
@@ -411,31 +480,17 @@ struct ContentView: View {
             isStopping = true
             viewModel.stopRecording { isStopping = false }
         case .selectingMic, .ready:
+            // Mirror the same gate the button uses, so if the disabled
+            // modifier ever races with a tap we still don't drive the
+            // record path against an unhealthy engine.
+            guard viewModel.canStartRecording else { return }
             viewModel.startRecording()
         default:
             break
         }
     }
 
-    // MARK: - Version overlay
-
-    /// Dynamic version number rendered below the baked "DoublEnder"
-    /// wordmark in de_faceplate.png. Identical typography to CloudContentView.
-    ///
-    /// Numeric "v1.6.18" sits at the main size; any trailing letter suffix
-    /// ("le" for Local, "ce" for Cloud, brand-specific for branded builds)
-    /// is uppercased and rendered ~64% size on the same baseline so it
-    /// reads as a typographic build-flavour tag, not a word.
-    private var versionOverlay: some View {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
-        let (numeric, suffix) = splitVersionSuffix(version)
-        return (Text("v\(numeric)").font(handelFont(size: 14))
-                + Text(suffix.uppercased()).font(handelFont(size: 9)))
-            .fontWeight(.thin)
-            .foregroundColor(Color(red: 0x18/255, green: 0x18/255, blue: 0x18/255))
-            .shadow(color: .white.opacity(0.10), radius: 0, x: 0, y: 1)
-            .opacity(0.65)
-    }
+    // MARK: - Version split helper
 
     /// Split a version string into its numeric prefix and trailing letter
     /// suffix. Mirrors UpdateChecker.numericVersion's stripping logic so the
@@ -571,8 +626,8 @@ private struct MeterRow: View {
     }
 
     /// Standalone meter unit: bordered container with segment bar + CLIP cell,
-    /// dBFS labels stacked below. Extracted from the row body so the Swift
-    /// type-checker can finish in reasonable time.
+    /// dBFS labels stacked below. The write-flow indicator lives outside this
+    /// unit — see ContentView.writeIndicator in the bottom info row.
     @ViewBuilder
     private func meterUnit(
         meterW: CGFloat,
