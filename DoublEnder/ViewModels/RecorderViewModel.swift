@@ -45,7 +45,6 @@ class RecorderViewModel: ObservableObject {
     /// content view and the menubar commands.
     static let shared = RecorderViewModel()
 
-    private static let selectedDeviceKey = "selectedInputDeviceID"
     private static let filenameBaseKey = "filenameBase"
     private static let outputFormatKey = "outputFormat"
     /// UID → first-seen timestamp (seconds since 1970) for every USB device
@@ -107,7 +106,6 @@ class RecorderViewModel: ObservableObject {
 
     @Published var selectedInputDeviceID: String = "" {
         didSet {
-            UserDefaults.standard.set(selectedInputDeviceID, forKey: Self.selectedDeviceKey)
             if let device = availableInputDevices.first(where: { $0.uniqueID == selectedInputDeviceID }) {
                 audioEngine.setDevice(device)
             }
