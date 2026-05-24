@@ -186,13 +186,13 @@ struct ContentView: View {
                 .frame(width: windowSize.width, height: windowSize.height)
                 .allowsHitTesting(false)
 
-            // 3.5 ── Diamond badge — sits on the faceplate's top bezel, centred.
-            //        Sized to match del_faceplate.png mockup proportions (~40×34 pt).
+            // 3.5 ── Diamond badge — lower-left bezel, matching del_faceplate.png mockup.
+            //        Pixel-diff measurement: center (54, 383) pt, frame 40×35 pt.
             Image("de_badge")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 40, height: 34)
-                .position(x: windowSize.width / 2, y: 34)
+                .frame(width: 40, height: 35)
+                .position(x: 54, y: 383)
                 .allowsHitTesting(false)
 
             // 4 ── Screen glow — amber light spills from cutout onto inner bezel.
