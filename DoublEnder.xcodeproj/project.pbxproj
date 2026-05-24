@@ -423,7 +423,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.5.26cr;
+				MARKETING_VERSION = 1.5.27cr;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnderCloud;
 				PRODUCT_NAME = "DoublEnder Cloud";
 				SDKROOT = macosx;
@@ -532,7 +532,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.5.26cr;
+				MARKETING_VERSION = 1.5.27cr;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnderCloud;
 				PRODUCT_NAME = "DoublEnder Cloud";
 				SDKROOT = macosx;
