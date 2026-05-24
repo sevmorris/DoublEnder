@@ -48,6 +48,12 @@ struct DoublEnderApp: App {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                #else
+                Button("Support on Ko-fi") {
+                    if let url = URL(string: "https://ko-fi.com/sevenmorris") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
                 #endif
 
                 Button("Report an Issue…") {

@@ -11,6 +11,10 @@
   <a href="https://sevmorris.github.io/DoublEnder/">App Page</a>
 </p>
 
+<p align="center">
+  <a href="https://ko-fi.com/sevenmorris"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi" /></a>
+</p>
+
 > **No installer needed.** DoublEnder is a self-contained app — just double-click it wherever it is: your Desktop, Downloads folder, an external drive, or anywhere else you like.
 
 Pick your microphone, hit the button, get an AAC file on your Desktop. That's it.
