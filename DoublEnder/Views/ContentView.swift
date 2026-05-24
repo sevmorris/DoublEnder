@@ -186,15 +186,6 @@ struct ContentView: View {
                 .frame(width: windowSize.width, height: windowSize.height)
                 .allowsHitTesting(false)
 
-            // 3.5 ── Diamond badge — lower-left bezel, matching del_faceplate.png mockup.
-            //        Pixel-diff measurement: center (54, 383) pt, frame 40×35 pt.
-            Image("de_badge")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 40, height: 35)
-                .position(x: 54, y: 383)
-                .allowsHitTesting(false)
-
             // 4 ── Screen glow — amber light spills from cutout onto inner bezel.
             screenGlow
 
