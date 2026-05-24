@@ -112,4 +112,10 @@ targets:
         CFBundleDisplayName: "$(BUNDLE_DISPLAY_NAME)"
         DefaultRecordingPrefix: "$(DEFAULT_RECORDING_PREFIX)"
         UpdateManifestURL: "$(UPDATE_MANIFEST_URL)"
+        # Brand badge geometry — injected by release-cloud-branded.sh via
+        # xcodebuild overrides. Empty in standard Cloud builds (badge suppressed).
+        BrandBadgeX: "$(BRAND_BADGE_X)"
+        BrandBadgeY: "$(BRAND_BADGE_Y)"
+        BrandBadgeW: "$(BRAND_BADGE_W)"
+        BrandBadgeH: "$(BRAND_BADGE_H)"
 

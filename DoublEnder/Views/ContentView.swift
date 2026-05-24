@@ -187,13 +187,11 @@ struct ContentView: View {
                 .allowsHitTesting(false)
 
             // 3.5 ── Diamond badge — sits on the faceplate's top bezel, centred.
-            //        Source is 750×640 (1.17:1); rendered at 66×56 pt with top
-            //        edge at y=6 (6 pt of bezel above) — fully inside the 79 pt
-            //        top bezel and clear of the screen cutout at y=79.
+            //        Sized to match del_faceplate.png mockup proportions (~40×34 pt).
             Image("de_badge")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 66, height: 56)
+                .frame(width: 40, height: 34)
                 .position(x: windowSize.width / 2, y: 34)
                 .allowsHitTesting(false)
 
