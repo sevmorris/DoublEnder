@@ -18,7 +18,7 @@ settings:
     # so the build flavour is visible at a glance in the version overlay,
     # download filenames, and crash reports. release.sh's regex rewrites
     # match an optional letter suffix so future bumps stay self-consistent.
-    MARKETING_VERSION: "1.6.23lr"
+    MARKETING_VERSION: "1.6.24lr"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
