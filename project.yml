@@ -14,11 +14,11 @@ settings:
     # AVFoundation throws NSException out of paths Swift can't catch
     # (AVAudioEngine.connect's format-mismatch crash among them).
     SWIFT_OBJC_BRIDGING_HEADER: DoublEnder/DoublEnder-Bridging-Header.h
-    # Public DoublEnder ("Local") build. The "le" suffix mirrors Cloud's "ce"
+    # Public DoublEnder ("Local") build. The "lr" suffix mirrors Cloud's "cr"
     # so the build flavour is visible at a glance in the version overlay,
     # download filenames, and crash reports. release.sh's regex rewrites
     # match an optional letter suffix so future bumps stay self-consistent.
-    MARKETING_VERSION: "1.6.22le"
+    MARKETING_VERSION: "1.6.22lr"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
@@ -91,8 +91,8 @@ targets:
         UPDATE_MANIFEST_URL: "https://storage.googleapis.com/doublender-downloads/cloud-latest.json"
         # Independent of the public app's MARKETING_VERSION (settings.base).
         # release-cloud.sh auto-increments the patch on every run, preserving
-        # the "ce" suffix that distinguishes Cloud builds from the public app.
-        MARKETING_VERSION: "1.5.26ce"
+        # the "cr" suffix that distinguishes Cloud builds from the public app.
+        MARKETING_VERSION: "1.5.26cr"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIconCloud
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: GCS_ENABLED
         CODE_SIGN_STYLE: Automatic

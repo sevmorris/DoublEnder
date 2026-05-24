@@ -77,10 +77,10 @@ else
     # the README later doesn't quietly resurrect the bug.
     sed -i '' "s|\*\*Version:\*\* ${ESC_CURRENT}|**Version:** ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
     sed -i '' "s|<strong>Version:</strong> ${ESC_CURRENT}|<strong>Version:</strong> ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
-    # Patterns accept an optional trailing letter suffix (e.g. "le") so that
-    # "DoublEnder-v1.6.18le.dmg" or "Download v1.6.18le" rewrite cleanly on
+    # Patterns accept an optional trailing letter suffix (e.g. "lr") so that
+    # "DoublEnder-v1.6.18lr.dmg" or "Download v1.6.18lr" rewrite cleanly on
     # the next bump. The suffix matches the convention public DoublEnder
-    # ("le") and Cloud ("ce") share — see settings.base MARKETING_VERSION.
+    # ("lr") and Cloud ("cr") share — see settings.base MARKETING_VERSION.
     sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/README.md"
     sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
     sed -i '' "s|Download v[0-9][0-9.]*[a-z]*|Download ${TAG}|g" "$PROJECT_DIR/docs/index.html"
