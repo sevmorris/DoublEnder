@@ -211,7 +211,11 @@ struct ContentView: View {
                 .scaledToFit()
                 .frame(width: 22, height: 22)
                 .position(x: 461, y: 378)
-                .allowsHitTesting(false)
+                // Hit-testing is enabled only when recording so the tooltip can
+                // fire on hover; while idle the LED stays click-through so the
+                // bezel-area window drag isn't blocked.
+                .allowsHitTesting(isRecordingState)
+                .help(isRecordingState ? "Recording in progress" : "")
 
             // (Version overlay was previously drawn here on the faceplate;
             // it now lives inside the touchscreen at the bottom-left of the
