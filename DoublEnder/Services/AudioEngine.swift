@@ -868,6 +868,27 @@ class AudioEngine: NSObject, ObservableObject {
         availableInputDevices.filter { isUSBDevice($0) }
     }
 
+    /// True if `device` is the Mac's built-in hardware input per CoreAudio
+    /// transport. MacBook built-in mics return true; USB / Bluetooth /
+    /// aggregate / virtual devices return false. RecorderViewModel uses
+    /// this at launch to seed the engine with the Mac's native hardware
+    /// input — a deterministic starting state independent of saved
+    /// preferences or currently-attached USB devices.
+    func isBuiltInDevice(_ device: AVCaptureDevice) -> Bool {
+        guard let id = audioDeviceID(forUID: device.uniqueID),
+              let transport = transportType(for: id) else {
+            return false
+        }
+        return transport == kAudioDeviceTransportTypeBuiltIn
+    }
+
+    /// First built-in hardware input device, or nil on Macs that have none
+    /// (Mac mini, Mac Studio, etc.). Returns in discovery order — there is
+    /// almost never more than one on a single machine.
+    func builtInInputDevice() -> AVCaptureDevice? {
+        availableInputDevices.first { isBuiltInDevice($0) }
+    }
+
     /// Hardware mics vs. aggregate/virtual devices, preserving discovery
     /// order within each group. Driven by the cache built in
     /// `refreshDevices()`, with a lazy fallback for safety.

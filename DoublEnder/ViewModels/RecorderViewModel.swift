@@ -409,35 +409,47 @@ class RecorderViewModel: ObservableObject {
                 guard let self = self else { return }
                 if granted {
                     self.audioEngine.refreshDevices()
-                    let devices = self.audioEngine.availableInputDevices
                     self.recordCurrentUSBDevicesFirstSeen()
 
-                    // USB-mic hard override: podcast guests who plug in a USB
-                    // mic almost always want to record with it, so a present
-                    // USB device beats any saved preference. Multiple USB
-                    // devices break the tie by most-recent first-seen
-                    // timestamp, which captures "I just plugged this in"
-                    // intent across launches.
-                    if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
-                        self.selectedInputDeviceID = usbDevice.uniqueID
+                    // Deterministic launch: always seed the engine with the
+                    // Mac's built-in hardware mic, regardless of any saved
+                    // preference or currently-attached USB device. This
+                    // gives every launch the same predictable starting
+                    // state and avoids the AUHAL setDeviceID race that
+                    // freshly-bound USB devices can trigger before
+                    // CoreAudio has committed their HW stream description.
+                    //
+                    // The post-init USB prompt below offers a one-tap
+                    // switch when a USB input is present, so podcast
+                    // guests still default to the mic they expect — they
+                    // just confirm the switch explicitly rather than have
+                    // it happen silently from saved state.
+                    if let builtIn = self.audioEngine.builtInInputDevice() {
+                        self.selectedInputDeviceID = builtIn.uniqueID
+                    } else if let fallback = self.preferredDefaultDevice() {
+                        // No built-in mic on this Mac (Mac mini, Mac
+                        // Studio, etc.). Fall back to the first non-
+                        // virtual mic so we still have an engine running
+                        // when the USB prompt fires below.
+                        self.selectedInputDeviceID = fallback.uniqueID
                     } else {
-                        // No USB — restore saved preference if it's still
-                        // present, otherwise fall back to the best hardware
-                        // mic (built-in / Bluetooth), avoiding virtual
-                        // devices. m7: restoring the saved device ID *before*
-                        // starting the engine avoids start-then-rebuild churn.
-                        let saved = UserDefaults.standard.string(forKey: Self.selectedDeviceKey) ?? ""
-                        if devices.contains(where: { $0.uniqueID == saved }) {
-                            self.selectedInputDeviceID = saved  // triggers setDevice → rebuildEngine
-                        } else if let device = self.preferredDefaultDevice() {
-                            self.selectedInputDeviceID = device.uniqueID
-                        } else {
-                            // No devices at all — start with system default
-                            // and wait for the user to plug something in.
-                            self.audioEngine.start()
-                        }
+                        // No input devices at all — engine stays stopped;
+                        // user will see the normal "no device" state.
+                        self.audioEngine.start()
                     }
                     self.state = .ready
+
+                    // Post-init USB offer: if a USB input is currently
+                    // present, fire the same prompt the hot-plug detector
+                    // uses. AudioEngine.refreshDevices seeds its known-UID
+                    // set on its first call, so `onNewUSBDeviceDetected`
+                    // does NOT fire for launch-time USBs — we drive the
+                    // prompt from here explicitly. Most-recent-first-seen
+                    // wins when multiple USBs are present, capturing
+                    // "the one I just plugged in" intent across launches.
+                    if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
+                        self.presentUSBSwitchPrompt(for: usbDevice)
+                    }
                 } else {
                     self.state = .error("Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable DoublEnder.")
                 }
