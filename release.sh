@@ -71,12 +71,13 @@ else
     ESC_VERSION=$(printf '%s'  "$VERSION" | sed 's/[.[\*^$]/\\&/g')
     sed -i '' "s/MARKETING_VERSION: \"${ESC_CURRENT}\"/MARKETING_VERSION: \"${ESC_VERSION}\"/g" \
         "$PROJECT_DIR/project.yml"
-    # README's "Version:" line is currently HTML (<strong>) not Markdown
-    # (**); the old Markdown-only pattern silently no-op'd from v1.6.18
-    # onward, leaving the display text stale. Handle both so reformatting
-    # the README later doesn't quietly resurrect the bug.
-    sed -i '' "s|\*\*Version:\*\* ${ESC_CURRENT}|**Version:** ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
-    sed -i '' "s|<strong>Version:</strong> ${ESC_CURRENT}|<strong>Version:</strong> ${ESC_VERSION}|g" "$PROJECT_DIR/README.md"
+    # README version badge: match any X.Y.Z[suffix] so the pattern succeeds
+    # even when the badge carries a different suffix than the version currently
+    # in project.yml (e.g. bumping suffix from "lr"→"cr" or across releases
+    # where the README was left stale).  Handle both the HTML (<strong>) and
+    # Markdown (**) variants so either format rewrites cleanly.
+    sed -i '' "s|\*\*Version:\*\* [0-9][0-9.]*[a-z]*|**Version:** ${VERSION}|g" "$PROJECT_DIR/README.md"
+    sed -i '' "s|<strong>Version:</strong> [0-9][0-9.]*[a-z]*|<strong>Version:</strong> ${VERSION}|g" "$PROJECT_DIR/README.md"
     # Patterns accept an optional trailing letter suffix (e.g. "lr") so that
     # "DoublEnder-v1.6.18lr.dmg" or "Download v1.6.18lr" rewrite cleanly on
     # the next bump. The suffix matches the convention public DoublEnder
