@@ -372,21 +372,28 @@ struct ContentView: View {
     private var writeIndicator: some View {
         Text("WRITING")
             .font(metadataFont)
-            .foregroundColor(viewModel.isWritingData ? activeAmber : secondaryAmber)
+            .foregroundColor(viewModel.isWritingData ? activeAmber : idleWritingAmber)
+            .help("Audio is being written to file")
     }
 
     /// Shared typography for the bottom-row metadata strip.
     private var metadataFont: Font {
-        .system(size: 7, weight: .medium, design: .monospaced)
+        .system(size: 8.5, weight: .medium, design: .monospaced)
     }
 
-    /// Muted amber #A0600A — idle colour for the bottom-row metadata strip.
+    /// Muted amber #A0600A — version/device label colour in the bottom-row strip.
     private var secondaryAmber: Color {
         Color(red: 0xA0/255, green: 0x60/255, blue: 0x0A/255)
     }
 
-    /// Bright amber #F5A623 — active colour for the WRITING indicator
-    /// when buffers are landing in the writer.
+    /// Dim amber #5A340A — idle WRITING label; darker than secondaryAmber so
+    /// it recedes behind the version/device text when no write is in progress.
+    private var idleWritingAmber: Color {
+        Color(red: 0x5A/255, green: 0x34/255, blue: 0x0A/255)
+    }
+
+    /// Bright amber #F5A623 — active WRITING label; brighter than secondaryAmber
+    /// so it pops above the version/device text while buffers are landing.
     private var activeAmber: Color {
         Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)
     }
