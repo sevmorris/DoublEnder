@@ -10,10 +10,6 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
-    # Obj-C bridging header for the tiny ExceptionCatcher helper —
-    # AVFoundation throws NSException out of paths Swift can't catch
-    # (AVAudioEngine.connect's format-mismatch crash among them).
-    SWIFT_OBJC_BRIDGING_HEADER: DoublEnder/DoublEnder-Bridging-Header.h
     # Public DoublEnder ("Local") build. The "lr" suffix mirrors Cloud's "cr"
     # so the build flavour is visible at a glance in the version overlay,
     # download filenames, and crash reports. release.sh's regex rewrites
