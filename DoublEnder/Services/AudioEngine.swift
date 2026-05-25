@@ -54,23 +54,16 @@ class AudioEngine: NSObject, ObservableObject {
     /// low-quality path. Does not stop recording — surfaces a UI warning. (M5)
     @Published var lowQualityInput: Bool = false
 
-    /// True when the most recent `rebuildEngine` call reached a fully
-    /// started engine successfully. The RecorderViewModel derives the
+    /// True when the most recent `rebuildSession` call reached a running
+    /// AVCaptureSession successfully. The RecorderViewModel derives the
     /// on-screen device label from this — when true, the label shows the
     /// localized name of `selectedInputDeviceID`; when false, it shows
-    /// "(no input)" because the engine couldn't bind / had no usable
-    /// format / threw during connect or start.
+    /// "(no input)" because the session couldn't bind / the device input
+    /// couldn't be constructed / startRunning threw.
     ///
     /// Starts `true` so the initial UI (before requestPermissions has
     /// driven the first rebuild) doesn't flash "(no input)". The first
     /// rebuild flips it accordingly.
-    ///
-    /// We deliberately do NOT compare AUHAL's reported deviceID against
-    /// the intended device ID — that comparison fires intermittently on
-    /// freshly-bound devices because `auAudioUnit.deviceID` lags AUHAL's
-    /// actual commit (returns the sentinel 0 in the system-default path
-    /// and races the propagation of system-default changes). The "engine
-    /// reached .start" signal is much more reliable.
     @Published var engineHealthy: Bool = true
 
     /// False when `setDevice` rejected the most recent user pick because
@@ -82,13 +75,11 @@ class AudioEngine: NSObject, ObservableObject {
     /// because the engine itself is fine; the issue is the user's choice.
     @Published var selectedDeviceUsable: Bool = true
 
-    /// True while `rebuildEngine` is executing, including the gap between
-    /// a failed attempt and its scheduled retry. The RecorderViewModel
+    /// True while `rebuildSession` is executing. The RecorderViewModel
     /// gates RECORD on `!isRebuilding` so a tap during this transient
-    /// window can't race a half-built engine. Set true at the top of
-    /// rebuildEngine; set false on every exit path — success, failure,
-    /// retry scheduled — so it accurately tracks "is the engine in flux
-    /// right now."
+    /// window can't race a half-built session. Set true at the top of
+    /// rebuildSession; set false on every exit path so it accurately
+    /// tracks "is the capture session in flux right now."
     @Published var isRebuilding: Bool = false
     /// True when buffers are actively being appended to the writer (within
     /// the last ~150 ms). Drives the on-screen write-flow indicator dot.
@@ -139,9 +130,10 @@ class AudioEngine: NSObject, ObservableObject {
     /// .success(nil)) from "writer wrote something" (finalize as usual).
     private var didAppendAtLeastOneSample = false
 
-    // Serial queue for all AVAssetWriter / PCMSidecar work. Moving this
-    // off the AVAudioEngine tap thread eliminates NSLock, malloc, and file
-    // I/O from the real-time audio callback.
+    // Serial queue for all AVAssetWriter / PCMSidecar work. Set as the
+    // delegate queue on AVCaptureAudioDataOutput, so every CMSampleBuffer
+    // arrives here in serial order — no extra dispatch needed between the
+    // delegate, the writer append, and the sidecar mirror.
     private let writerQueue = DispatchQueue(
         label: "io.github.sevmorris.DoublEnder.writer",
         qos: .userInitiated
@@ -797,12 +789,12 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     /// Read the current macOS system-wide default input device via
-    /// CoreAudio. Used by `rebuildEngine` to detect silent fallback:
-    /// `setSystemDefaultInputDevice` returns noErr for some virtual devices
-    /// (ZoomAudioDevice, Descript Loopback Recorder, others) but CoreAudio
-    /// quietly refuses the change and leaves the property at its previous
-    /// value. Re-reading after the rebuild tells us what the engine is
-    /// actually on. Returns nil on query failure.
+    /// CoreAudio. Returned for diagnostic comparisons — AVCaptureSession
+    /// binds the device we hand it directly (no reliance on the system
+    /// default), but `setDevice` updates the system default for
+    /// cross-app consistency, and some virtual devices accept that call
+    /// with no error while CoreAudio quietly leaves the property at its
+    /// previous value. Returns nil on query failure.
     private func currentSystemDefaultInputDevice() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
@@ -819,14 +811,14 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     /// Set the macOS system-wide default input device via CoreAudio.
-    /// Returns true on success. The change is synchronous — once this
-    /// returns, a freshly-constructed AVAudioEngine will see the new device
-    /// as its inputNode's bound device.
+    /// Returns true on success. AVCaptureSession does not use this when
+    /// binding our own AVCaptureDeviceInput, but we call it from
+    /// `setDevice` for cross-app consistency (other apps that honor the
+    /// system default follow our pick).
     ///
     /// Caveat: returning true does NOT guarantee CoreAudio actually applied
     /// the change. Some virtual devices accept the call (no error) but
     /// CoreAudio silently leaves the system default at its previous value.
-    /// Callers must re-read via `currentSystemDefaultInputDevice` to verify.
     private func setSystemDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
@@ -876,8 +868,9 @@ class AudioEngine: NSObject, ObservableObject {
     /// True when the CoreAudio device has at least one input stream.
     /// Output-only devices, aggregate devices with no input sub-devices,
     /// and broken virtuals return false. Returns true on query failure to
-    /// avoid false rejections — better to let AUHAL try and surface its
-    /// own error than to block a device because we couldn't enumerate.
+    /// avoid false rejections — better to let AVCaptureSession try and
+    /// surface its own error than to block a device because we couldn't
+    /// enumerate.
     private func deviceHasInputStreams(_ deviceID: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreams,
@@ -894,41 +887,6 @@ class AudioEngine: NSObject, ObservableObject {
         return streamCount > 0
     }
 
-    /// Sum of `mNumberChannels` across every buffer in the device's input
-    /// stream-configuration AudioBufferList. This is the *real* input
-    /// channel count — aggregate devices sometimes report nonzero
-    /// `kAudioDevicePropertyStreams` even when no member device contributes
-    /// channels, but this property reflects the actual buffer layout AUHAL
-    /// will use. Returns -1 on query failure (distinct from 0 so the log
-    /// can disambiguate "query failed" from "really zero channels").
-    /// Diagnostic-only at the moment — not consulted for the
-    /// `selectedDeviceUsable` decision.
-    private func deviceInputChannelCount(_ deviceID: AudioDeviceID) -> Int {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioObjectPropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var dataSize: UInt32 = 0
-        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
-        guard sizeStatus == noErr, dataSize > 0 else {
-            logger.warning("[DIAG deviceInputChannelCount] dataSize query failed device=\(deviceID, privacy: .public) status=\(sizeStatus, privacy: .public)")
-            return -1
-        }
-        let buf = UnsafeMutableRawPointer.allocate(byteCount: Int(dataSize), alignment: MemoryLayout<AudioBufferList>.alignment)
-        defer { buf.deallocate() }
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, buf)
-        guard status == noErr else {
-            logger.warning("[DIAG deviceInputChannelCount] get failed device=\(deviceID, privacy: .public) status=\(status, privacy: .public)")
-            return -1
-        }
-        let bufferList = UnsafeMutableAudioBufferListPointer(buf.assumingMemoryBound(to: AudioBufferList.self))
-        var total = 0
-        for buffer in bufferList {
-            total += Int(buffer.mNumberChannels)
-        }
-        return total
-    }
 
     private func transportType(for deviceID: AudioDeviceID) -> UInt32? {
         var address = AudioObjectPropertyAddress(

@@ -61,11 +61,11 @@ targets:
     sources:
       - path: DoublEnder
         excludes:
-          # Public-only flavour assets (AppIcon, de_badge) live in their
-          # own catalog so the Cloud bundle never carries them. The shared
-          # faceplate, mic/gear icons, and LED PNGs live in
-          # SharedAssets.xcassets and ship to both flavours. Cloud-only
-          # assets come in via CloudAssets.xcassets below.
+          # Public-only flavour assets (AppIcon) live in their own catalog
+          # so the Cloud bundle never carries them. The shared faceplate,
+          # mic/gear icons, and LED PNGs live in SharedAssets.xcassets and
+          # ship to both flavours. Cloud-only assets come in via
+          # CloudAssets.xcassets below.
           - "Assets.xcassets"
           - "DoublEnder.entitlements"
       - path: DoublEnderCloud/doublender-10af32ff2d11.json

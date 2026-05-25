@@ -205,10 +205,6 @@ struct ContentView: View {
                 // bezel-area window drag isn't blocked.
                 .allowsHitTesting(isRecordingState)
                 .help(isRecordingState ? "Recording in progress" : "")
-
-            // (Version overlay was previously drawn here on the faceplate;
-            // it now lives inside the touchscreen at the bottom-left of the
-            // content area — see `mainView` / `deviceLabelRow`.)
         }
         .frame(width: windowSize.width, height: windowSize.height)
         .background(Color.clear)
@@ -344,7 +340,7 @@ struct ContentView: View {
         .padding(.top, 4)
     }
 
-    /// In-screen version label, e.g. "v1.6.21LE". Numeric prefix +
+    /// In-screen version label, e.g. "v1.6.27LR". Numeric prefix +
     /// uppercased suffix concatenated in one run.
     private var versionInScreen: some View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
