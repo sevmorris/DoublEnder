@@ -76,15 +76,15 @@ struct HelpView: View {
 
                 section("Audio Processing") {
                     text("""
-                    DoublEnder applies a gentle, always-on compressor (transparent \
-                    leveling) followed by a -1 dBFS lookahead limiter before recording. \
-                    Both run with sensible defaults that prevent clipping without \
-                    colouring your voice — there's nothing to tune.
+                    DoublEnder does no audio processing. What the mic captures is what \
+                    hits the file — no compressor, no limiter, no noise gate, no EQ. \
+                    Audio flows from the capture device straight into the writer with \
+                    only the unavoidable AAC encode (when recording m4a) in between.
                     """)
                     text("""
-                    The level meter shows the post-compression signal, so what you see \
-                    is what gets recorded. Aim for the green range and trust the limiter \
-                    to catch any unexpected peaks.
+                    The level meter shows the raw input signal, so what you see is \
+                    what gets recorded. Aim for the green range and watch for any \
+                    excursions into red.
                     """)
                 }
 
