@@ -1,4 +1,5 @@
 import Foundation
+import CoreMedia
 import OSLog
 
 /// Crash-recovery sidecar.
@@ -70,6 +71,38 @@ final class PCMSidecar {
     func append(_ pointer: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
         let data = Data(bytes: pointer, count: frameCount * PCMSidecar.bytesPerSample)
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            PCMSidecar.logger.error("Sidecar write failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Append the raw bytes of a CMSampleBuffer directly. Used by the
+    /// AVCaptureSession path so we can mirror to disk without ever building
+    /// an AVAudioPCMBuffer. Layout faithfulness is the caller's
+    /// responsibility — the bytes here are whatever shape the capture
+    /// session delivered (Float32 interleaved or non-interleaved at the
+    /// device's native channel count). Recovery via `recoverToWAV`
+    /// produces a WAV file that interprets the bytes as interleaved Float32
+    /// — correct for mono sources and for genuinely-interleaved
+    /// multi-channel sources; garbled for non-interleaved multi-channel
+    /// sources, which is acceptable for a recovery-only path.
+    func append(sampleBuffer: CMSampleBuffer) {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        var length = 0
+        guard CMBlockBufferGetDataPointer(
+            blockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: nil,
+            totalLengthOut: &length,
+            dataPointerOut: &dataPointer
+        ) == kCMBlockBufferNoErr,
+        let src = dataPointer, length > 0 else {
+            return
+        }
+        let data = Data(bytes: src, count: length)
         do {
             try handle.write(contentsOf: data)
         } catch {

@@ -98,16 +98,46 @@ class AudioEngine: NSObject, ObservableObject {
 
     private let aacBitRate: Int = 256_000
 
+    // ── AVCaptureSession capture front end ───────────────────────────────
+    // CMSampleBuffers flow straight from AVCaptureAudioDataOutput's delegate
+    // into AVAssetWriterInput.append — the same signal path QuickTime uses.
+    // No AVAudioEngine, no tap, no AU graph, no per-buffer PCM conversion.
+    private var captureSession: AVCaptureSession?
+    private var currentInput: AVCaptureDeviceInput?
+    private var audioOutput: AVCaptureAudioDataOutput?
     private var isRecording = false
+
+    // ── Writer state ─────────────────────────────────────────────────────
+    // The AVAssetWriter is built upfront in startRecording. The
+    // AVAssetWriterInput is built on the FIRST CMSampleBuffer arrival in the
+    // delegate, using that sample's CMFormatDescription as the
+    // `sourceFormatHint`. The hint tells the writer the exact shape of PCM
+    // to expect (sample rate, channel count, interleaving, bit depth) and
+    // lets it configure any internal transcoding it needs without us doing
+    // format guesswork. The first sample's PTS becomes the session's start
+    // time, so timestamps are exact CoreMedia values rather than synthesised
+    // from a frame counter.
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
     private var pcmSidecar: PCMSidecar?
+    /// Output settings (AAC or WAV) chosen at startRecording and consumed
+    /// by the delegate when it builds the writer input on first sample.
+    /// Cleared on stop / cancel.
+    private var pendingOutputSettings: [String: Any]?
+    /// Destination URL for the take. Held so the delegate can pass it to
+    /// PCMSidecar.init once the source format description is known.
+    private var pendingFileURL: URL?
     private let writerLock = NSLock()
     /// uniqueID → kind, rebuilt on each device refresh so the picker
     /// doesn't re-query CoreAudio on every SwiftUI render.
     private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
     private let writeErrorThreshold = 5
+    /// True once the delegate has appended at least one sample buffer to
+    /// the writer in the current take. stopRecording uses this to
+    /// distinguish "writer never started a session" (silent discard,
+    /// .success(nil)) from "writer wrote something" (finalize as usual).
+    private var didAppendAtLeastOneSample = false
 
     // Serial queue for all AVAssetWriter / PCMSidecar work. Moving this
     // off the AVAudioEngine tap thread eliminates NSLock, malloc, and file
@@ -233,12 +263,183 @@ class AudioEngine: NSObject, ObservableObject {
         refreshDevices()
     }
 
+    // MARK: - Capture session lifecycle
+
     func start() {
-        if audioEngine?.isRunning == true { return }
-        rebuildEngine(with: nil)
+        if captureSession?.isRunning == true { return }
+        rebuildSession(with: nil)
     }
-    
-    /// Indicator: 150 ms tail after the most recent successful write.
+
+    /// Build (or rebuild) the AVCaptureSession for audio-only capture and
+    /// start it running. Mirrors the public-facing semantics of the old
+    /// `rebuildEngine`: marks `isRebuilding` true, publishes errors via
+    /// `lastError`, sets `engineHealthy` based on whether the session
+    /// reached `.startRunning()` without throwing.
+    ///
+    /// `device` nil → use the system default input device (which is what
+    /// AVCaptureDevice.default(for: .audio) returns).
+    ///
+    /// Caller is responsible for `setSystemDefaultInputDevice` if it wants
+    /// to redirect the system default before invoking this. We re-read the
+    /// system default after the session is running so silent CoreAudio
+    /// rejections (some virtual devices) still surface as `selectedDeviceUsable`
+    /// false.
+    private func rebuildSession(
+        with device: AVCaptureDevice? = nil,
+        intendedDeviceID: AudioDeviceID? = nil
+    ) {
+        DispatchQueue.main.async { self.isRebuilding = true }
+
+        // Tear down the prior session before building the new one. setSampleBufferDelegate(nil, ...)
+        // first so any in-flight delegate callbacks complete before we drop refs.
+        if let prior = captureSession {
+            prior.stopRunning()
+            if let out = audioOutput {
+                out.setSampleBufferDelegate(nil, queue: nil)
+            }
+        }
+        captureSession = nil
+        currentInput = nil
+        audioOutput = nil
+
+        let target: AVCaptureDevice
+        if let device = device {
+            target = device
+        } else if let def = AVCaptureDevice.default(for: .audio) {
+            target = def
+        } else {
+            let message = "No audio input device available."
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
+
+        let input: AVCaptureDeviceInput
+        do {
+            input = try AVCaptureDeviceInput(device: target)
+        } catch {
+            logger.error("AVCaptureDeviceInput init failed: \(error.localizedDescription, privacy: .public)")
+            let message = "Could not bind to the selected input: \(error.localizedDescription)"
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
+
+        let session = AVCaptureSession()
+        session.beginConfiguration()
+
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            let message = "Selected input device could not be added to the session."
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
+        session.addInput(input)
+
+        let output = AVCaptureAudioDataOutput()
+        // No audioSettings — capture output delivers buffers in the device's
+        // native format. The writer accepts whatever the device produces via
+        // sourceFormatHint at writer-input creation time (see captureOutput
+        // delegate); no per-buffer PCM conversion happens anywhere in the
+        // path. Format forcing here was the source of click artifacts in
+        // every prior attempt to set audioSettings, regardless of whether
+        // interleaved or non-interleaved was specified — the writer's
+        // internal transcoder handles any container/codec conversion needed
+        // more reliably than a capture-stage conversion ever did.
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            let message = "Could not add audio output to the session."
+            DispatchQueue.main.async {
+                self.lastError = message
+                self.engineHealthy = false
+                self.isRebuilding = false
+            }
+            return
+        }
+        session.addOutput(output)
+        // Delegate runs on writerQueue — the same serial queue stopRecording
+        // uses with .sync to drain in-flight callbacks. The writerLock
+        // mediates shared state with main-thread callers of startRecording /
+        // stopRecording / cancelRecording.
+        output.setSampleBufferDelegate(self, queue: writerQueue)
+
+        session.commitConfiguration()
+        session.startRunning()
+
+        self.captureSession = session
+        self.currentInput = input
+        self.audioOutput = output
+
+        // Surface the low-quality-input warning from the device's activeFormat
+        // (best guess — the actual CMSampleBuffer rate could differ, but in
+        // practice activeFormat reflects what AVCaptureSession will deliver).
+        let nativeASBD = CMAudioFormatDescriptionGetStreamBasicDescription(
+            target.activeFormat.formatDescription
+        )?.pointee
+        let nativeSampleRate = nativeASBD?.mSampleRate ?? 48_000
+        let isLowQuality = nativeSampleRate <= 16_000
+        DispatchQueue.main.async { self.lowQualityInput = isLowQuality }
+
+        // Verify the session is on the intended device. Some virtual
+        // devices accept setSystemDefaultInputDevice with noErr but
+        // CoreAudio silently keeps the previous default; AVCaptureDevice
+        // honors the user pick verbatim, so the more reliable check here is
+        // simply comparing input.device.uniqueID to the intent. If the
+        // caller passed `intendedDeviceID` (the CoreAudio AudioDeviceID),
+        // resolve it back to an AVCaptureDevice and compare.
+        let silentFallback: Bool
+        if let intended = intendedDeviceID,
+           let intendedDevice = audioCaptureDevice(forCoreAudioID: intended) {
+            silentFallback = input.device.uniqueID != intendedDevice.uniqueID
+            if silentFallback {
+                logger.warning(
+                    "Capture session bound to \(input.device.uniqueID, privacy: .public) but caller wanted \(intendedDevice.uniqueID, privacy: .public)"
+                )
+            }
+        } else {
+            silentFallback = false
+        }
+
+        DispatchQueue.main.async {
+            self.engineHealthy = true
+            self.isRebuilding = false
+            if silentFallback {
+                self.selectedDeviceUsable = false
+            }
+        }
+    }
+
+    /// Resolve a CoreAudio AudioDeviceID back to an AVCaptureDevice. Used by
+    /// rebuildSession to verify the user's intended pick was honored.
+    private func audioCaptureDevice(forCoreAudioID id: AudioDeviceID) -> AVCaptureDevice? {
+        var uid: Unmanaged<CFString>? = nil
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &uid)
+        guard status == noErr, let cf = uid?.takeRetainedValue() else { return nil }
+        let uidString = cf as String
+        return availableInputDevices.first { $0.uniqueID == uidString }
+    }
+
+
+    /// Called on every successful AVAssetWriterInput.append. Bumps
+    /// isWritingData true (if needed) and reschedules the "clear after
+    /// 150 ms" task so the indicator stays lit while buffers keep arriving
+    /// and goes dark only when the flow actually stops.
     private func markDataFlowing() {
         if !isWritingData { isWritingData = true }
         writeIndicatorClearWork?.cancel()
@@ -249,7 +450,6 @@ class AudioEngine: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: item)
     }
 
-    
     func refreshDevices() {
         let session = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external],
@@ -367,30 +567,24 @@ class AudioEngine: NSObject, ObservableObject {
         }
         return (microphones, virtual)
     }
-    
+
+    // MARK: - Recording lifecycle
+
     /// Begin a recording. The AVAssetWriter streams samples directly to
     /// `fileURL` — there is no temp file, no move step on stop. A raw-PCM
     /// crash-recovery sidecar is mirrored alongside it (see `PCMSidecar`).
     /// `format` selects the container/codec; `notes` is written as the
     /// file's description metadata tag.
+    ///
+    /// The AVAssetWriterInput is NOT created here. It's created in the
+    /// captureOutput delegate the moment the first CMSampleBuffer arrives —
+    /// that buffer's CMFormatDescription becomes the writer's
+    /// `sourceFormatHint`, and its PTS becomes the session's start time.
+    /// Deferring input creation eliminates all guessing about what format
+    /// the capture session will deliver.
     func startRecording(to fileURL: URL, format: OutputFormat = .aac, notes: String = "") throws {
-        guard let tapFormat = currentTapFormat else {
+        guard captureSession?.isRunning == true else {
             throw RecordingError.engineNotRunning
-        }
-
-        // First-buffer wait. On a freshly-built engine (first launch, or
-        // post device hot-swap) engine.start() returns before the tap has
-        // actually fired — there's a 50–200 ms cold-start window where
-        // AUHAL is opening the device and the dynamics-processor + sink
-        // graph is settling its first render cycle. If the writer opens
-        // and the user hits STOP inside that window, the file finalises
-        // with zero frames and we'd surface a misleading "empty file"
-        // error. Block here briefly so the writer never opens until the
-        // engine is delivering audio. 250 ms covers typical first-launch
-        // warmup with margin; past that, the zero-frame guard in
-        // stopRecording catches the residue with a clearer message.
-        if !firstBufferDelivered {
-            _ = firstBufferSemaphore.wait(timeout: .now() + .milliseconds(250))
         }
 
         // AVAssetWriter refuses to start if the file already exists.
@@ -399,74 +593,41 @@ class AudioEngine: NSObject, ObservableObject {
             do {
                 try FileManager.default.removeItem(at: fileURL)
             } catch {
-                // A locked or in-use file (iCloud sync, other app) gives a
-                // confusing "file exists" error from AVAssetWriter — surface
-                // the real reason instead.
                 throw RecordingError.writerFailedToStart(
                     "Could not remove existing file '\(fileURL.lastPathComponent)': \(error.localizedDescription)"
                 )
             }
         }
 
-        // Pick a sample rate the encoder will actually accept. AAC silently
-        // rejects samples ("Cannot Encode Media") when fed PCM at rates
-        // outside its standard set — a real failure mode on USB interfaces
-        // that default to 96 / 176.4 / 192 kHz. WAV passes the hardware
-        // rate through untouched.
-        let encoderRate: Double
-        switch format {
-        case .aac: encoderRate = Self.aacSampleRate(matching: tapFormat.sampleRate)
-        case .wav: encoderRate = tapFormat.sampleRate
-        }
-        if encoderRate != tapFormat.sampleRate {
-            logger.info("Hardware rate \(tapFormat.sampleRate, privacy: .public) Hz isn't AAC-compatible — converting to \(encoderRate, privacy: .public) Hz.")
-        }
+        let fileType: AVFileType = (format == .aac) ? .m4a : .wav
 
-        // The converter folds multi-channel-to-mono and resamples (when
-        // needed) in a single pass before samples reach the writer.
-        guard let encFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: encoderRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw RecordingError.writerFailedToStart("could not build encoder PCM format")
-        }
-        let converter = AVAudioConverter(from: tapFormat, to: encFormat)
-
-        let fileType: AVFileType
+        // outputSettings — fixed parameters for the encode/transcode. The
+        // writer's internal transcoder handles any sample-rate or channel
+        // conversion needed between the source (whatever the capture
+        // device delivers) and these targets.
+        //
+        // AAC: mono at 48 kHz, 256 kbps — podcast-grade. Writer downmixes
+        //   multi-channel input and resamples to 48 kHz internally.
+        // WAV: mono int24 at 48 kHz — uncompressed podcast-delivery standard.
+        //   Writer downmixes / resamples and packs Float32 input to int24.
         let outputSettings: [String: Any]
         switch format {
         case .aac:
-            fileType = .m4a
             outputSettings = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: encoderRate,
+                AVSampleRateKey: 48_000,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: aacBitRate
+                AVEncoderBitRateKey: aacBitRate,
             ]
         case .wav:
-            // 24-bit signed integer PCM — the professional-audio standard for
-            // uncompressed delivery. Universally compatible with podcast/DAW
-            // tooling, ~25% smaller than int32 with no audible loss. The
-            // writer converts the float32 CMSampleBuffers we supply down to
-            // int24 internally; AVAudioConverter is not needed because
-            // AVAssetWriter's WAV path handles float→int packing itself.
-            //
-            // The PCM sidecar (PCMSidecar.swift) stays at 32-bit float — it
-            // is only used as a crash-recovery fallback when the main writer
-            // never finalizes, and float32 preserves the source samples
-            // verbatim with no requantization loss. Recovered WAVs from the
-            // sidecar are written as 32-bit float; the main WAV is 24-bit int.
-            fileType = .wav
             outputSettings = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: encoderRate,
+                AVSampleRateKey: 48_000,
                 AVNumberOfChannelsKey: 1,
                 AVLinearPCMBitDepthKey: 24,
                 AVLinearPCMIsBigEndianKey: false,
                 AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsNonInterleaved: false
+                AVLinearPCMIsNonInterleaved: false,
             ]
         }
 
@@ -482,52 +643,24 @@ class AudioEngine: NSObject, ObservableObject {
             writer.metadata = [item]
         }
 
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
-        input.expectsMediaDataInRealTime = true
-
-        guard writer.canAdd(input) else {
-            throw RecordingError.cannotAddInput
-        }
-        writer.add(input)
-
-        guard writer.startWriting() else {
-            let reason = writer.error?.localizedDescription ?? "unknown error"
-            throw RecordingError.writerFailedToStart(reason)
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        // Mirror the post-limiter, post-conversion mono stream so an
-        // unfinalized .m4a can still be recovered. A nil sidecar (I/O
-        // failure) is non-fatal — the recording proceeds without the
-        // safety net. Sidecar rate matches the writer so playback parity
-        // is preserved on recovery.
-        let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: encoderRate, channels: 1)
-        // M4: flag when the safety net is unavailable so the UI can warn.
-        let sidecarMissing = sidecar == nil
-        if sidecarMissing {
-            logger.warning("PCMSidecar init failed — this recording has no crash-recovery safety net.")
-        }
-        DispatchQueue.main.async { self.sidecarUnavailable = sidecarMissing }
-
         writerLock.lock()
         assetWriter = writer
-        assetWriterInput = input
-        pcmSidecar = sidecar
-        writerFrameCount = 0
-        limiter = LookaheadLimiter(sampleRate: tapFormat.sampleRate, channels: Int(tapFormat.channelCount))
-        encoderConverter = converter
-        encoderFormat = encFormat
-        ptsLogCount = 0
+        assetWriterInput = nil               // built in delegate on first sample
+        pcmSidecar = nil                     // built in delegate on first sample
+        pendingOutputSettings = outputSettings
+        pendingFileURL = fileURL
         consecutiveWriteErrors = 0
-        // Stale entries from a previous take would carry the wrong sample
-        // format and would never be valid input for this writer.
-        pendingTapBuffers.removeAll()
+        didAppendAtLeastOneSample = false
         writerLock.unlock()
+
+        // sidecarUnavailable is updated in the delegate once we attempt to
+        // open the sidecar — start optimistic and let the delegate flip it.
+        DispatchQueue.main.async { self.sidecarUnavailable = false }
 
         isRecording = true
     }
 
-    /// Abort the in-progress recording without finalizing. `cancelWriting()`
+    /// Abort the in-progress recording without finalizing. cancelWriting()
     /// deletes the partial output file. Used by the "Quit Without Saving"
     /// confirmation path.
     func cancelRecording(completion: @escaping () -> Void) {
@@ -537,29 +670,37 @@ class AudioEngine: NSObject, ObservableObject {
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
         }
-        // Drain any buffer-copy dispatches that were already in flight on
-        // writerQueue before isRecording was cleared.
+        // Drain any delegate calls already in flight on writerQueue before
+        // isRecording was cleared.
         writerQueue.sync {}
 
         writerLock.lock()
         let writer = assetWriter
+        let input = assetWriterInput
         let sidecar = pcmSidecar
         assetWriter = nil
         assetWriterInput = nil
         pcmSidecar = nil
-        limiter = nil
-        encoderConverter = nil
-        encoderFormat = nil
-        pendingTapBuffers.removeAll()
+        pendingOutputSettings = nil
+        pendingFileURL = nil
         writerLock.unlock()
 
-        sidecar?.discard()
+        // If the writer never got a session started, calling cancelWriting()
+        // is still safe — it just discards the (empty) output file.
+        input?.markAsFinished()
         writer?.cancelWriting()
+        sidecar?.discard()
+
         DispatchQueue.main.async {
             completion()
         }
     }
 
+    /// Stop the recording, finalize the writer, and report the resulting
+    /// file URL via the completion. Three outcomes are possible:
+    ///   • Writer wrote at least one sample → finishWriting, success
+    ///   • First sample never arrived → silent discard, success(nil)
+    ///   • Writer is in an error state    → failure with reason
     func stopRecording(completion: @escaping (Result<URL?, Error>) -> Void) {
         isRecording = false
         DispatchQueue.main.async {
@@ -567,64 +708,24 @@ class AudioEngine: NSObject, ObservableObject {
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
         }
-        // Drain any buffer-copy dispatches that were already in flight on
-        // writerQueue before isRecording was cleared.
+        // Drain any delegate calls already in flight on writerQueue before
+        // isRecording was cleared, so the snapshot we take below sees
+        // the writer in its final state.
         writerQueue.sync {}
 
         writerLock.lock()
-
-        // Drain anything still queued from a backpressure window so the
-        // tail of the recording isn't lost. With isRecording already
-        // false and writerQueue.sync above, no new buffers will arrive
-        // and pendingTapBuffers is in its final state. Bound the loop at
-        // ~1 s of real time so a permanently-wedged writer can't hang
-        // stopRecording — anything still queued past that is dropped.
-        if let input = assetWriterInput, assetWriter != nil {
-            var spinAttempts = 0
-            let maxSpins = 100   // × 10 ms = 1 s
-            while !pendingTapBuffers.isEmpty && spinAttempts < maxSpins {
-                if !input.isReadyForMoreMediaData {
-                    writerLock.unlock()
-                    Thread.sleep(forTimeInterval: 0.010)
-                    writerLock.lock()
-                    spinAttempts += 1
-                    continue
-                }
-                let pending = pendingTapBuffers.removeFirst()
-                let result = processAndAppend(pending, writerInput: input)
-                if result == .teardown {
-                    // processAndAppend already cleared writer state.
-                    break
-                }
-                if result == .backpressure {
-                    pendingTapBuffers.insert(pending, at: 0)
-                    writerLock.unlock()
-                    Thread.sleep(forTimeInterval: 0.010)
-                    writerLock.lock()
-                    spinAttempts += 1
-                }
-            }
-            if !pendingTapBuffers.isEmpty {
-                logger.warning("stopRecording: writer stayed backpressured for >1 s — dropping \(self.pendingTapBuffers.count, privacy: .public) buffered frames.")
-            }
-        }
-
         let writer = assetWriter
         let input = assetWriterInput
         let sidecar = pcmSidecar
-        let appendedFrameCount = writerFrameCount
+        let didAppend = didAppendAtLeastOneSample
         assetWriter = nil
         assetWriterInput = nil
         pcmSidecar = nil
-        limiter = nil
-        encoderConverter = nil
-        encoderFormat = nil
-        pendingTapBuffers.removeAll()
+        pendingOutputSettings = nil
+        pendingFileURL = nil
         writerLock.unlock()
 
-        guard let writer = writer, let input = input else {
-            // No writer, but a sidecar may still exist — keep it so a
-            // recovery pass can surface it.
+        guard let writer = writer else {
             sidecar?.close()
             DispatchQueue.main.async {
                 completion(.failure(RecordingError.noActiveRecording))
@@ -632,30 +733,26 @@ class AudioEngine: NSObject, ObservableObject {
             return
         }
 
-        // Zero-frame guard — silent discard, no error. The writer never got a
-        // buffer (engine still warming up, or STOP fired inside the same
-        // render cycle as RECORD). Drop the sidecar, cancel the writer, and
-        // return `.success(nil)` so the VM treats it as "nothing to do" and
-        // returns to .ready without an error screen.
-        if appendedFrameCount == 0 {
-            logger.info("stopRecording with zero frames appended — silently discarding")
+        // No samples ever arrived — first-sample path never ran, no input
+        // was added to the writer, no session was started. Cancel the
+        // writer (it's still in .unknown), discard the sidecar (if any),
+        // return .success(nil) so the VM treats it as "nothing to do".
+        if !didAppend || input == nil {
+            logger.info("stopRecording with zero samples appended — silently discarding")
             sidecar?.discard()
             writer.cancelWriting()
-            DispatchQueue.main.async {
-                completion(.success(nil))
-            }
+            DispatchQueue.main.async { completion(.success(nil)) }
             return
         }
 
-        input.markAsFinished()
+        // We have at least one appended sample — finalize normally.
+        input?.markAsFinished()
         writer.finishWriting {
             DispatchQueue.main.async {
                 if writer.status == .completed {
-                    // Main file is intact — the sidecar is now redundant.
                     sidecar?.discard()
                     completion(.success(writer.outputURL))
                 } else {
-                    // Finalize failed — the sidecar is the only intact copy.
                     sidecar?.close()
                     let reason = writer.error?.localizedDescription ?? "status \(writer.status.rawValue)"
                     completion(.failure(RecordingError.writerFinishedWithError(reason)))
@@ -663,7 +760,7 @@ class AudioEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     func setDevice(_ device: AVCaptureDevice) {
         guard let id = audioDeviceID(forUID: device.uniqueID) else {
             logger.error("Failed to translate device UID to AudioDeviceID: \(device.uniqueID, privacy: .public)")
@@ -672,18 +769,13 @@ class AudioEngine: NSObject, ObservableObject {
 
         // Pre-check: does this device actually have input streams?
         //
-        // AUHAL silently falls back to a previously-bound device when asked
-        // to bind to one with no input streams (output-only devices,
-        // aggregate devices whose sub-devices have no input, broken
-        // virtuals). The engine "succeeds" but feeds audio from the wrong
-        // source — the meter shows signal that doesn't match the user's
-        // pick. Reject the switch here before AUHAL gets a chance.
-        //
-        // Note: this is a NECESSARY but not SUFFICIENT check. Some virtual
-        // devices (Zoom, Descript loopback) honestly report input streams
-        // but CoreAudio still refuses them as the system default — the
-        // post-rebuild systemDefault re-read in rebuildEngine catches
-        // those.
+        // The old AVAudioEngine code path had AUHAL silently fall back to a
+        // previously-bound device when asked to bind to one with no input
+        // streams (output-only devices, aggregate devices whose sub-devices
+        // have no input, broken virtuals). AVCaptureSession surfaces this
+        // more honestly (init AVCaptureDeviceInput throws), but the
+        // pre-check is still worth keeping because the error path here is
+        // cheaper than tearing down the session to discover the same fact.
         if !deviceHasInputStreams(id) {
             logger.info("Selected device has no input streams — refusing switch: \(device.localizedName, privacy: .public)")
             DispatchQueue.main.async { self.selectedDeviceUsable = false }
@@ -691,45 +783,17 @@ class AudioEngine: NSObject, ObservableObject {
         }
         DispatchQueue.main.async { self.selectedDeviceUsable = true }
 
-        // Change the macOS system default input device, then rebuild the
-        // engine with `deviceID: nil` so AVAudioEngine binds the inputNode
-        // via the system-default path.
+        // Change the macOS system default input device so other apps that
+        // honor the system default follow our pick. AVCaptureSession itself
+        // binds the device directly (not via the system default), so the
+        // setSystemDefault call is purely for cross-app consistency.
         //
-        // We deliberately avoid AVAudioEngine's setDeviceID route here.
-        // setDeviceID races AUHAL's HW-stream-description commit on
-        // freshly-arrived USB devices: the new inputNode reports a
-        // plausible-looking outputFormat, but the underlying HW format
-        // isn't yet what AUHAL has actually committed. AVAudioEngine.connect
-        // then throws an NSException ("Input HW format and tap format not
-        // matching") from AVAudioIONodeImpl::SetOutputFormat — uncatchable
-        // from Swift do/try/catch, crashing without the ExceptionCatcher
-        // wrapper. Even running the engine briefly to force commit, with
-        // multiple retries, doesn't reliably win the race on all devices.
-        //
-        // The default-device path bypasses the issue entirely because
-        // AVAudioEngine binds the inputNode through AUHAL's default-device
-        // resolution at engine construction time, which doesn't race the
-        // same way. The "Try Again" recovery in the UI proves this: it
-        // calls audioEngine.start() which goes down this same rebuild-with-
-        // nil path and reliably succeeds.
-        //
-        // Side effect: the macOS system default input changes. For
-        // DoublEnder's single-purpose use case (a podcast guest recording
-        // their side of a remote interview) this is acceptable — the user
-        // explicitly picked this mic and any other audio app honoring the
-        // system default will follow that choice too.
-        if setSystemDefaultInputDevice(id) {
-            // intendedDeviceID lets rebuildEngine's post-rebuild verification
-            // detect AUHAL silently falling back to a different device when
-            // the requested one has no usable input streams.
-            rebuildEngine(with: nil, intendedDeviceID: id)
-        } else {
-            // Fall back to the setDeviceID path with ExceptionCatcher
-            // protection. May still surface a format error on a freshly-
-            // arrived USB device, but at least it won't crash.
-            logger.warning("Could not set system default input — falling back to setDeviceID for \(device.uniqueID, privacy: .public)")
-            rebuildEngine(with: id)
-        }
+        // Then rebuild the session bound to the explicit AVCaptureDevice.
+        // No AUHAL race here — AVCaptureSession's device-binding does not
+        // share the AVAudioEngine.connect format-mismatch surface that made
+        // the old code path require multi-retry warm-up.
+        _ = setSystemDefaultInputDevice(id)
+        rebuildSession(with: device, intendedDeviceID: id)
     }
 
     /// Read the current macOS system-wide default input device via
@@ -891,6 +955,171 @@ class AudioEngine: NSObject, ObservableObject {
             return .virtual
         default:
             return .microphone
+        }
+    }
+}
+
+
+// MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
+
+
+extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
+    /// Called on `writerQueue` (set via setSampleBufferDelegate). One call
+    /// per audio packet from AVCaptureAudioDataOutput. CMSampleBuffers flow
+    /// directly into AVAssetWriterInput.append — no PCM conversion, no
+    /// AVAudioPCMBuffer intermediate, no AVAudioConverter.
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        // Live RMS meter, always — independent of recording state.
+        computeRMS(from: sampleBuffer)
+
+        guard isRecording else { return }
+
+        writerLock.lock()
+        guard let writer = assetWriter else {
+            writerLock.unlock()
+            return
+        }
+
+        // First-sample path: now that we know the source format, build the
+        // AVAssetWriterInput with `sourceFormatHint`, add it to the writer,
+        // start the writing session, and create the PCMSidecar.
+        if assetWriterInput == nil {
+            guard let outputSettings = pendingOutputSettings,
+                  let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+                writerLock.unlock()
+                return
+            }
+            let input = AVAssetWriterInput(
+                mediaType: .audio,
+                outputSettings: outputSettings,
+                sourceFormatHint: formatDesc
+            )
+            input.expectsMediaDataInRealTime = true
+
+            guard writer.canAdd(input) else {
+                tearDownWriterLocked(reason: "AVAssetWriter rejected the configured input")
+                return
+            }
+            writer.add(input)
+
+            guard writer.startWriting() else {
+                let reason = writer.error?.localizedDescription ?? "startWriting failed"
+                tearDownWriterLocked(reason: reason)
+                return
+            }
+            let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            writer.startSession(atSourceTime: startTime)
+            assetWriterInput = input
+
+            // PCMSidecar — derive rate / channels from the same format desc
+            // so a recovered WAV matches the source exactly. PCMSidecar
+            // init can fail (disk I/O); a nil sidecar is non-fatal but the
+            // UI shows the "no crash recovery" warning.
+            if let fileURL = pendingFileURL,
+               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
+                let rate = asbd.pointee.mSampleRate
+                let channels = asbd.pointee.mChannelsPerFrame
+                let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: rate, channels: channels)
+                if sidecar == nil {
+                    logger.warning("PCMSidecar init failed — this recording has no crash-recovery safety net.")
+                    DispatchQueue.main.async { self.sidecarUnavailable = true }
+                }
+                pcmSidecar = sidecar
+            }
+        }
+
+        guard let input = assetWriterInput else {
+            writerLock.unlock()
+            return
+        }
+
+        guard writer.status == .writing else {
+            let reason = writer.error?.localizedDescription ?? "AVAssetWriter status \(writer.status.rawValue)"
+            tearDownWriterLocked(reason: reason)
+            return
+        }
+
+        // Drop sample on backpressure. With no DSP pipeline this rarely
+        // (if ever) fires — but if the writer's input ring is briefly
+        // closed, we skip rather than block the capture queue.
+        guard input.isReadyForMoreMediaData else {
+            writerLock.unlock()
+            return
+        }
+
+        if input.append(sampleBuffer) {
+            didAppendAtLeastOneSample = true
+            consecutiveWriteErrors = 0
+            pcmSidecar?.append(sampleBuffer: sampleBuffer)
+            let sidecar = pcmSidecar
+            writerLock.unlock()
+            _ = sidecar  // keep reference alive past the unlock for the appender above
+            DispatchQueue.main.async { [weak self] in
+                self?.markDataFlowing()
+            }
+        } else {
+            consecutiveWriteErrors += 1
+            if consecutiveWriteErrors >= writeErrorThreshold {
+                let reason = writer.error?.localizedDescription
+                    ?? "AVAssetWriter status \(writer.status.rawValue)"
+                tearDownWriterLocked(reason: reason)
+            } else {
+                writerLock.unlock()
+            }
+        }
+    }
+
+    /// Caller MUST hold writerLock. Clears writer state, cancels the
+    /// writer, closes the sidecar so the recovery path can pick it up,
+    /// publishes the error to lastError, and unlocks before returning.
+    private func tearDownWriterLocked(reason: String) {
+        let writer = assetWriter
+        let abortedSidecar = pcmSidecar
+        assetWriter = nil
+        assetWriterInput = nil
+        pcmSidecar = nil
+        pendingOutputSettings = nil
+        pendingFileURL = nil
+        consecutiveWriteErrors = 0
+        writerLock.unlock()
+
+        logger.error("AVAssetWriter tear-down: \(reason, privacy: .public)")
+        abortedSidecar?.close()
+        writer?.cancelWriting()
+        DispatchQueue.main.async { self.lastError = reason }
+    }
+
+    /// Compute RMS over the CMSampleBuffer's raw bytes and publish a dBFS
+    /// value to `rmsLevel`. Assumes the buffer is Float32 — the macOS
+    /// default for AVCaptureAudioDataOutput with no audioSettings. If the
+    /// device delivers some other format, the meter values will be wrong
+    /// but recording still works (the writer's internal transcoder doesn't
+    /// care about the meter path).
+    private func computeRMS(from sampleBuffer: CMSampleBuffer) {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        var length = 0
+        guard CMBlockBufferGetDataPointer(
+            blockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: nil,
+            totalLengthOut: &length,
+            dataPointerOut: &dataPointer
+        ) == kCMBlockBufferNoErr,
+        let ptr = dataPointer else { return }
+
+        let floatCount = length / MemoryLayout<Float>.size
+        guard floatCount > 0 else { return }
+        let floatPtr = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
+        var rms: Float = 0
+        vDSP_rmsqv(floatPtr, 1, &rms, vDSP_Length(floatCount))
+        let db = rms > 1e-9 ? 20.0 * log10f(rms) : -60
+        DispatchQueue.main.async { [weak self] in
+            self?.rmsLevel = max(-60, min(0, db))
         }
     }
 }
