@@ -135,6 +135,32 @@ class AudioEngine: NSObject, ObservableObject {
     // timestamp problems if the writer ever rejects samples again.
     private var ptsLogCount = 0
 
+    /// Bounded FIFO of unprocessed tap buffers held when the writer briefly
+    /// reports `isReadyForMoreMediaData == false`. AVAssetWriter with
+    /// `expectsMediaDataInRealTime = true` runs an internal sync ~every 15
+    /// seconds from `startSession` — during the sync window (sub-millisecond
+    /// to a few ms) the input ring is closed. Without this queue, a buffer
+    /// that arrived inside the window would be dropped (the legacy
+    /// "transient encoder backpressure" path), producing a ~21 ms hole in
+    /// the file at every 15s boundary — the source of the periodic
+    /// "double-tap / stutter" artifact reported in field testing.
+    ///
+    /// We hold buffers in their original tap format (multi-channel, hardware
+    /// rate) so the limiter and converter still see them in capture order at
+    /// drain time. PTS stays monotonic because `writerFrameCount` only
+    /// advances on successful append, regardless of which callback the
+    /// append happens on.
+    ///
+    /// Capacity covers ~2.1 s of audio at 1024 samples / 48 kHz — orders of
+    /// magnitude more than the longest backpressure window we've ever
+    /// observed. If we ever do hit the cap, we drop the OLDEST entry; PTS
+    /// continuity is preserved because we don't fabricate replacement
+    /// frames. Reaching the cap means the writer has been wedged for ~2 s,
+    /// which is a real failure that the consecutiveWriteErrors path will
+    /// already be catching.
+    private var pendingTapBuffers: [AVAudioPCMBuffer] = []
+    private static let maxPendingTapBuffers = 100
+
     // Serial queue for all AVAssetWriter / PCMSidecar work. Moving this
     // off the AVAudioEngine tap thread eliminates NSLock, malloc, and file
     // I/O from the real-time audio callback.
@@ -1063,6 +1089,9 @@ class AudioEngine: NSObject, ObservableObject {
         encoderFormat = encFormat
         ptsLogCount = 0
         consecutiveWriteErrors = 0
+        // Stale entries from a previous take would carry the wrong sample
+        // format and would never be valid input for this writer.
+        pendingTapBuffers.removeAll()
         writerLock.unlock()
 
         isRecording = true
@@ -1091,6 +1120,7 @@ class AudioEngine: NSObject, ObservableObject {
         limiter = nil
         encoderConverter = nil
         encoderFormat = nil
+        pendingTapBuffers.removeAll()
         writerLock.unlock()
 
         sidecar?.discard()
@@ -1120,6 +1150,7 @@ class AudioEngine: NSObject, ObservableObject {
             limiter = nil
             encoderConverter = nil
             encoderFormat = nil
+            pendingTapBuffers.removeAll()
             let abortedSidecar = pcmSidecar
             pcmSidecar = nil
             consecutiveWriteErrors = 0
@@ -1131,32 +1162,107 @@ class AudioEngine: NSObject, ObservableObject {
             return
         }
 
-        // Transient encoder backpressure is normal — dropping a single
-        // buffer here is the documented contract for AVAssetWriterInput.
-        guard writerInput.isReadyForMoreMediaData else {
+        // 2. Drain anything that arrived during a previous backpressure
+        //    window. We process in arrival order so PTS stays monotonic and
+        //    the limiter sees samples in capture order. If the writer flips
+        //    back to "not ready" mid-drain, we leave the remainder queued
+        //    and pick up on the next callback.
+        var teardownRequested = false
+        while !pendingTapBuffers.isEmpty {
+            guard writerInput.isReadyForMoreMediaData else { break }
+            let pending = pendingTapBuffers.removeFirst()
+            let result = processAndAppend(pending, writerInput: writerInput)
+            if result == .teardown {
+                teardownRequested = true
+                break
+            }
+            if result == .backpressure {
+                // Append returned false but we're under threshold — put it
+                // back at the front and stop draining; try again next call.
+                pendingTapBuffers.insert(pending, at: 0)
+                break
+            }
+        }
+
+        if teardownRequested {
+            // processAndAppend already cleared writer state and posted the
+            // error. Drop any further pending audio — there's nowhere to
+            // write it.
+            pendingTapBuffers.removeAll()
             writerLock.unlock()
             return
         }
 
+        // 3. Handle the new buffer. Fast path: queue empty and writer ready
+        //    → append directly. Otherwise queue it so the next callback
+        //    can drain in order.
+        if pendingTapBuffers.isEmpty && writerInput.isReadyForMoreMediaData {
+            switch processAndAppend(buffer, writerInput: writerInput) {
+            case .ok:
+                break
+            case .backpressure:
+                // Rare: writer flipped to "not ready" between the check and
+                // the append. Queue it for next time.
+                pendingTapBuffers.append(buffer)
+            case .teardown:
+                pendingTapBuffers.removeAll()
+            }
+        } else {
+            // Backpressured — queue and drain later. Cap memory growth at
+            // maxPendingTapBuffers; dropping the OLDEST preserves the
+            // monotonic-PTS invariant and is the same failure mode the
+            // legacy code had (a buffer lost), but only fires after ~2 s
+            // of sustained backpressure rather than every 15 s.
+            if pendingTapBuffers.count >= Self.maxPendingTapBuffers {
+                pendingTapBuffers.removeFirst()
+                logger.warning("Pending tap buffer queue overflowed — dropping oldest. Writer is wedged.")
+            }
+            pendingTapBuffers.append(buffer)
+        }
+
+        writerLock.unlock()
+    }
+
+    /// Outcome of attempting to send a single tap buffer through the writer.
+    private enum AppendResult {
+        /// Sample buffer successfully appended; `writerFrameCount` advanced.
+        case ok
+        /// `writerInput.append` returned false (or a pre-append step
+        /// produced no usable sample buffer). Caller should requeue.
+        case backpressure
+        /// Writer was torn down inside `processAndAppend` (e.g. the
+        /// consecutiveWriteErrors threshold was reached). All writer state
+        /// has already been cleared and `lastError` posted.
+        case teardown
+    }
+
+    /// Run a tap-format buffer through limiter → converter → sidecar →
+    /// AVAssetWriterInput.append. Caller MUST hold writerLock and have
+    /// already verified `writer.status == .writing` and
+    /// `writerInput.isReadyForMoreMediaData == true`. PTS is stamped from
+    /// the current `writerFrameCount`, which only advances on success — so
+    /// queued buffers that drain later still produce a monotonic timeline.
+    private func processAndAppend(
+        _ buffer: AVAudioPCMBuffer,
+        writerInput: AVAssetWriterInput
+    ) -> AppendResult {
         // Limiter runs in place on the raw tap buffer (multi-channel at hw
         // rate) — limiter is created/destroyed under writerLock.
         limiter?.process(buffer: buffer)
 
-        // 2. Convert tap buffer → mono PCM at the AAC-friendly rate. The
-        //    same converter handles both downmix and resample so the
-        //    sample buffer we hand to the writer always matches the format
-        //    it was configured with.
+        // Convert tap buffer → mono PCM at the AAC-friendly rate. The same
+        // converter handles both downmix and resample so the sample buffer
+        // we hand to the writer always matches the format it was
+        // configured with.
         guard let converter = encoderConverter, let target = encoderFormat else {
-            writerLock.unlock()
-            return
+            return .backpressure
         }
         let outCapacity = AVAudioFrameCount(
             ceil(Double(buffer.frameLength) * target.sampleRate / buffer.format.sampleRate)
         ) + 32
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCapacity) else {
             consecutiveWriteErrors += 1
-            writerLock.unlock()
-            return
+            return .backpressure
         }
         var convError: NSError?
         let convStatus = converter.convert(to: convertedBuffer, error: &convError) { _, outStatus in
@@ -1168,8 +1274,7 @@ class AudioEngine: NSObject, ObservableObject {
             if let e = convError {
                 logger.error("AVAudioConverter failed: \(e.localizedDescription, privacy: .public)")
             }
-            writerLock.unlock()
-            return
+            return .backpressure
         }
 
         // Mirror to the sidecar before building the CMSampleBuffer — this
@@ -1181,14 +1286,13 @@ class AudioEngine: NSObject, ObservableObject {
 
         guard let sampleBuffer = makeSampleBuffer(from: convertedBuffer, startFrame: writerFrameCount) else {
             consecutiveWriteErrors += 1
-            writerLock.unlock()
-            return
+            return .backpressure
         }
 
-        // 3. Log the first five presentation timestamps. Since PTS is
-        //    derived from a monotonically increasing frame counter at the
-        //    encoder rate, any oddity (invalid CMTime, non-monotonic
-        //    sequence) shows up here on first inspection.
+        // Log the first five presentation timestamps. Since PTS is derived
+        // from a monotonically increasing frame counter at the encoder
+        // rate, any oddity (invalid CMTime, non-monotonic sequence) shows
+        // up here on first inspection.
         if ptsLogCount < 5 {
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             logger.info(
@@ -1200,45 +1304,43 @@ class AudioEngine: NSObject, ObservableObject {
         if writerInput.append(sampleBuffer) {
             writerFrameCount += Int64(convertedBuffer.frameLength)
             consecutiveWriteErrors = 0
-            writerLock.unlock()
             // Bump the write-flow indicator. Goes on main; the indicator's
             // own work-item rate-limits the off transition.
             DispatchQueue.main.async { [weak self] in
                 self?.markDataFlowing()
             }
-        } else {
-            consecutiveWriteErrors += 1
-            if consecutiveWriteErrors >= writeErrorThreshold {
-                // Capture and clear writer state so no further appends occur.
-                let failedWriter = assetWriter
-                // 4. Surface the writer's actual localized error verbatim.
-                //    Use the already-captured local rather than re-reading the
-                //    property, which will be nilled on the very next line.
-                let err = failedWriter?.error?.localizedDescription
-                    ?? "AVAssetWriter status \(failedWriter?.status.rawValue ?? -1)"
-                assetWriter = nil
-                assetWriterInput = nil
-                limiter = nil
-                encoderConverter = nil
-                encoderFormat = nil
-                // Keep the sidecar on disk — the partial .m4a is being
-                // cancelled, so the sidecar is the only recoverable copy.
-                let abortedSidecar = pcmSidecar
-                pcmSidecar = nil
-                consecutiveWriteErrors = 0
-                writerLock.unlock()
-
-                abortedSidecar?.close()
-                // Cancel the partial file — it can't be finalized in this state.
-                failedWriter?.cancelWriting()
-                logger.error("AVAssetWriter append failed \(self.writeErrorThreshold, privacy: .public)x — \(err, privacy: .public)")
-                DispatchQueue.main.async {
-                    self.lastError = err
-                }
-            } else {
-                writerLock.unlock()
-            }
+            return .ok
         }
+
+        // Append failed under the threshold — caller will requeue.
+        consecutiveWriteErrors += 1
+        if consecutiveWriteErrors < writeErrorThreshold {
+            return .backpressure
+        }
+
+        // Hard failure: tear the writer down so we surface a real error
+        // instead of looping on the same broken instance.
+        let failedWriter = assetWriter
+        let err = failedWriter?.error?.localizedDescription
+            ?? "AVAssetWriter status \(failedWriter?.status.rawValue ?? -1)"
+        assetWriter = nil
+        assetWriterInput = nil
+        limiter = nil
+        encoderConverter = nil
+        encoderFormat = nil
+        // Keep the sidecar on disk — the partial .m4a is being cancelled,
+        // so the sidecar is the only recoverable copy.
+        let abortedSidecar = pcmSidecar
+        pcmSidecar = nil
+        consecutiveWriteErrors = 0
+
+        abortedSidecar?.close()
+        failedWriter?.cancelWriting()
+        logger.error("AVAssetWriter append failed \(self.writeErrorThreshold, privacy: .public)x — \(err, privacy: .public)")
+        DispatchQueue.main.async {
+            self.lastError = err
+        }
+        return .teardown
     }
 
     private func makeSampleBuffer(from monoBuffer: AVAudioPCMBuffer, startFrame: Int64) -> CMSampleBuffer? {
@@ -1336,6 +1438,43 @@ class AudioEngine: NSObject, ObservableObject {
         writerQueue.sync {}
 
         writerLock.lock()
+
+        // Drain anything still queued from a backpressure window so the
+        // tail of the recording isn't lost. With isRecording already
+        // false and writerQueue.sync above, no new buffers will arrive
+        // and pendingTapBuffers is in its final state. Bound the loop at
+        // ~1 s of real time so a permanently-wedged writer can't hang
+        // stopRecording — anything still queued past that is dropped.
+        if let input = assetWriterInput, assetWriter != nil {
+            var spinAttempts = 0
+            let maxSpins = 100   // × 10 ms = 1 s
+            while !pendingTapBuffers.isEmpty && spinAttempts < maxSpins {
+                if !input.isReadyForMoreMediaData {
+                    writerLock.unlock()
+                    Thread.sleep(forTimeInterval: 0.010)
+                    writerLock.lock()
+                    spinAttempts += 1
+                    continue
+                }
+                let pending = pendingTapBuffers.removeFirst()
+                let result = processAndAppend(pending, writerInput: input)
+                if result == .teardown {
+                    // processAndAppend already cleared writer state.
+                    break
+                }
+                if result == .backpressure {
+                    pendingTapBuffers.insert(pending, at: 0)
+                    writerLock.unlock()
+                    Thread.sleep(forTimeInterval: 0.010)
+                    writerLock.lock()
+                    spinAttempts += 1
+                }
+            }
+            if !pendingTapBuffers.isEmpty {
+                logger.warning("stopRecording: writer stayed backpressured for >1 s — dropping \(self.pendingTapBuffers.count, privacy: .public) buffered frames.")
+            }
+        }
+
         let writer = assetWriter
         let input = assetWriterInput
         let sidecar = pcmSidecar
@@ -1346,6 +1485,7 @@ class AudioEngine: NSObject, ObservableObject {
         limiter = nil
         encoderConverter = nil
         encoderFormat = nil
+        pendingTapBuffers.removeAll()
         writerLock.unlock()
 
         guard let writer = writer, let input = input else {
