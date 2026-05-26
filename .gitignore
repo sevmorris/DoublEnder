@@ -18,11 +18,8 @@ project.xcworkspace/
 DoublEnderCloud/doublender-*.json
 doublender-*.json
 
-# Per-client branded build assets — confidential. The scaffolding
-# (_template/, README.md, this .gitignore) stays committed; actual
-# client subdirectories are gitignored. See Brands/README.md.
-/Brands/*/
-!/Brands/_template/
+# Per-client branded build assets — confidential.
+Brands/
 
 # DoublEnder Cloud (private version)
 DoublEnder Cloud/
