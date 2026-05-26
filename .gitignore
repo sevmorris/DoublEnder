@@ -29,4 +29,7 @@ DoublEnder Cloud/
 DoublEnderCloud/
 release-cloud.sh
 release-cloud-branded.sh
+scripts/release-cloud-lib.sh
+DoublEnder/Services/CloudConnectivity.swift
+DoublEnder/Views/CloudContentView.swift
 
