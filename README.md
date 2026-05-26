@@ -62,7 +62,7 @@ The project is generated from `project.yml` via [XcodeGen](https://github.com/yo
 ### Support
 Free forever.
 
-<p align="center">
+<p align="left">
   <a href="https://ko-fi.com/sevmo"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi" /></a>
 </p>
 
