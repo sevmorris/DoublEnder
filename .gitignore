@@ -23,3 +23,7 @@ doublender-*.json
 # client subdirectories are gitignored. See Brands/README.md.
 /Brands/*/
 !/Brands/_template/
+
+# DoublEnder Cloud (private version)
+DoublEnder Cloud/
+

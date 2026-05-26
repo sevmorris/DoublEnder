@@ -50,7 +50,7 @@ struct DoublEnderApp: App {
                 }
                 #else
                 Button("Support on Ko-fi") {
-                    if let url = URL(string: "https://ko-fi.com/sevenmorris") {
+                    if let url = URL(string: "https://ko-fi.com/sevmo") {
                         NSWorkspace.shared.open(url)
                     }
                 }
