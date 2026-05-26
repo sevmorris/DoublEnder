@@ -27,4 +27,6 @@ doublender-*.json
 # DoublEnder Cloud (private version)
 DoublEnder Cloud/
 DoublEnderCloud/
+release-cloud.sh
+release-cloud-branded.sh
 
