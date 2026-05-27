@@ -66,7 +66,6 @@ fi
 if [[ "$CURRENT" == "$VERSION" ]]; then
     ok "Already at $VERSION"
 else
-    local ESC_CURRENT ESC_VERSION
     ESC_CURRENT=$(printf '%s' "$CURRENT" | sed 's/[.[\*^$]/\\&/g')
     ESC_VERSION=$(printf '%s'  "$VERSION" | sed 's/[.[\*^$]/\\&/g')
     sed -i '' "s/MARKETING_VERSION: \"${ESC_CURRENT}\"/MARKETING_VERSION: \"${ESC_VERSION}\"/g" \
@@ -99,6 +98,14 @@ else
     git commit -m "Bump version to $VERSION"
     ok "Committed version bump"
 fi
+
+step "Bumping build number"
+BUILD_NUM=$(awk -F'"' '/CURRENT_PROJECT_VERSION:/ {print $2; exit}' "$PROJECT_DIR/project.yml")
+NEXT_BUILD=$((BUILD_NUM + 1))
+sed -i '' "s/CURRENT_PROJECT_VERSION: \"${BUILD_NUM}\"/CURRENT_PROJECT_VERSION: \"${NEXT_BUILD}\"/" \
+    "$PROJECT_DIR/project.yml"
+xcodegen generate --quiet
+ok "Build number ${BUILD_NUM} → ${NEXT_BUILD}"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 step "Building (clean, Release)"
@@ -201,10 +208,11 @@ gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
 gsutil setmeta -h "Cache-Control:no-cache" gs://doublender-downloads/DoublEnder.dmg
 ok "GCS permalink updated → DoublEnder.dmg (no-cache)"
 
-# ── Remove old releases ───────────────────────────────────────────────────────
-step "Removing old releases"
+# ── Remove old releases (keep the ${KEEP_RELEASES} most recent) ───────────────
+KEEP_RELEASES=5
+step "Removing old releases (keeping ${KEEP_RELEASES} most recent)"
 OLD_TAGS=$(gh release list --repo "$REPO" --limit 100 --json tagName \
-    --jq '.[].tagName' | grep -v "^${TAG}$" || true)
+    --jq '.[].tagName' | tail -n +$((KEEP_RELEASES + 1)) || true)
 if [[ -z "$OLD_TAGS" ]]; then
     ok "No old releases to remove"
 else

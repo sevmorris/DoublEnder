@@ -129,6 +129,11 @@ class AudioEngine: NSObject, ObservableObject {
     /// distinguish "writer never started a session" (silent discard,
     /// .success(nil)) from "writer wrote something" (finalize as usual).
     private var didAppendAtLeastOneSample = false
+    /// UID of the input device bound when the current take started. Used to
+    /// detect unplug mid-recording when refreshDevices runs.
+    private var recordingInputDeviceUID: String?
+    /// Prevents firing onDisconnectedDuringRecording more than once per take.
+    private var disconnectStopPending = false
 
     // Serial queue for all AVAssetWriter / PCMSidecar work. Set as the
     // delegate queue on AVCaptureAudioDataOutput, so every CMSampleBuffer
@@ -168,17 +173,6 @@ class AudioEngine: NSObject, ObservableObject {
     /// retains the block too, but we need to pass the same reference back
     /// to `AudioObjectRemovePropertyListenerBlock`.
     private var deviceListBlock: AudioObjectPropertyListenerBlock?
-
-    // AAC-LC's allowed input sample rates per the standard. Anything else
-    // makes the encoder reject samples with "Cannot Encode Media."
-    private static let aacSupportedSampleRates: Set<Double> = [
-        8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000
-    ]
-    private static let aacFallbackSampleRate: Double = 48000
-
-    private static func aacSampleRate(matching rate: Double) -> Double {
-        aacSupportedSampleRates.contains(rate) ? rate : aacFallbackSampleRate
-    }
 
     override init() {
         super.init()
@@ -280,11 +274,16 @@ class AudioEngine: NSObject, ObservableObject {
         with device: AVCaptureDevice? = nil,
         intendedDeviceID: AudioDeviceID? = nil
     ) {
+        guard !isRecording else {
+            logger.info("Refusing capture session rebuild during active recording")
+            return
+        }
         DispatchQueue.main.async { self.isRebuilding = true }
 
         // Tear down the prior session before building the new one. setSampleBufferDelegate(nil, ...)
         // first so any in-flight delegate callbacks complete before we drop refs.
         if let prior = captureSession {
+            removeSessionObservers(for: prior)
             prior.stopRunning()
             if let out = audioOutput {
                 out.setSampleBufferDelegate(nil, queue: nil)
@@ -367,6 +366,7 @@ class AudioEngine: NSObject, ObservableObject {
 
         session.commitConfiguration()
         session.startRunning()
+        installSessionObservers(for: session)
 
         self.captureSession = session
         self.currentInput = input
@@ -497,6 +497,77 @@ class AudioEngine: NSObject, ObservableObject {
 
         if selectedInputDevice == nil {
             selectedInputDevice = AVCaptureDevice.default(for: .audio)
+        }
+
+        notifyIfRecordingInputDisconnected()
+    }
+
+    /// If the active take's input device vanished from the system device
+    /// list, ask RecorderViewModel to stop and finalize. Called from
+    /// refreshDevices (CoreAudio listener, app activation, wake).
+    private func notifyIfRecordingInputDisconnected() {
+        guard isRecording, !disconnectStopPending else { return }
+        guard let activeUID = recordingInputDeviceUID ?? currentInput?.device.uniqueID else {
+            return
+        }
+        guard !availableInputDevices.contains(where: { $0.uniqueID == activeUID }) else {
+            return
+        }
+        disconnectStopPending = true
+        logger.warning("Recording input disconnected: \(activeUID, privacy: .public)")
+        handleRecordingCaptureFailure(reason: "input disconnected")
+    }
+
+    /// Unified path for disconnect, runtime error, and unrecoverable interruption
+    /// during an active take — delegates stop/finalize to RecorderViewModel.
+    private func handleRecordingCaptureFailure(reason: String) {
+        guard isRecording, disconnectStopPending else { return }
+        logger.warning("Recording capture failure: \(reason, privacy: .public)")
+        DispatchQueue.main.async { [weak self] in
+            self?.onDisconnectedDuringRecording?()
+        }
+    }
+
+    private func installSessionObservers(for session: AVCaptureSession) {
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(captureSessionRuntimeError(_:)),
+                           name: .AVCaptureSessionRuntimeError, object: session)
+        center.addObserver(self, selector: #selector(captureSessionWasInterrupted(_:)),
+                           name: .AVCaptureSessionWasInterrupted, object: session)
+        center.addObserver(self, selector: #selector(captureSessionInterruptionEnded(_:)),
+                           name: .AVCaptureSessionInterruptionEnded, object: session)
+    }
+
+    private func removeSessionObservers(for session: AVCaptureSession) {
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: .AVCaptureSessionRuntimeError, object: session)
+        center.removeObserver(self, name: .AVCaptureSessionWasInterrupted, object: session)
+        center.removeObserver(self, name: .AVCaptureSessionInterruptionEnded, object: session)
+    }
+
+    @objc private func captureSessionRuntimeError(_ notification: Notification) {
+        let err = notification.userInfo?[AVCaptureSessionErrorKey] as? Error
+        logger.error("AVCaptureSession runtime error: \(err?.localizedDescription ?? "unknown", privacy: .public)")
+        guard isRecording, !disconnectStopPending else { return }
+        disconnectStopPending = true
+        handleRecordingCaptureFailure(reason: err?.localizedDescription ?? "runtime error")
+    }
+
+    @objc private func captureSessionWasInterrupted(_ notification: Notification) {
+        logger.warning("AVCaptureSession interrupted")
+        // Wait for InterruptionEnded before stopping — brief system interruptions
+        // (phone call overlay, etc.) may recover without ending the take.
+    }
+
+    @objc private func captureSessionInterruptionEnded(_ notification: Notification) {
+        guard isRecording else { return }
+        if captureSession?.isRunning == false {
+            captureSession?.startRunning()
+        }
+        if captureSession?.isRunning == false {
+            guard !disconnectStopPending else { return }
+            disconnectStopPending = true
+            handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
         }
     }
 
@@ -649,6 +720,8 @@ class AudioEngine: NSObject, ObservableObject {
         // open the sidecar — start optimistic and let the delegate flip it.
         DispatchQueue.main.async { self.sidecarUnavailable = false }
 
+        recordingInputDeviceUID = currentInput?.device.uniqueID
+        disconnectStopPending = false
         isRecording = true
     }
 
@@ -657,6 +730,8 @@ class AudioEngine: NSObject, ObservableObject {
     /// confirmation path.
     func cancelRecording(completion: @escaping () -> Void) {
         isRecording = false
+        recordingInputDeviceUID = nil
+        disconnectStopPending = false
         DispatchQueue.main.async {
             self.sidecarUnavailable = false
             self.writeIndicatorClearWork?.cancel()
@@ -695,6 +770,8 @@ class AudioEngine: NSObject, ObservableObject {
     ///   • Writer is in an error state    → failure with reason
     func stopRecording(completion: @escaping (Result<URL?, Error>) -> Void) {
         isRecording = false
+        recordingInputDeviceUID = nil
+        disconnectStopPending = false
         DispatchQueue.main.async {
             self.sidecarUnavailable = false
             self.writeIndicatorClearWork?.cancel()
@@ -754,6 +831,10 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     func setDevice(_ device: AVCaptureDevice) {
+        guard !isRecording else {
+            logger.info("Refusing device switch during active recording")
+            return
+        }
         guard let id = audioDeviceID(forUID: device.uniqueID) else {
             logger.error("Failed to translate device UID to AudioDeviceID: \(device.uniqueID, privacy: .public)")
             return
@@ -1051,33 +1132,93 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async { self.lastError = reason }
     }
 
-    /// Compute RMS over the CMSampleBuffer's raw bytes and publish a dBFS
-    /// value to `rmsLevel`. Assumes the buffer is Float32 — the macOS
-    /// default for AVCaptureAudioDataOutput with no audioSettings. If the
-    /// device delivers some other format, the meter values will be wrong
-    /// but recording still works (the writer's internal transcoder doesn't
-    /// care about the meter path).
+    /// Compute RMS from a CMSampleBuffer and publish dBFS to `rmsLevel`.
+    /// Handles Float32 and Int16 PCM; other formats fall back to a best-effort
+    /// Float32 interpretation.
     private func computeRMS(from sampleBuffer: CMSampleBuffer) {
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        var length = 0
-        guard CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &length,
-            dataPointerOut: &dataPointer
-        ) == kCMBlockBufferNoErr,
-        let ptr = dataPointer else { return }
-
-        let floatCount = length / MemoryLayout<Float>.size
-        guard floatCount > 0 else { return }
-        let floatPtr = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
+        guard let samples = normalizedMeterSamples(from: sampleBuffer), !samples.isEmpty else { return }
         var rms: Float = 0
-        vDSP_rmsqv(floatPtr, 1, &rms, vDSP_Length(floatCount))
+        samples.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            vDSP_rmsqv(base, 1, &rms, vDSP_Length(buf.count))
+        }
         let db = rms > 1e-9 ? 20.0 * log10f(rms) : -60
         DispatchQueue.main.async { [weak self] in
             self?.rmsLevel = max(-60, min(0, db))
         }
+    }
+
+    /// Normalized mono Float32 samples for the level meter.
+    private func normalizedMeterSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return nil }
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        var length = 0
+        guard CMBlockBufferGetDataPointer(
+            blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
+            totalLengthOut: &length, dataPointerOut: &dataPointer
+        ) == kCMBlockBufferNoErr, let ptr = dataPointer, length > 0 else { return nil }
+
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
+            let floatCount = length / MemoryLayout<Float>.size
+            guard floatCount > 0 else { return nil }
+            return Array(UnsafeBufferPointer(
+                start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
+                count: floatCount
+            ))
+        }
+
+        let channels = max(Int(asbd.mChannelsPerFrame), 1)
+        let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let isInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
+        let isNonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frameCount > 0 else { return nil }
+
+        if isFloat && asbd.mBitsPerChannel == 32 {
+            if isNonInterleaved && channels > 1 {
+                let bytesPerChannel = frameCount * MemoryLayout<Float>.size
+                guard length >= bytesPerChannel else { return nil }
+                return Array(UnsafeBufferPointer(
+                    start: ptr.withMemoryRebound(to: Float.self, capacity: frameCount) { $0 },
+                    count: frameCount
+                ))
+            }
+            let floatCount = length / MemoryLayout<Float>.size
+            guard floatCount > 0 else { return nil }
+            if channels == 1 {
+                return Array(UnsafeBufferPointer(
+                    start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
+                    count: floatCount
+                ))
+            }
+            // Interleaved multi-channel — average channels per frame for the meter.
+            let frames = floatCount / channels
+            var mono = [Float](repeating: 0, count: frames)
+            let floats = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
+            for f in 0..<frames {
+                var sum: Float = 0
+                for ch in 0..<channels { sum += floats[f * channels + ch] }
+                mono[f] = sum / Float(channels)
+            }
+            return mono
+        }
+
+        if isInt && asbd.mBitsPerChannel == 16 {
+            let intCount = length / MemoryLayout<Int16>.size
+            guard intCount > 0 else { return nil }
+            let ints = ptr.withMemoryRebound(to: Int16.self, capacity: intCount) { $0 }
+            if channels == 1 {
+                return (0..<intCount).map { Float(ints[$0]) / 32768.0 }
+            }
+            let frames = intCount / channels
+            return (0..<frames).map { f in
+                var sum: Float = 0
+                for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / 32768.0 }
+                return sum / Float(channels)
+            }
+        }
+
+        return nil
     }
 }

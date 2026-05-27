@@ -14,13 +14,7 @@ actor UpdateChecker {
     /// production users (m4). Only the numeric `major.minor.patch` part is
     /// used for comparison.
     private static func numericVersion(_ raw: String) -> String {
-        // Accept digits and dots up to (but not including) any non-numeric /
-        // non-dot character (hyphen, tilde, plus …).
-        let stripped = raw.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
-        if let range = stripped.range(of: #"[^0-9.]"#, options: .regularExpression) {
-            return String(stripped[..<range.lowerBound])
-        }
-        return stripped
+        VersionFormatting.numericVersion(raw)
     }
 
     enum Result {

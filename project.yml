@@ -24,6 +24,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: DoublEnder
+        excludes:
+          - "Views/CloudContentView.swift"
     settings:
       base:
         PRODUCT_NAME: DoublEnder
@@ -64,6 +66,7 @@ targets:
           # CloudAssets.xcassets below.
           - "Assets.xcassets"
           - "DoublEnder.entitlements"
+          - "Views/ContentView.swift"
       - path: DoublEnderCloud/doublender-10af32ff2d11.json
         buildPhase: resources
       - path: DoublEnderCloud/CloudAssets.xcassets
@@ -114,4 +117,32 @@ targets:
         BrandBadgeY: "$(BRAND_BADGE_Y)"
         BrandBadgeW: "$(BRAND_BADGE_W)"
         BrandBadgeH: "$(BRAND_BADGE_H)"
+
+  DoublEnderTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: DoublEnderTests
+    dependencies:
+      - target: DoublEnder
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderTests
+
+  DoublEnderCloudTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: DoublEnderCloudTests
+    dependencies:
+      - target: DoublEnderCloud
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderCloudTests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/DoublEnder Cloud.app/Contents/MacOS/DoublEnder Cloud"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 

@@ -112,6 +112,11 @@ struct HelpView: View {
                     you set under Filename.
                     """)
                     text("""
+                    When a recording finishes, a confirmation dialog appears with \
+                    the saved filename. If notifications are enabled, a system \
+                    banner also appears with a Reveal in Finder action.
+                    """)
+                    text("""
                     The file is ready to send as-is. It will play in QuickTime, \
                     VoiceNotes, and any podcast editing app.
                     """)

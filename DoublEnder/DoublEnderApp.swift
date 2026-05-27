@@ -22,7 +22,7 @@ struct DoublEnderApp: App {
             #endif
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)   // fixed-size: content frame enforces 320×338
+        .windowResizability(.contentSize)   // fixed-size: content frame enforces 504×430
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
@@ -95,6 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         runPendingUploadCheckIfNeeded()
         #endif
         Task { await checkForUpdates(silent: true) }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Borderless windows can lose key status when backgrounded; reclaim
+        // focus so click-to-activate stays reliable without relying solely
+        // on object_setClass (see KeyableBorderlessWindow).
+        mainWindow?.makeKeyAndOrderFront(nil)
     }
 
     /// Single-window app — closing the only window should quit (and route

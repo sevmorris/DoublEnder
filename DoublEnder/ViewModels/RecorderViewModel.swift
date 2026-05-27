@@ -106,6 +106,15 @@ class RecorderViewModel: ObservableObject {
 
     @Published var selectedInputDeviceID: String = "" {
         didSet {
+            if isCurrentlyRecording {
+                if suppressDeviceSelectionRevert { return }
+                if selectedInputDeviceID != oldValue {
+                    suppressDeviceSelectionRevert = true
+                    selectedInputDeviceID = oldValue
+                    suppressDeviceSelectionRevert = false
+                }
+                return
+            }
             if let device = availableInputDevices.first(where: { $0.uniqueID == selectedInputDeviceID }) {
                 audioEngine.setDevice(device)
             }
@@ -184,6 +193,8 @@ class RecorderViewModel: ObservableObject {
     /// the app quits, so a fresh launch will offer again if the device is
     /// still present (or has been re-plugged).
     private var dismissedUSBDevices: Set<String> = []
+    /// Prevents re-entrancy when reverting a device pick during recording.
+    private var suppressDeviceSelectionRevert = false
 
     private let audioEngine = AudioEngine()
     #if GCS_ENABLED
@@ -458,6 +469,10 @@ class RecorderViewModel: ObservableObject {
     }
 
     func startRecording() {
+        if let reason = DiskSpaceChecker.recordingBlockedReason(for: Self.recordingsDirectory) {
+            state = .error(reason)
+            return
+        }
         do {
             let fileURL = makeRecordingURL()
 
@@ -506,6 +521,11 @@ class RecorderViewModel: ObservableObject {
                 self.recordingTime = 0
                 self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready
+                completion?()
+                // App-controlled confirmation — same guarantee as Cloud; system
+                // notifications are best-effort and may be disabled.
+                RecordingSavedConfirmation.present(fileName: url.lastPathComponent)
+                return
                 #endif
             case .success(.none):
                 // Silent discard — AudioEngine captured zero frames and
@@ -641,7 +661,6 @@ class RecorderViewModel: ObservableObject {
             return
         }
 
-        let contentType = outputFormat == .wav ? "audio/wav" : "audio/mp4"
         setPendingUpload(path: fileURL.path)
 
         let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
@@ -653,7 +672,7 @@ class RecorderViewModel: ObservableObject {
                 self.state = .uploading
             }
             do {
-                try await uploader.upload(fileURL: fileURL, contentType: contentType)
+                try await uploader.upload(fileURL: fileURL)
                 self.clearPendingUpload()
                 await MainActor.run {
                     self.recordingTime = 0

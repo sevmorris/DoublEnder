@@ -78,17 +78,16 @@ final class PCMSidecar {
         }
     }
 
-    /// Append the raw bytes of a CMSampleBuffer directly. Used by the
-    /// AVCaptureSession path so we can mirror to disk without ever building
-    /// an AVAudioPCMBuffer. Layout faithfulness is the caller's
-    /// responsibility — the bytes here are whatever shape the capture
-    /// session delivered (Float32 interleaved or non-interleaved at the
-    /// device's native channel count). Recovery via `recoverToWAV`
-    /// produces a WAV file that interprets the bytes as interleaved Float32
-    /// — correct for mono sources and for genuinely-interleaved
-    /// multi-channel sources; garbled for non-interleaved multi-channel
-    /// sources, which is acceptable for a recovery-only path.
+    /// Append the raw bytes of a CMSampleBuffer. Non-interleaved multi-channel
+    /// sources are downmixed to mono (first channel) for the recovery sidecar.
     func append(sampleBuffer: CMSampleBuffer) {
+        if let mono = Self.monoFloatSamples(from: sampleBuffer) {
+            mono.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                append(base, frameCount: buf.count)
+            }
+            return
+        }
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var dataPointer: UnsafeMutablePointer<Int8>?
         var length = 0
@@ -107,6 +106,58 @@ final class PCMSidecar {
             try handle.write(contentsOf: data)
         } catch {
             PCMSidecar.logger.error("Sidecar write failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Extract mono Float32 samples for sidecar mirroring. Prefers the first
+    /// channel when input is non-interleaved multi-channel.
+    private static func monoFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer),
+              let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
+            return nil
+        }
+        let channels = max(Int(asbd.mChannelsPerFrame), 1)
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frameCount > 0 else { return nil }
+
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        var length = 0
+        guard CMBlockBufferGetDataPointer(
+            blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
+            totalLengthOut: &length, dataPointerOut: &dataPointer
+        ) == kCMBlockBufferNoErr, let ptr = dataPointer else { return nil }
+
+        let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let isNonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
+        guard isFloat, asbd.mBitsPerChannel == 32 else { return nil }
+
+        if isNonInterleaved && channels > 1 {
+            let bytesPerChannel = frameCount * MemoryLayout<Float>.size
+            guard length >= bytesPerChannel else { return nil }
+            return Array(UnsafeBufferPointer(
+                start: ptr.withMemoryRebound(to: Float.self, capacity: frameCount) { $0 },
+                count: frameCount
+            ))
+        }
+
+        if channels == 1 {
+            let floatCount = length / MemoryLayout<Float>.size
+            guard floatCount > 0 else { return nil }
+            return Array(UnsafeBufferPointer(
+                start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
+                count: floatCount
+            ))
+        }
+
+        let floatCount = length / MemoryLayout<Float>.size
+        let frames = floatCount / channels
+        guard frames > 0 else { return nil }
+        let floats = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
+        return (0..<frames).map { f in
+            var sum: Float = 0
+            for ch in 0..<channels { sum += floats[f * channels + ch] }
+            return sum / Float(channels)
         }
     }
 

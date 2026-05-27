@@ -1,8 +1,7 @@
-#if GCS_ENABLED
 import SwiftUI
 import AppKit
 
-// Warm amber palette — mirrors the CloudContentView screen aesthetic.
+// Warm amber palette — mirrors the faceplate screen aesthetic.
 /// Near-black warm background (#0D0800) — same as screen interior.
 private let dlgBackground = Color(red: 0x0D/255, green: 0x08/255, blue: 0x00/255)
 /// Amber card-edge stroke.
@@ -18,27 +17,20 @@ private let dlgFilename   = Color(red: 0xA0/255, green: 0x60/255, blue: 0x0A/255
 /// Very dark warm field background (#1A0A00).
 private let dlgFieldBg    = Color(red: 0x1A/255, green: 0x0A/255, blue: 0x00/255)
 
-/// Upload-result confirmation for the DoublEnder Cloud build.
-///
-/// macOS user notifications can't be forced to persist until dismissed
-/// (that's the user-controlled Alerts/Banners setting) and require a
-/// per-bundle authorization that may never have been granted. To
-/// guarantee the confirmation always appears and stays until acknowledged,
-/// it's an app-controlled modal — same borderless themed window and
-/// `NSApp.runModal` mechanics as the crash-recovery dialog.
-struct UploadConfirmationView: View {
-    let success: Bool
+/// Shared themed confirmation content for Local save and Cloud upload dialogs.
+private struct ThemedConfirmationView: View {
+    let iconName: String
+    let title: String
+    let message: String
     let fileName: String
     let onAcknowledge: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
             Spacer(minLength: 0)
-            icon(success ? "checkmark.icloud.fill" : "exclamationmark.icloud.fill")
-            title("DoublEnder Cloud")
-            bodyText(success
-                     ? "Saved to Desktop and uploaded."
-                     : "Saved to Desktop. Upload failed.")
+            icon(iconName)
+            titleText(title)
+            bodyText(message)
             fileNameText(fileName)
             pillButton("OK") { onAcknowledge() }
                 .padding(.top, 2)
@@ -57,8 +49,6 @@ struct UploadConfirmationView: View {
         .preferredColorScheme(.dark)
     }
 
-    // MARK: - Themed building blocks (matched to RecoveryView)
-
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 30, weight: .semibold))
@@ -66,7 +56,7 @@ struct UploadConfirmationView: View {
             .shadow(color: dlgIcon.opacity(0.60), radius: 8)
     }
 
-    private func title(_ text: String) -> some View {
+    private func titleText(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 12, weight: .bold))
             .tracking(1.8)
@@ -115,17 +105,21 @@ final class UploadConfirmationWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-/// Presents the confirmation as a blocking modal on the main thread and
-/// returns only once the user clicks OK. Must be called on the main actor.
-enum UploadConfirmation {
-    static func present(success: Bool, fileName: String) {
+/// Presents a blocking themed confirmation on the main thread.
+private enum ThemedConfirmation {
+    static func present(iconName: String, title: String, message: String, fileName: String) {
         let window = UploadConfirmationWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 240),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
-        let view = UploadConfirmationView(success: success, fileName: fileName) { [weak window] in
+        let view = ThemedConfirmationView(
+            iconName: iconName,
+            title: title,
+            message: message,
+            fileName: fileName
+        ) { [weak window] in
             NSApp.stopModal()
             window?.orderOut(nil)
         }
@@ -152,6 +146,39 @@ enum UploadConfirmation {
         let sf = screen.visibleFrame
         let wf = window.frame
         window.setFrameOrigin(NSPoint(x: sf.midX - wf.width / 2, y: sf.midY - wf.height / 2))
+    }
+}
+
+/// Local recording-save confirmation — same app-controlled modal as Cloud so
+/// success is always visible even when notification permissions are denied.
+enum RecordingSavedConfirmation {
+    static func present(fileName: String) {
+        ThemedConfirmation.present(
+            iconName: "checkmark.circle.fill",
+            title: "DoublEnder",
+            message: "Recording saved to Desktop.",
+            fileName: fileName
+        )
+    }
+}
+
+#if GCS_ENABLED
+/// Upload-result confirmation for the DoublEnder Cloud build.
+enum UploadConfirmation {
+    static func present(success: Bool, fileName: String) {
+        ThemedConfirmation.present(
+            iconName: success ? "checkmark.icloud.fill" : "exclamationmark.icloud.fill",
+            title: "DoublEnder Cloud",
+            message: success
+                ? "Saved to Desktop and uploaded."
+                : "Saved to Desktop. Upload failed.",
+            fileName: fileName
+        )
+    }
+
+    /// Exposed for PendingUploadPrompt centreing.
+    fileprivate static func centerOnAppScreen(_ window: NSWindow) {
+        ThemedConfirmation.centerOnAppScreen(window)
     }
 }
 
