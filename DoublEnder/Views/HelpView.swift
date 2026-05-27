@@ -57,17 +57,17 @@ struct HelpView: View {
                 section("Quick Start") {
                     #if GCS_ENABLED
                     steps([
-                        "Click the mic icon (left) to pick your input device. Watch the 40-segment level meter — aim for green, avoid red.",
+                        "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
                         "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED above the timer lights up.",
                         "Click the button again to stop. Your file saves to the Desktop and uploads automatically. The blue LED above the timer indicates when the cloud connection is ready.",
                         "A confirmation dialog appears when the upload finishes. The local file stays on your Desktop as a backup."
                     ])
                     #else
                     steps([
-                        "Click the mic icon (left) to pick your input device. Watch the 40-segment level meter — aim for green, avoid red.",
+                        "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
                         "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED above the timer lights up.",
                         "Click the button again to stop. Your file is saved to the Desktop.",
-                        "A macOS notification appears with a Reveal in Finder action — use it to jump straight to the file, then send it to your host."
+                        "A confirmation dialog appears with the saved filename. If notifications are enabled, a banner also offers Reveal in Finder."
                     ])
                     #endif
                 }
@@ -82,9 +82,10 @@ struct HelpView: View {
                     only the unavoidable AAC encode (when recording m4a) in between.
                     """)
                     text("""
-                    The level meter shows the raw input signal, so what you see is \
-                    what gets recorded. Aim for the green range and watch for any \
-                    excursions into red.
+                    The level meter is a visual activity indicator — it lights up when \
+                    audio is coming in so you know the mic is working. DoublEnder has \
+                    no gain control; adjust levels on your mic or in System Settings \
+                    if you need to.
                     """)
                 }
 

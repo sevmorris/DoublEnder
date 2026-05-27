@@ -29,10 +29,11 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 - **One-button recording** to AAC (M4A, 256 kbps) or WAV (24-bit PCM), mono at 48 kHz
 - **Settings popover** (gear icon) — override the filename prefix, attach notes (written as file description metadata), or switch output format
 - **Input selector** — pick any system audio input from the mic dropdown
-- **Segmented LED level meter** — 40 segments with green / amber / red zones and a CLIP indicator
+- **Level meter** — lights up when audio is coming in so you know the mic is working (decorative; no gain control in the app)
 - **No DSP processing** — what the mic captures is what hits the file (apart from the unavoidable AAC encode if you pick m4a)
 - **LCD-style timer** — seven-segment HH:MM:SS readout with visible ghost segments
-- **Native notifications** — when a recording finishes, a system notification appears with a Reveal in Finder action
+- **Save confirmation** — when a recording finishes, a confirmation dialog shows the saved filename (always visible, even if notifications are off)
+- **Native notifications** — if enabled in System Settings, a banner also appears with a Reveal in Finder action
 - **Quit protection** — ⌘Q during a recording prompts to save or discard before terminating
 - **Crash recovery** — if the app exits unexpectedly mid-record, the next launch offers to keep or delete the orphaned file
 - **Update checker** — Check for Updates… in the app menu polls GitHub releases for new versions
