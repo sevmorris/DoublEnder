@@ -15,7 +15,7 @@ settings:
     # download filenames, and crash reports. release.sh's regex rewrites
     # match an optional letter suffix so future bumps stay self-consistent.
     MARKETING_VERSION: "1.6.29lr"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
 
 targets:
   DoublEnder:
@@ -25,16 +25,16 @@ targets:
     sources:
       - path: DoublEnder
         excludes:
+          # Cloud-only sources live in the private overlay (gitignored).
           - "Views/CloudContentView.swift"
+          - "Services/CloudConnectivity.swift"
+          - "Services/Uploader.swift"
+          - "Services/RecordingUploadMetadata.swift"
     settings:
       base:
         PRODUCT_NAME: DoublEnder
         PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnder
-        # Public app's display name — shown in Dock, About, Cmd-Tab.
-        # Threaded through Info.plist via $(BUNDLE_DISPLAY_NAME).
         BUNDLE_DISPLAY_NAME: DoublEnder
-        # Default recording filename prefix when the user hasn't customized
-        # it. Branded Cloud builds override via DEFAULT_RECORDING_PREFIX.
         DEFAULT_RECORDING_PREFIX: DoublEnder
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
         CODE_SIGN_STYLE: Automatic
@@ -52,97 +52,17 @@ targets:
         CFBundleDisplayName: "$(BUNDLE_DISPLAY_NAME)"
         DefaultRecordingPrefix: "$(DEFAULT_RECORDING_PREFIX)"
 
-  DoublEnderCloud:
-    type: application
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources:
-      - path: DoublEnder
-        excludes:
-          # Public-only flavour assets (AppIcon) live in their own catalog
-          # so the Cloud bundle never carries them. The shared faceplate,
-          # mic/gear icons, and LED PNGs live in SharedAssets.xcassets and
-          # ship to both flavours. Cloud-only assets come in via
-          # CloudAssets.xcassets below.
-          - "Assets.xcassets"
-          - "DoublEnder.entitlements"
-          - "Views/ContentView.swift"
-      - path: DoublEnderCloud/doublender-10af32ff2d11.json
-        buildPhase: resources
-      - path: DoublEnderCloud/CloudAssets.xcassets
-    settings:
-      base:
-        PRODUCT_NAME: DoublEnder Cloud
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderCloud
-        # Display name shown in Dock, About, Cmd-Tab. Branded builds
-        # override this via xcodebuild (release-cloud-branded.sh) so the
-        # Dock shows the per-client name. Threaded into Info.plist via
-        # $(BUNDLE_DISPLAY_NAME).
-        BUNDLE_DISPLAY_NAME: DoublEnder Cloud
-        # Default recording filename prefix when the user hasn't customized
-        # it. Branded Cloud builds override via DEFAULT_RECORDING_PREFIX
-        # (release-cloud-branded.sh) so files default to e.g. "HoT_<date>.m4a".
-        DEFAULT_RECORDING_PREFIX: DoublEnder
-        # Standard Cloud update channel. Branded builds override this on
-        # the xcodebuild command line so each client has its own update
-        # manifest URL. UpdateChecker.checkCloud() reads UpdateManifestURL
-        # from Info.plist at runtime. Threaded in via $(UPDATE_MANIFEST_URL).
-        UPDATE_MANIFEST_URL: "https://storage.googleapis.com/doublender-downloads/cloud-latest.json"
-        # Independent of the public app's MARKETING_VERSION (settings.base).
-        # release-cloud.sh auto-increments the patch on every run, preserving
-        # the "cr" suffix that distinguishes Cloud builds from the public app.
-        MARKETING_VERSION: "1.5.34cr"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconCloud
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: GCS_ENABLED
-        CODE_SIGN_STYLE: Automatic
-        ENABLE_HARDENED_RUNTIME: YES
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_ENTITLEMENTS: DoublEnderCloud/DoublEnderCloud.entitlements
-    # Cloud has its own Info.plist so the UpdateManifestURL key doesn't leak
-    # into the public DoublEnder bundle (which never reads it).
-    info:
-      path: DoublEnderCloud/Info.plist
-      properties:
-        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
-        NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
-        CFBundleDisplayName: "$(BUNDLE_DISPLAY_NAME)"
-        DefaultRecordingPrefix: "$(DEFAULT_RECORDING_PREFIX)"
-        UpdateManifestURL: "$(UPDATE_MANIFEST_URL)"
-        # Brand badge geometry — injected by release-cloud-branded.sh via
-        # xcodebuild overrides. Empty in standard Cloud builds (badge suppressed).
-        BrandBadgeX: "$(BRAND_BADGE_X)"
-        BrandBadgeY: "$(BRAND_BADGE_Y)"
-        BrandBadgeW: "$(BRAND_BADGE_W)"
-        BrandBadgeH: "$(BRAND_BADGE_H)"
-
   DoublEnderTests:
     type: bundle.unit-test
     platform: macOS
     deploymentTarget: "14.0"
     sources:
       - path: DoublEnderTests
+        excludes:
+          - "RecordingUploadMetadataTests.swift"
     dependencies:
       - target: DoublEnder
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderTests
-
-  DoublEnderCloudTests:
-    type: bundle.unit-test
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources:
-      - path: DoublEnderCloudTests
-    dependencies:
-      - target: DoublEnderCloud
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.sevmorris.DoublEnderCloudTests
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/DoublEnder Cloud.app/Contents/MacOS/DoublEnder Cloud"
-        BUNDLE_LOADER: "$(TEST_HOST)"
-

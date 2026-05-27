@@ -11,64 +11,27 @@
 		041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */; };
 		0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */; };
 		0FBC87E4BA9DEEA32AF58343 /* RecorderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */; };
-		10B49684FDAEFA701924727C /* CloudAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2BE7DD783227A69761C9C390 /* CloudAssets.xcassets */; };
 		11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */; };
-		14DD76DFA8C2C8B081510BDC /* CloudBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71767153018DE100A46E60FE /* CloudBundleTests.swift */; };
 		1AF67E7E0C25924B21B6F378 /* SharedAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */; };
-		1E982FE9523861E3BC6BE635 /* FaceplateStateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180AFCEE6B660AE632E59EE7 /* FaceplateStateViews.swift */; };
 		2060C7480B61F1F8CB1634C5 /* DoublEnderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A664098C4701B731F134D15A /* DoublEnderApp.swift */; };
-		22039C5964B1579FD2A3F595 /* RecordingUploadMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865A0B270C468DE15FF20664 /* RecordingUploadMetadata.swift */; };
-		259DB428CDDD2D03437C1B64 /* CloudUploadMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E703CA01731D4D349DAC9EF9 /* CloudUploadMetadataTests.swift */; };
-		3722B563F5B354ED5B3C0CAC /* CloudConnectivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */; };
 		3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */; };
-		47E9C2CFC8E04E705E0F01A3 /* RecorderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */; };
-		49ED4D96516FAB28C5CC2156 /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
-		5F28705E9B2DD1D817669872 /* Uploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90AD773FEA0D06C86AB9AB8B /* Uploader.swift */; };
-		5FE5E884B33185C3B7B5D4B4 /* VersionFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */; };
-		659D2142D79F4B86571C6426 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F427670EB2DAF640994599 /* AudioEngine.swift */; };
-		6A9141909A09F018DB786C61 /* RecorderMainPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */; };
-		6C5E1D1E6EB79B934C41611A /* DoublEnderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A664098C4701B731F134D15A /* DoublEnderApp.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
-		850FC9BDBEC1A715FCA82735 /* Uploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90AD773FEA0D06C86AB9AB8B /* Uploader.swift */; };
-		87BF433153258BDD7F186E45 /* RecordingUploadMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865A0B270C468DE15FF20664 /* RecordingUploadMetadata.swift */; };
-		88D729B32497100812D42566 /* HelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90248FE45395766ECDFF5C6 /* HelpView.swift */; };
-		94441311B7F60463DAE95AFB /* DSEG7Classic-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 06752EA9DBBABCB91FEF26D3 /* DSEG7Classic-Regular.ttf */; };
 		9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
-		98A77ACF59ABF31B3AC2252E /* DiskSpaceChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */; };
 		98D7CBA7118AD909811A08D7 /* VersionFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */; };
-		9ABF1CCABA4963286B4EC5A2 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
-		9ED5E3F5CC22C17DED51993D /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8331841FA32B270066E651 /* NotificationService.swift */; };
-		A85B19E56271B2D00C591845 /* doublender-10af32ff2d11.json in Resources */ = {isa = PBXBuildFile; fileRef = 34514E952E2515C16AB6E129 /* doublender-10af32ff2d11.json */; };
-		A9B5D02E9108D4EAC65D20C9 /* RecordingUploadMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3792F4059DD7945395C7F37E /* RecordingUploadMetadataTests.swift */; };
-		AD897B6712A20B76D54D3DFE /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */; };
-		B7672703234ADBF249BD117F /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */; };
-		B9EEE532D5B7876A5BE55860 /* SharedAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */; };
 		BB66D98FB9F2F69F8A4F7672 /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */; };
-		BEC5B335D7B46CA37EAC1FE4 /* CloudContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B4A265917EEC4F22FFB80F /* CloudContentView.swift */; };
 		CB83A44567673D6FB4273023 /* UploadConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC710282351ED2B87482FED /* UploadConfirmationView.swift */; };
-		D511FB0E209EDB7A719AB96A /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = BEFC981AFE64B7F016D02E37 /* Info.plist */; };
 		D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90248FE45395766ECDFF5C6 /* HelpView.swift */; };
 		DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */; };
 		DE683368203B1791D5E8D132 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */; };
 		DEFEF410E23AD80FD16C8CE5 /* FaceplateStateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180AFCEE6B660AE632E59EE7 /* FaceplateStateViews.swift */; };
-		DF1A8C4BEED8B28A3D2AD9E1 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
 		DF7E5277F967AA00454980E9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */; };
 		E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8331841FA32B270066E651 /* NotificationService.swift */; };
 		EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F427670EB2DAF640994599 /* AudioEngine.swift */; };
-		EEA52ACEBBB97A53F91C6A09 /* UploadConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC710282351ED2B87482FED /* UploadConfirmationView.swift */; };
-		FCBC3930D17375930FF52AC3 /* CloudConnectivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		5E7905FF3ED53E71E99B1A3E /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E1D34250031A0AF13E02100E /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 3A4ABD70B7B6A1A4B41C66EC;
-			remoteInfo = DoublEnderCloud;
-		};
 		7D2F0F61904D112E778011A9 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E1D34250031A0AF13E02100E /* Project object */;
@@ -86,29 +49,18 @@
 		1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMSidecar.swift; sourceTree = "<group>"; };
 		24F205435D2498D70D023299 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		26F427670EB2DAF640994599 /* AudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngine.swift; sourceTree = "<group>"; };
-		2BE7DD783227A69761C9C390 /* CloudAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = CloudAssets.xcassets; sourceTree = "<group>"; };
-		34514E952E2515C16AB6E129 /* doublender-10af32ff2d11.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "doublender-10af32ff2d11.json"; sourceTree = "<group>"; };
-		3792F4059DD7945395C7F37E /* RecordingUploadMetadataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingUploadMetadataTests.swift; sourceTree = "<group>"; };
 		3992791273426B06C5A56DA1 /* DoublEnder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoublEnder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskSpaceChecker.swift; sourceTree = "<group>"; };
 		5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderMainPanel.swift; sourceTree = "<group>"; };
-		6EA594B0A5B906591460E858 /* DoublEnderCloudTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoublEnderCloudTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		71767153018DE100A46E60FE /* CloudBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudBundleTests.swift; sourceTree = "<group>"; };
 		839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMSidecarTests.swift; sourceTree = "<group>"; };
-		865A0B270C468DE15FF20664 /* RecordingUploadMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingUploadMetadata.swift; sourceTree = "<group>"; };
 		87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceplateDesign.swift; sourceTree = "<group>"; };
-		90AD773FEA0D06C86AB9AB8B /* Uploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uploader.swift; sourceTree = "<group>"; };
 		9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionFormatting.swift; sourceTree = "<group>"; };
 		9AC710282351ED2B87482FED /* UploadConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadConfirmationView.swift; sourceTree = "<group>"; };
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
-		B4AE2D23315EF40087853727 /* DoublEnderCloud.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoublEnderCloud.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConnectivity.swift; sourceTree = "<group>"; };
-		C7B4A265917EEC4F22FFB80F /* CloudContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudContentView.swift; sourceTree = "<group>"; };
 		CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
-		E703CA01731D4D349DAC9EF9 /* CloudUploadMetadataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudUploadMetadataTests.swift; sourceTree = "<group>"; };
 		EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
 		EC47A7DBFE3560714B1EABA7 /* DoublEnder.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DoublEnder.entitlements; sourceTree = "<group>"; };
 		ED51B67AFF43A5CA03791B8C /* DoublEnderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoublEnderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -150,12 +102,9 @@
 			isa = PBXGroup;
 			children = (
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
-				C726A9BFF124F1AA6C56072F /* CloudConnectivity.swift */,
 				1B8331841FA32B270066E651 /* NotificationService.swift */,
 				1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */,
-				865A0B270C468DE15FF20664 /* RecordingUploadMetadata.swift */,
 				F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */,
-				90AD773FEA0D06C86AB9AB8B /* Uploader.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -163,7 +112,6 @@
 		48EBB12EB1125B7ED1870032 /* Views */ = {
 			isa = PBXGroup;
 			children = (
-				C7B4A265917EEC4F22FFB80F /* CloudContentView.swift */,
 				24F205435D2498D70D023299 /* ContentView.swift */,
 				F90248FE45395766ECDFF5C6 /* HelpView.swift */,
 				EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */,
@@ -178,7 +126,6 @@
 			children = (
 				CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
-				3792F4059DD7945395C7F37E /* RecordingUploadMetadataTests.swift */,
 				FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */,
 			);
 			path = DoublEnderTests;
@@ -190,15 +137,6 @@
 				2E4028C5C5355C54358839E1 /* Fonts */,
 			);
 			path = Resources;
-			sourceTree = "<group>";
-		};
-		84916D34C7B926DC708D9735 /* DoublEnderCloudTests */ = {
-			isa = PBXGroup;
-			children = (
-				71767153018DE100A46E60FE /* CloudBundleTests.swift */,
-				E703CA01731D4D349DAC9EF9 /* CloudUploadMetadataTests.swift */,
-			);
-			path = DoublEnderCloudTests;
 			sourceTree = "<group>";
 		};
 		A0A2DE47AE61E7C3E667469D /* DoublEnder */ = {
@@ -231,28 +169,15 @@
 			isa = PBXGroup;
 			children = (
 				3992791273426B06C5A56DA1 /* DoublEnder.app */,
-				B4AE2D23315EF40087853727 /* DoublEnderCloud.app */,
-				6EA594B0A5B906591460E858 /* DoublEnderCloudTests.xctest */,
 				ED51B67AFF43A5CA03791B8C /* DoublEnderTests.xctest */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		E9C0BEA57E0D697A1C5151E5 /* DoublEnderCloud */ = {
-			isa = PBXGroup;
-			children = (
-				2BE7DD783227A69761C9C390 /* CloudAssets.xcassets */,
-				34514E952E2515C16AB6E129 /* doublender-10af32ff2d11.json */,
-			);
-			path = DoublEnderCloud;
 			sourceTree = "<group>";
 		};
 		F035E6F59874ABAC3AFD8CBA = {
 			isa = PBXGroup;
 			children = (
 				A0A2DE47AE61E7C3E667469D /* DoublEnder */,
-				E9C0BEA57E0D697A1C5151E5 /* DoublEnderCloud */,
-				84916D34C7B926DC708D9735 /* DoublEnderCloudTests */,
 				77F4D559DEF2CCB71BBFE819 /* DoublEnderTests */,
 				E767597B60FF83ED0607C3A2 /* Products */,
 			);
@@ -278,42 +203,6 @@
 			productName = DoublEnder;
 			productReference = 3992791273426B06C5A56DA1 /* DoublEnder.app */;
 			productType = "com.apple.product-type.application";
-		};
-		3A4ABD70B7B6A1A4B41C66EC /* DoublEnderCloud */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 3D747DE279A1BE7B4FF75A0C /* Build configuration list for PBXNativeTarget "DoublEnderCloud" */;
-			buildPhases = (
-				EA482F03B7FC96034ACBE838 /* Sources */,
-				6FFDA0F83A50DED9F13532C9 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = DoublEnderCloud;
-			packageProductDependencies = (
-			);
-			productName = DoublEnderCloud;
-			productReference = B4AE2D23315EF40087853727 /* DoublEnderCloud.app */;
-			productType = "com.apple.product-type.application";
-		};
-		55E0376F558CC1FF0AF3279F /* DoublEnderCloudTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 7943C9F47E8A6C98408A2E1C /* Build configuration list for PBXNativeTarget "DoublEnderCloudTests" */;
-			buildPhases = (
-				71B5A0256D3CAEE62D890DED /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				81A431F44E1CC0C3F4A3DFAB /* PBXTargetDependency */,
-			);
-			name = DoublEnderCloudTests;
-			packageProductDependencies = (
-			);
-			productName = DoublEnderCloudTests;
-			productReference = 6EA594B0A5B906591460E858 /* DoublEnderCloudTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		B15B9B69C907B75B82914FC1 /* DoublEnderTests */ = {
 			isa = PBXNativeTarget;
@@ -345,9 +234,6 @@
 					301765A123D833D8FED2DBB2 = {
 						ProvisioningStyle = Automatic;
 					};
-					3A4ABD70B7B6A1A4B41C66EC = {
-						ProvisioningStyle = Automatic;
-					};
 				};
 			};
 			buildConfigurationList = A24B35EBCB466DB3087AF11F /* Build configuration list for PBXProject "DoublEnder" */;
@@ -365,26 +251,12 @@
 			projectRoot = "";
 			targets = (
 				301765A123D833D8FED2DBB2 /* DoublEnder */,
-				3A4ABD70B7B6A1A4B41C66EC /* DoublEnderCloud */,
-				55E0376F558CC1FF0AF3279F /* DoublEnderCloudTests */,
 				B15B9B69C907B75B82914FC1 /* DoublEnderTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		6FFDA0F83A50DED9F13532C9 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				10B49684FDAEFA701924727C /* CloudAssets.xcassets in Resources */,
-				94441311B7F60463DAE95AFB /* DSEG7Classic-Regular.ttf in Resources */,
-				D511FB0E209EDB7A719AB96A /* Info.plist in Resources */,
-				B9EEE532D5B7876A5BE55860 /* SharedAssets.xcassets in Resources */,
-				A85B19E56271B2D00C591845 /* doublender-10af32ff2d11.json in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		FE49D669D46CEBDC55D51100 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -403,7 +275,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */,
-				3722B563F5B354ED5B3C0CAC /* CloudConnectivity.swift in Sources */,
 				7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */,
 				0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */,
 				2060C7480B61F1F8CB1634C5 /* DoublEnderApp.swift in Sources */,
@@ -415,21 +286,10 @@
 				9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */,
 				DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */,
 				0FBC87E4BA9DEEA32AF58343 /* RecorderViewModel.swift in Sources */,
-				22039C5964B1579FD2A3F595 /* RecordingUploadMetadata.swift in Sources */,
 				BB66D98FB9F2F69F8A4F7672 /* RecoveryView.swift in Sources */,
 				DE683368203B1791D5E8D132 /* UpdateChecker.swift in Sources */,
 				CB83A44567673D6FB4273023 /* UploadConfirmationView.swift in Sources */,
-				5F28705E9B2DD1D817669872 /* Uploader.swift in Sources */,
 				98D7CBA7118AD909811A08D7 /* VersionFormatting.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		71B5A0256D3CAEE62D890DED /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				14DD76DFA8C2C8B081510BDC /* CloudBundleTests.swift in Sources */,
-				259DB428CDDD2D03437C1B64 /* CloudUploadMetadataTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -439,34 +299,7 @@
 			files = (
 				11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
-				A9B5D02E9108D4EAC65D20C9 /* RecordingUploadMetadataTests.swift in Sources */,
 				3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		EA482F03B7FC96034ACBE838 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				659D2142D79F4B86571C6426 /* AudioEngine.swift in Sources */,
-				FCBC3930D17375930FF52AC3 /* CloudConnectivity.swift in Sources */,
-				BEC5B335D7B46CA37EAC1FE4 /* CloudContentView.swift in Sources */,
-				98A77ACF59ABF31B3AC2252E /* DiskSpaceChecker.swift in Sources */,
-				6C5E1D1E6EB79B934C41611A /* DoublEnderApp.swift in Sources */,
-				49ED4D96516FAB28C5CC2156 /* FaceplateComponents.swift in Sources */,
-				DF1A8C4BEED8B28A3D2AD9E1 /* FaceplateDesign.swift in Sources */,
-				1E982FE9523861E3BC6BE635 /* FaceplateStateViews.swift in Sources */,
-				88D729B32497100812D42566 /* HelpView.swift in Sources */,
-				9ED5E3F5CC22C17DED51993D /* NotificationService.swift in Sources */,
-				9ABF1CCABA4963286B4EC5A2 /* PCMSidecar.swift in Sources */,
-				6A9141909A09F018DB786C61 /* RecorderMainPanel.swift in Sources */,
-				47E9C2CFC8E04E705E0F01A3 /* RecorderViewModel.swift in Sources */,
-				87BF433153258BDD7F186E45 /* RecordingUploadMetadata.swift in Sources */,
-				B7672703234ADBF249BD117F /* RecoveryView.swift in Sources */,
-				AD897B6712A20B76D54D3DFE /* UpdateChecker.swift in Sources */,
-				EEA52ACEBBB97A53F91C6A09 /* UploadConfirmationView.swift in Sources */,
-				850FC9BDBEC1A715FCA82735 /* Uploader.swift in Sources */,
-				5FE5E884B33185C3B7B5D4B4 /* VersionFormatting.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -477,11 +310,6 @@
 			isa = PBXTargetDependency;
 			target = 301765A123D833D8FED2DBB2 /* DoublEnder */;
 			targetProxy = 7D2F0F61904D112E778011A9 /* PBXContainerItemProxy */;
-		};
-		81A431F44E1CC0C3F4A3DFAB /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 3A4ABD70B7B6A1A4B41C66EC /* DoublEnderCloud */;
-			targetProxy = 5E7905FF3ED53E71E99B1A3E /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -520,7 +348,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -593,50 +421,6 @@
 			};
 			name = Debug;
 		};
-		4C5918F4086A933AA80EE1E2 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconCloud;
-				BUNDLE_DISPLAY_NAME = "DoublEnder Cloud";
-				CODE_SIGN_ENTITLEMENTS = DoublEnderCloud/DoublEnderCloud.entitlements;
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				DEFAULT_RECORDING_PREFIX = DoublEnder;
-				ENABLE_HARDENED_RUNTIME = YES;
-				INFOPLIST_FILE = DoublEnderCloud/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.5.34cr;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnderCloud;
-				PRODUCT_NAME = "DoublEnder Cloud";
-				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = GCS_ENABLED;
-				UPDATE_MANIFEST_URL = "https://storage.googleapis.com/doublender-downloads/cloud-latest.json";
-			};
-			name = Debug;
-		};
-		5FCB5D60F806368E0DB276CB /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnderCloudTests;
-				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DoublEnder Cloud.app/Contents/MacOS/DoublEnder Cloud";
-			};
-			name = Debug;
-		};
 		846363258DC86042675E19C8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -695,7 +479,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -737,71 +521,9 @@
 			};
 			name = Debug;
 		};
-		B7DCFF495BDD1F9B506F80FB /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnderCloudTests;
-				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DoublEnder Cloud.app/Contents/MacOS/DoublEnder Cloud";
-			};
-			name = Release;
-		};
-		FCC888B022A3EC542C04BEF1 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconCloud;
-				BUNDLE_DISPLAY_NAME = "DoublEnder Cloud";
-				CODE_SIGN_ENTITLEMENTS = DoublEnderCloud/DoublEnderCloud.entitlements;
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				DEFAULT_RECORDING_PREFIX = DoublEnder;
-				ENABLE_HARDENED_RUNTIME = YES;
-				INFOPLIST_FILE = DoublEnderCloud/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.5.34cr;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.sevmorris.DoublEnderCloud;
-				PRODUCT_NAME = "DoublEnder Cloud";
-				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = GCS_ENABLED;
-				UPDATE_MANIFEST_URL = "https://storage.googleapis.com/doublender-downloads/cloud-latest.json";
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		3D747DE279A1BE7B4FF75A0C /* Build configuration list for PBXNativeTarget "DoublEnderCloud" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				4C5918F4086A933AA80EE1E2 /* Debug */,
-				FCC888B022A3EC542C04BEF1 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
-		7943C9F47E8A6C98408A2E1C /* Build configuration list for PBXNativeTarget "DoublEnderCloudTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				5FCB5D60F806368E0DB276CB /* Debug */,
-				B7DCFF495BDD1F9B506F80FB /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 		7FA3FDE9CAB1198B6C75B21D /* Build configuration list for PBXNativeTarget "DoublEnder" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

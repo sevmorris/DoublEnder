@@ -14,12 +14,24 @@ project.xcworkspace/
 # Claude
 .claude/
 
+# ── DoublEnder Cloud (private overlay — never commit) ─────────────────────────
+DoublEnderCloud/
+DoublEnderCloudTests/
+Brands/
+project.cloud.yml
+docs/CLOUD_DEVELOPER_SETUP.md
+DoublEnder/Services/CloudConnectivity.swift
+DoublEnder/Services/Uploader.swift
+DoublEnder/Services/RecordingUploadMetadata.swift
+DoublEnder/Views/CloudContentView.swift
+DoublEnderTests/RecordingUploadMetadataTests.swift
+release-cloud.sh
+release-cloud-branded.sh
+scripts/
+
 # GCS service account key — never commit
 DoublEnderCloud/doublender-*.json
 doublender-*.json
 
-# Per-client branded build assets — confidential
-Brands/
-
 # Local Cloud build output folder (macOS may create this name when testing)
-DoublEnder Cloud/
+.project.merged.yml
