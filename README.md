@@ -48,9 +48,15 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 - **Output Format:** AAC/M4A (256 kbps) or WAV (24-bit PCM), mono
 - **Dependencies:** None — fully self-contained
 
-## Build
+## Building from Source
 
-Open `DoublEnder.xcodeproj` in Xcode and build the `DoublEnder` scheme, or:
+```bash
+git clone https://github.com/sevmorris/DoublEnder.git
+cd DoublEnder
+open DoublEnder.xcodeproj
+```
+
+Or from the command line:
 
 ```bash
 xcodebuild -project DoublEnder.xcodeproj -scheme DoublEnder -configuration Release
@@ -58,14 +64,13 @@ xcodebuild -project DoublEnder.xcodeproj -scheme DoublEnder -configuration Relea
 
 The project is generated from `project.yml` via [XcodeGen](https://github.com/yonaskolb/XcodeGen) — if you edit `project.yml`, run `xcodegen generate` to regenerate the Xcode project.
 
+## Technical Origin
+I designed the recording workflow and UI. The Swift implementation was built with AI assistance. The app deliberately does no DSP — what the mic captures is what hits the file (apart from the unavoidable AAC encode when recording M4A).
+
 ---
 
 ### Support
-Free forever.
-
-<p align="left">
-  <a href="https://ko-fi.com/sevmo"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi" /></a>
-</p>
+If DoublEnder saves you time, [buy me a coffee](https://ko-fi.com/sevmo). Free forever either way.
 
 ### License
 Copyright © 2026 Seven Morris.

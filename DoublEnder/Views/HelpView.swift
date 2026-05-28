@@ -158,6 +158,17 @@ struct HelpView: View {
                     """)
                 }
 
+                dividerRow
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("If DoublEnder saves you time, consider buying me a coffee.")
+                        .foregroundColor(helpText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Link("ko-fi.com/sevmo", destination: URL(string: "https://ko-fi.com/sevmo")!)
+                        .font(.body)
+                        .foregroundColor(helpAccent)
+                }
+
                 Spacer()
             }
             .padding(30)
