@@ -1094,9 +1094,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             didAppendAtLeastOneSample = true
             consecutiveWriteErrors = 0
             pcmSidecar?.append(sampleBuffer: sampleBuffer)
-            let sidecar = pcmSidecar
             writerLock.unlock()
-            _ = sidecar  // keep reference alive past the unlock for the appender above
             DispatchQueue.main.async { [weak self] in
                 self?.markDataFlowing()
             }
