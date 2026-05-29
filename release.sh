@@ -217,7 +217,8 @@ ok "GCS permalink updated → DoublEnder.dmg (no-cache)"
 
 # ── Cloud + branded releases ──────────────────────────────────────────────────
 if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
-    "$PROJECT_DIR/scripts/release-cloud-from-local.sh" "$VERSION"
+    LOCAL_BUILD=$(awk -F'"' '/CURRENT_PROJECT_VERSION:/ {print $2; exit}' "$PROJECT_DIR/project.yml")
+    "$PROJECT_DIR/scripts/release-cloud-from-local.sh" "$VERSION" "$LOCAL_BUILD"
 else
     step "Skipping Cloud/branded releases"
     ok "No project.cloud.yml — restore private overlay to publish Cloud with Local releases"
