@@ -117,7 +117,7 @@ struct FaceplateMeterRow: View {
     @State private var settingsAnchor: NSView?
 
     private static let segCount = 40
-    private static let dbMin: Float = -60
+    private static let dbMin: Float = -48
     private static let dbMax: Float =   0
 
     var body: some View {
@@ -200,8 +200,8 @@ struct FaceplateMeterRow: View {
 
             GeometryReader { _ in
                 let labels: [(Float, String)] = [
-                    (-60, "-60"), (-48, "-48"), (-36, "-36"),
-                    (-24, "-24"), (-12, "-12"), (-6, "-6"), (0, "0")
+                    (-48, "-48"), (-36, "-36"), (-24, "-24"),
+                    (-12, "-12"), (-6, "-6"), (0, "0")
                 ]
                 ForEach(0..<labels.count, id: \.self) { i in
                     let (db, text) = labels[i]
