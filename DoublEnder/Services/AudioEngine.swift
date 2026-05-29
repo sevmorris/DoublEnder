@@ -42,9 +42,9 @@ class AudioEngine: NSObject, ObservableObject {
     @Published var selectedInputDevice: AVCaptureDevice?
 
     @Published var lastError: String?
-    /// Current input level in dBFS (-48…0). Smoothed on writerQueue and
-    /// published to the UI. Display-only — never affects recording.
-    @Published var rmsLevel: Float = -48
+    /// Current input level in dBFS (`LevelMeter.dbFloor`…0). Smoothed on
+    /// writerQueue and published to the UI. Display-only — never affects recording.
+    @Published var rmsLevel: Float = LevelMeter.dbFloor
     /// True when the PCM sidecar could not be opened for this recording —
     /// crash recovery is unavailable for the current take. (M4)
     @Published var sidecarUnavailable: Bool = false
@@ -143,11 +143,7 @@ class AudioEngine: NSObject, ObservableObject {
         qos: .userInitiated
     )
     /// Exponential smoother for the live meter; read/written only on writerQueue.
-    private var smoothedRmsLevel: Float = -48
-    private static let meterDbFloor: Float = -48
-    /// Per-buffer attack (~80 ms rise) and release (~300 ms fall) at ~15 ms buffers.
-    private static let meterAttack: Float = 0.35
-    private static let meterRelease: Float = 0.08
+    private var smoothedRmsLevel: Float = LevelMeter.dbFloor
     /// Scheduled "clear write indicator" task; cancelled and re-scheduled on
     /// every successful writer append so isWritingData only flips to false
     /// when buffers stop arriving for 150 ms.
@@ -297,8 +293,8 @@ class AudioEngine: NSObject, ObservableObject {
         captureSession = nil
         currentInput = nil
         audioOutput = nil
-        writerQueue.sync { self.smoothedRmsLevel = Self.meterDbFloor }
-        DispatchQueue.main.async { self.rmsLevel = Self.meterDbFloor }
+        writerQueue.sync { self.smoothedRmsLevel = LevelMeter.dbFloor }
+        DispatchQueue.main.async { self.rmsLevel = LevelMeter.dbFloor }
 
         let target: AVCaptureDevice
         if let device = device {
@@ -1147,9 +1143,9 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             guard let base = buf.baseAddress else { return }
             vDSP_rmsqv(base, 1, &rms, vDSP_Length(buf.count))
         }
-        let db = rms > 1e-9 ? 20.0 * log10f(rms) : Self.meterDbFloor
-        let clamped = max(Self.meterDbFloor, min(0, db))
-        let coef = clamped > smoothedRmsLevel ? Self.meterAttack : Self.meterRelease
+        let db = rms > 1e-9 ? 20.0 * log10f(rms) : LevelMeter.dbFloor
+        let clamped = max(LevelMeter.dbFloor, min(LevelMeter.dbCeiling, db))
+        let coef = clamped > smoothedRmsLevel ? LevelMeter.attack : LevelMeter.release
         smoothedRmsLevel += coef * (clamped - smoothedRmsLevel)
         let level = smoothedRmsLevel
         DispatchQueue.main.async { [weak self] in

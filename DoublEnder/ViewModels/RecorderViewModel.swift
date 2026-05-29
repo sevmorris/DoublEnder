@@ -62,9 +62,8 @@ class RecorderViewModel: ObservableObject {
 
     @Published var state: AppState = .selectingMic
     @Published var recordingTime: TimeInterval = 0
-    /// Current input level in dBFS (-48…0), forwarded from AudioEngine.
-    /// Used by the viewport level meter.
-    @Published var rmsLevel: Float = -48
+    /// Current input level in dBFS, forwarded from AudioEngine for the viewport meter.
+    @Published var rmsLevel: Float = LevelMeter.dbFloor
     /// True when buffers are actively being appended to the writer.
     /// Drives the on-screen write-flow indicator dot. Forwarded from
     /// AudioEngine.isWritingData.

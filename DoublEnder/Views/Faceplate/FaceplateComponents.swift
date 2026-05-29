@@ -116,9 +116,9 @@ struct FaceplateMeterRow: View {
     @State private var inputAnchor:    NSView?
     @State private var settingsAnchor: NSView?
 
-    private static let segCount = 40
-    private static let dbMin: Float = -48
-    private static let dbMax: Float =   0
+    private static let segCount = LevelMeter.segmentCount
+    private static let dbMin: Float = LevelMeter.dbFloor
+    private static let dbMax: Float = LevelMeter.dbCeiling
 
     var body: some View {
         let containerH: CGFloat = 34
@@ -199,10 +199,7 @@ struct FaceplateMeterRow: View {
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(FaceplateDesign.vpBorder, lineWidth: 1.2))
 
             GeometryReader { _ in
-                let labels: [(Float, String)] = [
-                    (-48, "-48"), (-36, "-36"), (-24, "-24"),
-                    (-12, "-12"), (-6, "-6"), (0, "0")
-                ]
+                let labels = LevelMeter.scaleLabels
                 ForEach(0..<labels.count, id: \.self) { i in
                     let (db, text) = labels[i]
                     let frac = CGFloat((db - Self.dbMin) / (Self.dbMax - Self.dbMin))

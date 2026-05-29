@@ -2,9 +2,14 @@
 # release.sh — Build, sign, notarize, package, and publish a DoublEnder release.
 #
 # Usage: ./release.sh <version>
-#   e.g. ./release.sh 1.0.0
+#   e.g. ./release.sh 1.6.30lr
+#
+# When the private Cloud overlay (project.cloud.yml) is present, also publishes
+# DoublEnder Cloud and every configured branded client at the matching numeric
+# version so in-app updaters prompt across all flavours.
 #
 # Requires: xcodebuild, xcodegen, hdiutil, gh (GitHub CLI), git, xcrun
+# Cloud step also requires: gcloud (see scripts/release-cloud-from-local.sh)
 
 set -euo pipefail
 
@@ -105,7 +110,9 @@ NEXT_BUILD=$((BUILD_NUM + 1))
 sed -i '' "s/CURRENT_PROJECT_VERSION: \"${BUILD_NUM}\"/CURRENT_PROJECT_VERSION: \"${NEXT_BUILD}\"/" \
     "$PROJECT_DIR/project.yml"
 xcodegen generate --quiet
-ok "Build number ${BUILD_NUM} → ${NEXT_BUILD}"
+git add project.yml DoublEnder.xcodeproj/project.pbxproj
+git commit -m "Bump build number to ${NEXT_BUILD}"
+ok "Build number ${BUILD_NUM} → ${NEXT_BUILD} (committed)"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 step "Building (clean, Release)"
@@ -207,6 +214,14 @@ gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
 # on the Cloud manifest for the same reason.
 gsutil setmeta -h "Cache-Control:no-cache" gs://doublender-downloads/DoublEnder.dmg
 ok "GCS permalink updated → DoublEnder.dmg (no-cache)"
+
+# ── Cloud + branded releases ──────────────────────────────────────────────────
+if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
+    "$PROJECT_DIR/scripts/release-cloud-from-local.sh" "$VERSION"
+else
+    step "Skipping Cloud/branded releases"
+    ok "No project.cloud.yml — restore private overlay to publish Cloud with Local releases"
+fi
 
 # ── Remove old releases (keep the ${KEEP_RELEASES} most recent) ───────────────
 KEEP_RELEASES=5
