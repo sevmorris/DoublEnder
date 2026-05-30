@@ -8,11 +8,17 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(OutputFormat.wav.fileExtension, "wav")
     }
 
+    func testMinimumFreeBytesScalesWithFormat() {
+        XCTAssertLessThan(
+            DiskSpaceChecker.minimumFreeBytes(for: .aac),
+            DiskSpaceChecker.minimumFreeBytes(for: .wav)
+        )
+    }
+
     func testRecordingBlockedWhenDiskSpaceLow() {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("DiskSpaceTests-\(UUID().uuidString)", isDirectory: true)
-        // Fresh temp dir — should not block (unless volume is genuinely full).
-        let reason = DiskSpaceChecker.recordingBlockedReason(for: dir)
+        let reason = DiskSpaceChecker.recordingBlockedReason(for: dir, format: .aac)
         XCTAssertNil(reason)
     }
 }

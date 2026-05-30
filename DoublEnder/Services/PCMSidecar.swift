@@ -7,30 +7,37 @@ import OSLog
 /// AVAssetWriter streams the user-facing .m4a/.wav, but an .m4a is only
 /// playable once `finishWriting()` writes its moov atom. If the process is
 /// killed mid-recording (crash, force-quit, power loss) that never happens
-/// and the file is unrecoverable. To survive that, we mirror the exact
-/// post-limiter mono float samples into a flat raw-PCM file with a tiny
-/// self-describing header. Even an abruptly-truncated sidecar re-wraps
-/// cleanly into a valid WAV at next launch.
+/// and the file is unrecoverable. To survive that, we mirror mono float
+/// samples into a flat raw-PCM file with a tiny self-describing header.
+/// Even an abruptly-truncated sidecar re-wraps cleanly into a valid WAV
+/// at next launch.
 ///
-/// The sidecar deliberately stays at 32-bit float even though the main WAV
-/// writer ships 24-bit integer. This is a recovery-only path — the user
-/// only sees a sidecar-derived file when the main writer never finalized —
-/// so preserving the source samples verbatim (no requantization to int24)
-/// is the safer choice. Recovered WAVs are written as 32-bit float for the
-/// same reason.
+/// Payload is always IEEE Float32 mono regardless of capture format — Int16
+/// and other PCM layouts are normalized on append. Recovered WAVs are
+/// written as 32-bit float for the same reason.
 final class PCMSidecar {
     /// Extension appended to the main output path: `Recording.m4a.pcmrec`.
     static let pathExtension = "pcmrec"
 
-    /// 16-byte header: 4-byte magic, Float64 sample rate, UInt32 channels.
-    private static let magic: [UInt8] = Array("DEP1".utf8)   // DoublEnder PCM v1
-    private static let headerSize = 16
+    /// v1 header: magic + sample rate + channels (legacy, still recovered).
+    private static let magicV1: [UInt8] = Array("DEP1".utf8)
+    /// v2 header: same fields + payload format code (all new recordings).
+    private static let magicV2: [UInt8] = Array("DEP2".utf8)
+    private static let headerSizeV1 = 16
+    private static let headerSizeV2 = 20
+    /// Payload samples are always float32 mono.
+    private static let payloadFormatFloat32: UInt32 = 1
     private static let bytesPerSample = MemoryLayout<Float>.size
+    /// Flush the sidecar to disk every 512 KB so a power loss loses at
+    /// most the last fraction of a second rather than seconds of buffer.
+    private static let syncIntervalBytes = 512 * 1024
 
     private static let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "PCMSidecar")
 
     private let handle: FileHandle
     let url: URL
+    private var sampleRate: Double
+    private var bytesSinceSync = 0
 
     /// Sidecar location for a given main output file.
     static func url(for mainOutput: URL) -> URL {
@@ -42,17 +49,21 @@ final class PCMSidecar {
         sidecar.deletingPathExtension()
     }
 
-    /// Open a fresh sidecar next to `mainOutput` and write its header.
+    /// True when the file exists and contains at least one audio sample
+    /// beyond the header — header-only orphans are not worth recovering.
+    static func hasRecoverableContent(at sidecarURL: URL) -> Bool {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: sidecarURL.path)[.size]) as? Int64 else {
+            return false
+        }
+        return size > Int64(headerSizeV2)
+    }
+
+    /// Open a fresh v2 sidecar next to `mainOutput` and write its header.
     /// Returns nil on any I/O failure — recording proceeds without the
     /// safety net rather than failing outright.
     init?(mainOutput: URL, sampleRate: Double, channels: UInt32) {
         let url = PCMSidecar.url(for: mainOutput)
-
-        var header = Data(PCMSidecar.magic)
-        var rateBits = sampleRate.bitPattern.littleEndian
-        var ch = channels.littleEndian
-        withUnsafeBytes(of: &rateBits) { header.append(contentsOf: $0) }
-        withUnsafeBytes(of: &ch) { header.append(contentsOf: $0) }
+        let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: channels)
 
         guard FileManager.default.createFile(atPath: url.path, contents: header),
               let handle = try? FileHandle(forWritingTo: url) else {
@@ -64,6 +75,22 @@ final class PCMSidecar {
         _ = try? handle.seekToEnd()
         self.handle = handle
         self.url = url
+        self.sampleRate = sampleRate
+    }
+
+    /// Rewrite the header when the first capture buffer confirms a sample
+    /// rate different from the provisional value chosen at record start.
+    func updateSampleRateIfNeeded(_ sampleRate: Double) {
+        guard abs(sampleRate - self.sampleRate) > 0.5 else { return }
+        self.sampleRate = sampleRate
+        let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: 1)
+        do {
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: header)
+            try handle.seekToEnd()
+        } catch {
+            PCMSidecar.logger.error("Sidecar header update failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Append raw float samples. Best-effort: a failed write degrades the
@@ -71,47 +98,23 @@ final class PCMSidecar {
     func append(_ pointer: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
         let data = Data(bytes: pointer, count: frameCount * PCMSidecar.bytesPerSample)
-        do {
-            try handle.write(contentsOf: data)
-        } catch {
-            PCMSidecar.logger.error("Sidecar write failed: \(error.localizedDescription, privacy: .public)")
-        }
+        writePayload(data)
     }
 
-    /// Append the raw bytes of a CMSampleBuffer. Non-interleaved multi-channel
-    /// sources are downmixed to mono (first channel) for the recovery sidecar.
+    /// Append a CMSampleBuffer, normalizing any supported PCM layout to
+    /// mono Float32 before writing.
     func append(sampleBuffer: CMSampleBuffer) {
-        if let mono = Self.monoFloatSamples(from: sampleBuffer) {
-            mono.withUnsafeBufferPointer { buf in
-                guard let base = buf.baseAddress else { return }
-                append(base, frameCount: buf.count)
-            }
+        guard let mono = Self.normalizedMonoFloatSamples(from: sampleBuffer), !mono.isEmpty else {
             return
         }
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        var length = 0
-        guard CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &length,
-            dataPointerOut: &dataPointer
-        ) == kCMBlockBufferNoErr,
-        let src = dataPointer, length > 0 else {
-            return
-        }
-        let data = Data(bytes: src, count: length)
-        do {
-            try handle.write(contentsOf: data)
-        } catch {
-            PCMSidecar.logger.error("Sidecar write failed: \(error.localizedDescription, privacy: .public)")
+        mono.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            append(base, frameCount: buf.count)
         }
     }
 
-    /// Extract mono Float32 samples for sidecar mirroring. Prefers the first
-    /// channel when input is non-interleaved multi-channel.
-    private static func monoFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
+    /// Normalize capture PCM to mono Float32 for the sidecar payload.
+    static func normalizedMonoFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer),
               let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
@@ -129,9 +132,33 @@ final class PCMSidecar {
         ) == kCMBlockBufferNoErr, let ptr = dataPointer else { return nil }
 
         let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let isInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
         let isNonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
-        guard isFloat, asbd.mBitsPerChannel == 32 else { return nil }
 
+        if isFloat, asbd.mBitsPerChannel == 32 {
+            return monoFromFloat32(
+                ptr: ptr, length: length, channels: channels,
+                frameCount: frameCount, isNonInterleaved: isNonInterleaved
+            )
+        }
+
+        if isInt, asbd.mBitsPerChannel == 16 {
+            return monoFromInt16(
+                ptr: ptr, length: length, channels: channels,
+                frameCount: frameCount, isNonInterleaved: isNonInterleaved
+            )
+        }
+
+        return nil
+    }
+
+    private static func monoFromFloat32(
+        ptr: UnsafeMutablePointer<Int8>,
+        length: Int,
+        channels: Int,
+        frameCount: Int,
+        isNonInterleaved: Bool
+    ) -> [Float]? {
         if isNonInterleaved && channels > 1 {
             let bytesPerChannel = frameCount * MemoryLayout<Float>.size
             guard length >= bytesPerChannel else { return nil }
@@ -141,16 +168,16 @@ final class PCMSidecar {
             ))
         }
 
+        let floatCount = length / MemoryLayout<Float>.size
+        guard floatCount > 0 else { return nil }
+
         if channels == 1 {
-            let floatCount = length / MemoryLayout<Float>.size
-            guard floatCount > 0 else { return nil }
             return Array(UnsafeBufferPointer(
                 start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
                 count: floatCount
             ))
         }
 
-        let floatCount = length / MemoryLayout<Float>.size
         let frames = floatCount / channels
         guard frames > 0 else { return nil }
         let floats = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
@@ -161,9 +188,54 @@ final class PCMSidecar {
         }
     }
 
+    private static func monoFromInt16(
+        ptr: UnsafeMutablePointer<Int8>,
+        length: Int,
+        channels: Int,
+        frameCount: Int,
+        isNonInterleaved: Bool
+    ) -> [Float]? {
+        if isNonInterleaved && channels > 1 {
+            let bytesPerChannel = frameCount * MemoryLayout<Int16>.size
+            guard length >= bytesPerChannel else { return nil }
+            let ints = ptr.withMemoryRebound(to: Int16.self, capacity: frameCount) { $0 }
+            return (0..<frameCount).map { Float(ints[$0]) / 32768.0 }
+        }
+
+        let intCount = length / MemoryLayout<Int16>.size
+        guard intCount > 0 else { return nil }
+        let ints = ptr.withMemoryRebound(to: Int16.self, capacity: intCount) { $0 }
+
+        if channels == 1 {
+            return (0..<intCount).map { Float(ints[$0]) / 32768.0 }
+        }
+
+        let frames = intCount / channels
+        guard frames > 0 else { return nil }
+        return (0..<frames).map { f in
+            var sum: Float = 0
+            for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / 32768.0 }
+            return sum / Float(channels)
+        }
+    }
+
+    private func writePayload(_ data: Data) {
+        do {
+            try handle.write(contentsOf: data)
+            bytesSinceSync += data.count
+            if bytesSinceSync >= Self.syncIntervalBytes {
+                try handle.synchronize()
+                bytesSinceSync = 0
+            }
+        } catch {
+            PCMSidecar.logger.error("Sidecar write failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// Close the handle but keep the file — the main file could not be
     /// finalized, so the sidecar is the only intact copy.
     func close() {
+        try? handle.synchronize()
         try? handle.close()
     }
 
@@ -178,10 +250,12 @@ final class PCMSidecar {
 
     enum RecoveryError: LocalizedError {
         case badHeader
+        case emptyPayload
 
         var errorDescription: String? {
             switch self {
             case .badHeader: return "The recovery file is missing or corrupt."
+            case .emptyPayload: return "The recovery file contains no audio data."
             }
         }
     }
@@ -190,14 +264,63 @@ final class PCMSidecar {
     /// alongside it. Streams in 1 MB chunks so multi-hour recordings don't
     /// blow up memory. Returns the recovered WAV URL.
     static func recoverToWAV(sidecarURL: URL) throws -> URL {
+        let parsed = try parseHeader(at: sidecarURL)
+        guard parsed.dataSize > 0 else { throw RecoveryError.emptyPayload }
+
+        let input = try FileHandle(forReadingFrom: sidecarURL)
+        defer { try? input.close() }
+        try input.seek(toOffset: UInt64(parsed.headerSize))
+
+        let outURL = recoveredWAVURL(for: sidecarURL)
+        FileManager.default.createFile(
+            atPath: outURL.path,
+            contents: wavHeader(
+                sampleRate: parsed.sampleRate,
+                channels: parsed.channels,
+                dataSize: parsed.dataSize
+            )
+        )
+        let output = try FileHandle(forWritingTo: outURL)
+        defer { try? output.close() }
+        try output.seekToEnd()
+
+        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try output.write(contentsOf: chunk)
+        }
+        return outURL
+    }
+
+    private struct ParsedHeader {
+        let headerSize: Int
+        let sampleRate: Double
+        let channels: UInt32
+        let dataSize: UInt32
+    }
+
+    private static func parseHeader(at sidecarURL: URL) throws -> ParsedHeader {
         let input = try FileHandle(forReadingFrom: sidecarURL)
         defer { try? input.close() }
 
-        guard let header = try input.read(upToCount: headerSize),
-              header.count == headerSize,
-              Array(header.prefix(4)) == magic else {
+        guard let magic = try input.read(upToCount: 4), magic.count == 4 else {
             throw RecoveryError.badHeader
         }
+
+        let headerSize: Int
+        if magic.elementsEqual(magicV1) {
+            headerSize = headerSizeV1
+        } else if magic.elementsEqual(magicV2) {
+            headerSize = headerSizeV2
+        } else {
+            throw RecoveryError.badHeader
+        }
+
+        guard let rest = try input.read(upToCount: headerSize - 4),
+              rest.count == headerSize - 4 else {
+            throw RecoveryError.badHeader
+        }
+
+        var header = magic
+        header.append(rest)
 
         let sampleRate = Double(
             bitPattern: header.subdata(in: 4..<12).withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
@@ -208,25 +331,17 @@ final class PCMSidecar {
             .int64Value ?? Int64(headerSize)
         let dataSize = UInt32(max(0, totalSize - Int64(headerSize)))
 
-        let outURL = recoveredWAVURL(for: sidecarURL)
-        FileManager.default.createFile(
-            atPath: outURL.path,
-            contents: wavHeader(sampleRate: sampleRate, channels: channels, dataSize: dataSize)
+        return ParsedHeader(
+            headerSize: headerSize,
+            sampleRate: sampleRate,
+            channels: channels,
+            dataSize: dataSize
         )
-        let output = try FileHandle(forWritingTo: outURL)
-        defer { try? output.close() }
-        try output.seekToEnd()
-
-        // `input` is already positioned past the 16-byte header.
-        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
-            try output.write(contentsOf: chunk)
-        }
-        return outURL
     }
 
     /// `/dir/Name.m4a.pcmrec` → `/dir/Name (recovered).wav`, de-duplicated.
     private static func recoveredWAVURL(for sidecarURL: URL) -> URL {
-        let mainURL = mainOutputURL(for: sidecarURL)            // /dir/Name.m4a
+        let mainURL = mainOutputURL(for: sidecarURL)
         let dir = mainURL.deletingLastPathComponent()
         let stem = mainURL.deletingPathExtension().lastPathComponent
 
@@ -237,6 +352,17 @@ final class PCMSidecar {
             n += 1
         }
         return candidate
+    }
+
+    private static func makeHeaderV2(sampleRate: Double, channels: UInt32) -> Data {
+        var header = Data(magicV2)
+        var rateBits = sampleRate.bitPattern.littleEndian
+        var ch = max(channels, 1).littleEndian
+        var formatCode = payloadFormatFloat32.littleEndian
+        withUnsafeBytes(of: &rateBits) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &ch) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &formatCode) { header.append(contentsOf: $0) }
+        return header
     }
 
     /// Canonical 44-byte RIFF/WAVE header for IEEE-float PCM.

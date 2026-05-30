@@ -281,14 +281,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
-        guard !sidecars.isEmpty else { return }
+        for sidecar in sidecars where !PCMSidecar.hasRecoverableContent(at: sidecar) {
+            try? fm.removeItem(at: sidecar)
+            try? fm.removeItem(at: PCMSidecar.mainOutputURL(for: sidecar))
+        }
+
+        let recoverable = sidecars.filter { PCMSidecar.hasRecoverableContent(at: $0) }
+        guard !recoverable.isEmpty else { return }
 
         // Recovery is a gate the user must clear before using the app — keep
         // the main recorder window hidden until every sidecar is resolved,
         // then bring it forward. Untouched when no recovery is needed, so
         // the normal launch path has no flicker.
         mainWindow?.orderOut(nil)
-        for sidecar in sidecars {
+        for sidecar in recoverable {
             presentRecoveryDialog(for: sidecar)
         }
         mainWindow?.makeKeyAndOrderFront(nil)

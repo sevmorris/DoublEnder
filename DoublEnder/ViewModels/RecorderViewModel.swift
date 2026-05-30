@@ -200,6 +200,10 @@ class RecorderViewModel: ObservableObject {
     private let uploader = Uploader()
     #endif
     private var timer: AnyCancellable?
+    /// Polls free disk space while a take is in progress so a full volume
+    /// triggers a graceful stop before writes start failing.
+    private var diskWatchTimer: AnyCancellable?
+    private static let diskWatchInterval: TimeInterval = 30
     private(set) var recordedFileURL: URL?
 
     var availableInputDevices: [AVCaptureDevice] {
@@ -468,7 +472,10 @@ class RecorderViewModel: ObservableObject {
     }
 
     func startRecording() {
-        if let reason = DiskSpaceChecker.recordingBlockedReason(for: Self.recordingsDirectory) {
+        if let reason = DiskSpaceChecker.recordingBlockedReason(
+            for: Self.recordingsDirectory,
+            format: outputFormat
+        ) {
             state = .error(reason)
             return
         }
@@ -486,15 +493,32 @@ class RecorderViewModel: ObservableObject {
             timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
                 self?.recordingTime += 1
             }
+            diskWatchTimer = Timer.publish(every: Self.diskWatchInterval, on: .main, in: .common)
+                .autoconnect()
+                .sink { [weak self] _ in self?.checkDiskSpaceDuringRecording() }
         } catch {
             state = .error("Failed to start recording: \(error.localizedDescription)")
         }
+    }
+
+    /// Stop the take when the Desktop volume drops below the minimum —
+    /// finalize while the writer can still flush rather than failing mid-stream.
+    private func checkDiskSpaceDuringRecording() {
+        guard isCurrentlyRecording else { return }
+        guard DiskSpaceChecker.recordingBlockedReason(
+            for: Self.recordingsDirectory,
+            format: outputFormat
+        ) != nil else {
+            return
+        }
+        stopRecording()
     }
 
     /// Cleanly finalize the current recording. `completion` runs on the main
     /// queue once the writer has closed the file (or failed).
     func stopRecording(completion: (() -> Void)? = nil) {
         timer?.cancel()
+        diskWatchTimer?.cancel()
 
         audioEngine.stopRecording { [weak self] result in
             guard let self = self else {
@@ -536,7 +560,15 @@ class RecorderViewModel: ObservableObject {
                 self.recordedFileURL = nil
                 self.state = .ready
             case .failure(let error):
-                self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
+                self.recordingTime = 0
+                if self.hasRecoverableSidecar(for: self.recordedFileURL) {
+                    self.state = .error(
+                        "Recording was interrupted but your audio is safe. "
+                            + "Quit and relaunch DoublEnder to recover it as a WAV file."
+                    )
+                } else {
+                    self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
+                }
             }
             completion?()
         }
@@ -547,6 +579,7 @@ class RecorderViewModel: ObservableObject {
     /// sidecar are both deleted so a future launch doesn't surface them.
     func abortRecording(completion: (() -> Void)? = nil) {
         timer?.cancel()
+        diskWatchTimer?.cancel()
         let url = recordedFileURL
 
         audioEngine.cancelRecording { [weak self] in
@@ -706,6 +739,15 @@ class RecorderViewModel: ObservableObject {
 
     func reset() {
         timer?.cancel()
+        diskWatchTimer?.cancel()
+        if audioEngine.isRecordingActive {
+            audioEngine.abandonStaleRecordingState()
+        }
+        finishReset()
+    }
+
+    private func finishReset() {
+        audioEngine.clearLastError()
         state = .selectingMic
         recordingTime = 0
         #if GCS_ENABLED
@@ -713,6 +755,13 @@ class RecorderViewModel: ObservableObject {
         #endif
         recordedFileURL = nil
         audioEngine.start()
+    }
+
+    /// True when a `.pcmrec` sidecar exists for the given main output URL,
+    /// meaning launch-time recovery can re-wrap the take into a WAV.
+    private func hasRecoverableSidecar(for mainOutput: URL?) -> Bool {
+        guard let mainOutput else { return false }
+        return FileManager.default.fileExists(atPath: PCMSidecar.url(for: mainOutput).path)
     }
 }
 

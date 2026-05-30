@@ -123,6 +123,10 @@ class AudioEngine: NSObject, ObservableObject {
     private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
     private let writeErrorThreshold = 5
+    /// Consecutive sample buffers dropped because the writer wasn't ready.
+    /// Sustained backpressure means audio is being lost — treat like a
+    /// write failure once the threshold is hit.
+    private var consecutiveDropCount = 0
     /// True once the delegate has appended at least one sample buffer to
     /// the writer in the current take. stopRecording uses this to
     /// distinguish "writer never started a session" (silent discard,
@@ -712,20 +716,68 @@ class AudioEngine: NSObject, ObservableObject {
         writerLock.lock()
         assetWriter = writer
         assetWriterInput = nil               // built in delegate on first sample
-        pcmSidecar = nil                     // built in delegate on first sample
         pendingOutputSettings = outputSettings
         pendingFileURL = fileURL
         consecutiveWriteErrors = 0
+        consecutiveDropCount = 0
         didAppendAtLeastOneSample = false
+
+        // Open the crash-recovery sidecar immediately so even a crash before
+        // the first CMSampleBuffer leaves a recoverable artifact on disk.
+        let provisionalRate = provisionalSidecarSampleRate()
+        let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: provisionalRate, channels: 1)
+        pcmSidecar = sidecar
         writerLock.unlock()
 
-        // sidecarUnavailable is updated in the delegate once we attempt to
-        // open the sidecar — start optimistic and let the delegate flip it.
-        DispatchQueue.main.async { self.sidecarUnavailable = false }
+        if sidecar == nil {
+            logger.warning("PCMSidecar init failed — this recording has no crash-recovery safety net.")
+            DispatchQueue.main.async { self.sidecarUnavailable = true }
+        } else {
+            DispatchQueue.main.async { self.sidecarUnavailable = false }
+        }
 
         recordingInputDeviceUID = currentInput?.device.uniqueID
         disconnectStopPending = false
         isRecording = true
+    }
+
+    /// True while a take is in progress — used by RecorderViewModel.reset()
+    /// to abandon stale engine state without deleting recovery files.
+    var isRecordingActive: Bool { isRecording }
+
+    /// Drop stale recording state when the UI resets after an error. Closes
+    /// the sidecar without deleting it so launch-time recovery still works.
+    func abandonStaleRecordingState() {
+        guard isRecording else { return }
+        isRecording = false
+        recordingInputDeviceUID = nil
+        disconnectStopPending = false
+        DispatchQueue.main.async {
+            self.writeIndicatorClearWork?.cancel()
+            self.isWritingData = false
+            self.sidecarUnavailable = false
+        }
+        writerQueue.sync {}
+        writerLock.lock()
+        pcmSidecar?.close()
+        assetWriterInput?.markAsFinished()
+        assetWriter?.cancelWriting()
+        assetWriter = nil
+        assetWriterInput = nil
+        pcmSidecar = nil
+        pendingOutputSettings = nil
+        pendingFileURL = nil
+        writerLock.unlock()
+    }
+
+    /// Best-guess sample rate for the provisional sidecar header, taken from
+    /// the bound capture device's active format before the first buffer arrives.
+    private func provisionalSidecarSampleRate() -> Double {
+        guard let desc = currentInput?.device.activeFormat.formatDescription,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee else {
+            return 48_000
+        }
+        return asbd.mSampleRate
     }
 
     /// Abort the in-progress recording without finalizing. cancelWriting()
@@ -1057,20 +1109,10 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             writer.startSession(atSourceTime: startTime)
             assetWriterInput = input
 
-            // PCMSidecar — derive rate / channels from the same format desc
-            // so a recovered WAV matches the source exactly. PCMSidecar
-            // init can fail (disk I/O); a nil sidecar is non-fatal but the
-            // UI shows the "no crash recovery" warning.
-            if let fileURL = pendingFileURL,
-               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
-                let rate = asbd.pointee.mSampleRate
-                let channels = asbd.pointee.mChannelsPerFrame
-                let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: rate, channels: channels)
-                if sidecar == nil {
-                    logger.warning("PCMSidecar init failed — this recording has no crash-recovery safety net.")
-                    DispatchQueue.main.async { self.sidecarUnavailable = true }
-                }
-                pcmSidecar = sidecar
+            // Refine the provisional sidecar header if the actual capture
+            // rate differs from what we guessed at record start.
+            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
+                pcmSidecar?.updateSampleRateIfNeeded(asbd.pointee.mSampleRate)
             }
         }
 
@@ -1085,17 +1127,23 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             return
         }
 
-        // Drop sample on backpressure. With no DSP pipeline this rarely
-        // (if ever) fires — but if the writer's input ring is briefly
-        // closed, we skip rather than block the capture queue.
+        // Drop sample on backpressure when the writer ring is briefly
+        // closed — but sustained drops mean audio is being lost, so fail
+        // the take once the threshold is hit (same as consecutive writes).
         guard input.isReadyForMoreMediaData else {
-            writerLock.unlock()
+            consecutiveDropCount += 1
+            if consecutiveDropCount >= writeErrorThreshold {
+                tearDownWriterLocked(reason: "Recording stopped: disk or encoder could not keep up (audio was being dropped)")
+            } else {
+                writerLock.unlock()
+            }
             return
         }
 
         if input.append(sampleBuffer) {
             didAppendAtLeastOneSample = true
             consecutiveWriteErrors = 0
+            consecutiveDropCount = 0
             pcmSidecar?.append(sampleBuffer: sampleBuffer)
             writerLock.unlock()
             DispatchQueue.main.async { [weak self] in
@@ -1114,8 +1162,10 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
     }
 
     /// Caller MUST hold writerLock. Clears writer state, cancels the
-    /// writer, closes the sidecar so the recovery path can pick it up,
-    /// publishes the error to lastError, and unlocks before returning.
+    /// partial main file, closes the sidecar so the recovery path can pick
+    /// it up, ends the recording session, and delegates stop/finalize to
+    /// RecorderViewModel (same path as device disconnect). Does not set
+    /// lastError — the VM owns the user-facing message via stopRecording.
     private func tearDownWriterLocked(reason: String) {
         let writer = assetWriter
         let abortedSidecar = pcmSidecar
@@ -1125,12 +1175,29 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         pendingOutputSettings = nil
         pendingFileURL = nil
         consecutiveWriteErrors = 0
+        consecutiveDropCount = 0
+        let shouldNotifyVM = isRecording
+        if shouldNotifyVM {
+            isRecording = false
+            recordingInputDeviceUID = nil
+            disconnectStopPending = true
+        }
         writerLock.unlock()
 
         logger.error("AVAssetWriter tear-down: \(reason, privacy: .public)")
         abortedSidecar?.close()
         writer?.cancelWriting()
-        DispatchQueue.main.async { self.lastError = reason }
+        guard shouldNotifyVM else { return }
+        DispatchQueue.main.async {
+            self.writeIndicatorClearWork?.cancel()
+            self.isWritingData = false
+            self.onDisconnectedDuringRecording?()
+        }
+    }
+
+    /// Clear a published engine error without touching capture state.
+    func clearLastError() {
+        DispatchQueue.main.async { self.lastError = nil }
     }
 
     /// Compute RMS from a CMSampleBuffer and publish dBFS to `rmsLevel`.
