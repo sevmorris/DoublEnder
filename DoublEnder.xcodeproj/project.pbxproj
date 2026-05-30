@@ -25,6 +25,7 @@
 		CB83A44567673D6FB4273023 /* UploadConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC710282351ED2B87482FED /* UploadConfirmationView.swift */; };
 		D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90248FE45395766ECDFF5C6 /* HelpView.swift */; };
 		DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */; };
+		DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */; };
 		DE683368203B1791D5E8D132 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */; };
 		DEFEF410E23AD80FD16C8CE5 /* FaceplateStateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180AFCEE6B660AE632E59EE7 /* FaceplateStateViews.swift */; };
 		DF7E5277F967AA00454980E9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */; };
@@ -63,6 +64,7 @@
 		CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
 		DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeter.swift; sourceTree = "<group>"; };
+		E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeterTests.swift; sourceTree = "<group>"; };
 		EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
 		EC47A7DBFE3560714B1EABA7 /* DoublEnder.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DoublEnder.entitlements; sourceTree = "<group>"; };
 		ED51B67AFF43A5CA03791B8C /* DoublEnderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoublEnderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -127,6 +129,7 @@
 			isa = PBXGroup;
 			children = (
 				CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */,
+				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
 				FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */,
 			);
@@ -302,6 +305,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */,
+				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
 				3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */,
 			);

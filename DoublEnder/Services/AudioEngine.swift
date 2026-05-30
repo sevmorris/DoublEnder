@@ -42,9 +42,13 @@ class AudioEngine: NSObject, ObservableObject {
     @Published var selectedInputDevice: AVCaptureDevice?
 
     @Published var lastError: String?
-    /// Current input level in dBFS (`LevelMeter.dbFloor`…0). Smoothed on
-    /// writerQueue and published to the UI. Display-only — never affects recording.
-    @Published var rmsLevel: Float = LevelMeter.dbFloor
+    /// Current input level in dBFS (`LevelMeter.dbFloor`…0). Peak-hold,
+    /// smoothed on writerQueue and published to the UI. Display-only — never
+    /// affects recording.
+    @Published var meterLevel: Float = LevelMeter.dbFloor
+    /// Latches true when input peaks reach full scale; auto-clears after
+    /// `LevelMeter.clipIndicatorHoldDuration`. Display-only.
+    @Published var isClipping: Bool = false
     /// True when the PCM sidecar could not be opened for this recording —
     /// crash recovery is unavailable for the current take. (M4)
     @Published var sidecarUnavailable: Bool = false
@@ -137,6 +141,9 @@ class AudioEngine: NSObject, ObservableObject {
     private var recordingInputDeviceUID: String?
     /// Prevents firing onDisconnectedDuringRecording more than once per take.
     private var disconnectStopPending = false
+    /// Prevents duplicate idle input-loss callbacks while CoreAudio churns
+    /// through several device-list updates for a single physical unplug.
+    private var idleInputLossNotified = false
 
     // Serial queue for all AVAssetWriter / PCMSidecar work. Set as the
     // delegate queue on AVCaptureAudioDataOutput, so every CMSampleBuffer
@@ -146,17 +153,22 @@ class AudioEngine: NSObject, ObservableObject {
         label: "io.github.sevmorris.DoublEnder.writer",
         qos: .userInitiated
     )
-    /// Exponential smoother for the live meter; read/written only on writerQueue.
-    private var smoothedRmsLevel: Float = LevelMeter.dbFloor
+    /// Exponential smoother for the live peak-hold meter; read/written only on writerQueue.
+    private var smoothedPeakLevel: Float = LevelMeter.dbFloor
+    /// Scheduled task that clears `isClipping` after the hold duration.
+    private var clipClearWork: DispatchWorkItem?
     /// Scheduled "clear write indicator" task; cancelled and re-scheduled on
     /// every successful writer append so isWritingData only flips to false
     /// when buffers stop arriving for 150 ms.
     private var writeIndicatorClearWork: DispatchWorkItem?
 
     /// Called on the main thread when a device disconnects mid-recording.
-    /// RecorderViewModel sets this so it can run the full stop / notification
-    /// / upload path rather than having AudioEngine duplicate that logic.
-    var onDisconnectedDuringRecording: (() -> Void)?
+    /// The string is a user-facing reason (device name + "disconnected").
+    /// RecorderViewModel runs stop / save / fallback from this callback.
+    var onDisconnectedDuringRecording: ((String) -> Void)?
+
+    /// Called on the main thread when the bound input vanishes while idle.
+    var onActiveInputLostWhileIdle: (() -> Void)?
 
     /// Called on the main thread when a USB input device appears in the
     /// system while the app is running. Fires only for genuinely new UIDs;
@@ -297,8 +309,13 @@ class AudioEngine: NSObject, ObservableObject {
         captureSession = nil
         currentInput = nil
         audioOutput = nil
-        writerQueue.sync { self.smoothedRmsLevel = LevelMeter.dbFloor }
-        DispatchQueue.main.async { self.rmsLevel = LevelMeter.dbFloor }
+        writerQueue.sync { self.smoothedPeakLevel = LevelMeter.dbFloor }
+        DispatchQueue.main.async {
+            self.clipClearWork?.cancel()
+            self.clipClearWork = nil
+            self.meterLevel = LevelMeter.dbFloor
+            self.isClipping = false
+        }
 
         let target: AVCaptureDevice
         if let device = device {
@@ -415,6 +432,7 @@ class AudioEngine: NSObject, ObservableObject {
             if silentFallback {
                 self.selectedDeviceUsable = false
             }
+            self.idleInputLossNotified = false
         }
     }
 
@@ -507,6 +525,26 @@ class AudioEngine: NSObject, ObservableObject {
         }
 
         notifyIfRecordingInputDisconnected()
+        notifyIfActiveInputLostWhileIdle()
+    }
+
+    /// Poll the bound capture device while recording — CoreAudio device-list
+    /// updates can lag behind a physical unplug, but `isConnected` flips promptly.
+    func checkRecordingInputHealth() {
+        guard isRecording, !disconnectStopPending else { return }
+        guard let device = currentInput?.device else {
+            triggerRecordingInputDisconnect(reason: "The selected microphone is no longer available")
+            return
+        }
+        let activeUID = recordingInputDeviceUID ?? device.uniqueID
+        let name = device.localizedName
+        if !device.isConnected {
+            triggerRecordingInputDisconnect(reason: "\(name) was disconnected")
+            return
+        }
+        if !availableInputDevices.contains(where: { $0.uniqueID == activeUID && $0.isConnected }) {
+            triggerRecordingInputDisconnect(reason: "\(name) was disconnected")
+        }
     }
 
     /// If the active take's input device vanished from the system device
@@ -517,12 +555,43 @@ class AudioEngine: NSObject, ObservableObject {
         guard let activeUID = recordingInputDeviceUID ?? currentInput?.device.uniqueID else {
             return
         }
-        guard !availableInputDevices.contains(where: { $0.uniqueID == activeUID }) else {
+        let bound = currentInput?.device
+        let name = bound?.localizedName
+            ?? availableInputDevices.first(where: { $0.uniqueID == activeUID })?.localizedName
+            ?? "The selected microphone"
+        let listedAndConnected = availableInputDevices.contains(where: {
+            $0.uniqueID == activeUID && $0.isConnected
+        })
+        let hardwareConnected = bound?.isConnected ?? false
+        guard !listedAndConnected || (bound?.uniqueID == activeUID && !hardwareConnected) else {
             return
         }
+        triggerRecordingInputDisconnect(reason: "\(name) was disconnected")
+    }
+
+    private func triggerRecordingInputDisconnect(reason: String) {
+        guard isRecording, !disconnectStopPending else { return }
         disconnectStopPending = true
-        logger.warning("Recording input disconnected: \(activeUID, privacy: .public)")
-        handleRecordingCaptureFailure(reason: "input disconnected")
+        logger.warning("Recording input disconnected: \(reason, privacy: .public)")
+        handleRecordingCaptureFailure(reason: reason)
+    }
+
+    /// When idle, rebuild if the bound input is gone so the user isn't left
+    /// on a ghost device that can't actually capture.
+    private func notifyIfActiveInputLostWhileIdle() {
+        guard !isRecording else { return }
+        guard let bound = currentInput?.device else { return }
+        let uid = bound.uniqueID
+        let stillUsable = bound.isConnected
+            && availableInputDevices.contains(where: { $0.uniqueID == uid && $0.isConnected })
+        if stillUsable {
+            idleInputLossNotified = false
+            return
+        }
+        guard !idleInputLossNotified else { return }
+        idleInputLossNotified = true
+        logger.warning("Active input lost while idle: \(bound.localizedName, privacy: .public)")
+        DispatchQueue.main.async { self.onActiveInputLostWhileIdle?() }
     }
 
     /// Unified path for disconnect, runtime error, and unrecoverable interruption
@@ -531,7 +600,7 @@ class AudioEngine: NSObject, ObservableObject {
         guard isRecording, disconnectStopPending else { return }
         logger.warning("Recording capture failure: \(reason, privacy: .public)")
         DispatchQueue.main.async { [weak self] in
-            self?.onDisconnectedDuringRecording?()
+            self?.onDisconnectedDuringRecording?(reason)
         }
     }
 
@@ -655,6 +724,12 @@ class AudioEngine: NSObject, ObservableObject {
     func startRecording(to fileURL: URL, format: OutputFormat = .aac, notes: String = "") throws {
         guard captureSession?.isRunning == true else {
             throw RecordingError.engineNotRunning
+        }
+
+        DispatchQueue.main.async {
+            self.clipClearWork?.cancel()
+            self.clipClearWork = nil
+            self.isClipping = false
         }
 
         // AVAssetWriter refuses to start if the file already exists.
@@ -1090,8 +1165,8 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        // Live RMS meter, always — independent of recording state.
-        computeRMS(from: sampleBuffer)
+        // Live peak-hold meter, always — independent of recording state.
+        updateMeterLevels(from: sampleBuffer)
 
         guard isRecording else { return }
 
@@ -1196,6 +1271,30 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
     private func tearDownWriterLocked(reason: String) {
         let writer = assetWriter
         let abortedSidecar = pcmSidecar
+        let hadSamples = didAppendAtLeastOneSample
+        let shouldNotifyVM = isRecording
+
+        if shouldNotifyVM {
+            isRecording = false
+            recordingInputDeviceUID = nil
+            disconnectStopPending = true
+        }
+
+        // Writer still has captured samples — leave refs intact so
+        // stopRecording can finalize rather than losing the main file.
+        if shouldNotifyVM && hadSamples && writer != nil {
+            consecutiveWriteErrors = 0
+            consecutiveDropCount = 0
+            writerLock.unlock()
+            logger.error("AVAssetWriter error — deferring finalize to stopRecording: \(reason, privacy: .public)")
+            DispatchQueue.main.async {
+                self.writeIndicatorClearWork?.cancel()
+                self.isWritingData = false
+                self.onDisconnectedDuringRecording?("Recording stopped: \(reason)")
+            }
+            return
+        }
+
         assetWriter = nil
         assetWriterInput = nil
         pcmSidecar = nil
@@ -1203,12 +1302,6 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         pendingFileURL = nil
         consecutiveWriteErrors = 0
         consecutiveDropCount = 0
-        let shouldNotifyVM = isRecording
-        if shouldNotifyVM {
-            isRecording = false
-            recordingInputDeviceUID = nil
-            disconnectStopPending = true
-        }
         writerLock.unlock()
 
         logger.error("AVAssetWriter tear-down: \(reason, privacy: .public)")
@@ -1218,7 +1311,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async {
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
-            self.onDisconnectedDuringRecording?()
+            self.onDisconnectedDuringRecording?("Recording stopped: \(reason)")
         }
     }
 
@@ -1227,97 +1320,85 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async { self.lastError = nil }
     }
 
-    /// Compute RMS from a CMSampleBuffer and publish dBFS to `rmsLevel`.
-    /// Handles Float32 and Int16 PCM; other formats fall back to a best-effort
-    /// Float32 interpretation.
-    private func computeRMS(from sampleBuffer: CMSampleBuffer) {
-        guard let samples = normalizedMeterSamples(from: sampleBuffer), !samples.isEmpty else { return }
-        var rms: Float = 0
-        samples.withUnsafeBufferPointer { buf in
-            guard let base = buf.baseAddress else { return }
-            vDSP_rmsqv(base, 1, &rms, vDSP_Length(buf.count))
+    /// Peak-hold level and clip indicator from a CMSampleBuffer, published to the UI.
+    private func updateMeterLevels(from sampleBuffer: CMSampleBuffer) {
+        let peakLinear = peakLinear(from: sampleBuffer)
+        if LevelMeter.isClipping(peakLinear: peakLinear) {
+            indicateClipping()
         }
-        let db = rms > 1e-9 ? 20.0 * log10f(rms) : LevelMeter.dbFloor
-        let clamped = max(LevelMeter.dbFloor, min(LevelMeter.dbCeiling, db))
-        let coef = clamped > smoothedRmsLevel ? LevelMeter.attack : LevelMeter.release
-        smoothedRmsLevel += coef * (clamped - smoothedRmsLevel)
-        let level = smoothedRmsLevel
+        let instantDb = LevelMeter.clampedDisplayDB(fromLinear: peakLinear)
+        let coef = instantDb > smoothedPeakLevel ? LevelMeter.peakAttack : LevelMeter.peakRelease
+        smoothedPeakLevel += coef * (instantDb - smoothedPeakLevel)
+        let level = smoothedPeakLevel
         DispatchQueue.main.async { [weak self] in
-            self?.rmsLevel = level
+            self?.meterLevel = level
         }
     }
 
-    /// Normalized mono Float32 samples for the level meter.
-    private func normalizedMeterSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return nil }
+    /// Light CLIP and schedule auto-clear; re-triggers extend the hold window.
+    private func indicateClipping() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isClipping = true
+            self.clipClearWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.isClipping = false
+                self?.clipClearWork = nil
+            }
+            self.clipClearWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + LevelMeter.clipIndicatorHoldDuration,
+                execute: work
+            )
+        }
+    }
+
+    /// Max absolute sample value (0…1+) across all channels in the buffer.
+    private func peakLinear(from sampleBuffer: CMSampleBuffer) -> Float {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return 0 }
         var dataPointer: UnsafeMutablePointer<Int8>?
         var length = 0
         guard CMBlockBufferGetDataPointer(
             blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
             totalLengthOut: &length, dataPointerOut: &dataPointer
-        ) == kCMBlockBufferNoErr, let ptr = dataPointer, length > 0 else { return nil }
+        ) == kCMBlockBufferNoErr, let ptr = dataPointer, length > 0 else { return 0 }
 
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
             let floatCount = length / MemoryLayout<Float>.size
-            guard floatCount > 0 else { return nil }
-            return Array(UnsafeBufferPointer(
-                start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
-                count: floatCount
-            ))
+            guard floatCount > 0 else { return 0 }
+            var peak: Float = 0
+            ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { floats in
+                vDSP_maxmgv(floats, 1, &peak, vDSP_Length(floatCount))
+            }
+            return peak
         }
 
-        let channels = max(Int(asbd.mChannelsPerFrame), 1)
         let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
         let isInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
-        let isNonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
-        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard frameCount > 0 else { return nil }
 
         if isFloat && asbd.mBitsPerChannel == 32 {
-            if isNonInterleaved && channels > 1 {
-                let bytesPerChannel = frameCount * MemoryLayout<Float>.size
-                guard length >= bytesPerChannel else { return nil }
-                return Array(UnsafeBufferPointer(
-                    start: ptr.withMemoryRebound(to: Float.self, capacity: frameCount) { $0 },
-                    count: frameCount
-                ))
-            }
             let floatCount = length / MemoryLayout<Float>.size
-            guard floatCount > 0 else { return nil }
-            if channels == 1 {
-                return Array(UnsafeBufferPointer(
-                    start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
-                    count: floatCount
-                ))
+            guard floatCount > 0 else { return 0 }
+            var peak: Float = 0
+            ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { floats in
+                vDSP_maxmgv(floats, 1, &peak, vDSP_Length(floatCount))
             }
-            // Interleaved multi-channel — average channels per frame for the meter.
-            let frames = floatCount / channels
-            var mono = [Float](repeating: 0, count: frames)
-            let floats = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
-            for f in 0..<frames {
-                var sum: Float = 0
-                for ch in 0..<channels { sum += floats[f * channels + ch] }
-                mono[f] = sum / Float(channels)
-            }
-            return mono
+            return peak
         }
 
         if isInt && asbd.mBitsPerChannel == 16 {
             let intCount = length / MemoryLayout<Int16>.size
-            guard intCount > 0 else { return nil }
+            guard intCount > 0 else { return 0 }
             let ints = ptr.withMemoryRebound(to: Int16.self, capacity: intCount) { $0 }
-            if channels == 1 {
-                return (0..<intCount).map { Float(ints[$0]) / 32768.0 }
+            var peakSample: Int32 = 0
+            for i in 0..<intCount {
+                let absVal = Int32(abs(ints[i]))
+                if absVal > peakSample { peakSample = absVal }
             }
-            let frames = intCount / channels
-            return (0..<frames).map { f in
-                var sum: Float = 0
-                for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / 32768.0 }
-                return sum / Float(channels)
-            }
+            return Float(peakSample) / 32768.0
         }
 
-        return nil
+        return 0
     }
 }

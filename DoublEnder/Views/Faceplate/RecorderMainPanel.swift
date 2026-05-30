@@ -21,7 +21,8 @@ struct RecorderMainPanel: View {
             recordStopButton
             Spacer(minLength: 10)
             FaceplateMeterRow(
-                level: viewModel.rmsLevel,
+                level: viewModel.meterLevel,
+                isClipping: viewModel.isClipping,
                 inputActive: popovers.showingInput,
                 settingsActive: popovers.showingSettings,
                 inputDisabled: viewModel.isCurrentlyRecording,

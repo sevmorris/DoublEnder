@@ -62,8 +62,10 @@ class RecorderViewModel: ObservableObject {
 
     @Published var state: AppState = .selectingMic
     @Published var recordingTime: TimeInterval = 0
-    /// Current input level in dBFS, forwarded from AudioEngine for the viewport meter.
-    @Published var rmsLevel: Float = LevelMeter.dbFloor
+    /// Current input level in dBFS (peak-hold), forwarded from AudioEngine for the viewport meter.
+    @Published var meterLevel: Float = LevelMeter.dbFloor
+    /// True when input has peaked at full scale this session/take.
+    @Published var isClipping: Bool = false
     /// True when buffers are actively being appended to the writer.
     /// Drives the on-screen write-flow indicator dot. Forwarded from
     /// AudioEngine.isWritingData.
@@ -204,7 +206,20 @@ class RecorderViewModel: ObservableObject {
     /// Polls free disk space while a take is in progress so a full volume
     /// triggers a graceful stop before writes start failing.
     private var diskWatchTimer: AnyCancellable?
+    /// Polls input health during recording — catches USB unplug before the
+    /// device-list listener updates.
+    private var inputWatchTimer: AnyCancellable?
     private static let diskWatchInterval: TimeInterval = 30
+    private static let inputWatchInterval: TimeInterval = 1
+    /// Set when stop was triggered by a disconnect so we can alert the user.
+    private var pendingDisconnectReason: String?
+    /// Suppresses the idle input-loss alert while a recording-disconnect
+    /// handler is already showing one and switching to the built-in mic.
+    private var suppressIdleInputLossAlert = false
+    /// Prevents back-to-back duplicate disconnect alerts when several
+    /// CoreAudio callbacks land in the same unplug event.
+    private var lastInputLossAlertAt: Date?
+    private static let inputLossAlertCooldown: TimeInterval = 3
     private(set) var recordedFileURL: URL?
 
     var availableInputDevices: [AVCaptureDevice] {
@@ -229,9 +244,12 @@ class RecorderViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
-        audioEngine.$rmsLevel
+        audioEngine.$meterLevel
             .receive(on: DispatchQueue.main)
-            .assign(to: &$rmsLevel)
+            .assign(to: &$meterLevel)
+        audioEngine.$isClipping
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isClipping)
         audioEngine.$isWritingData
             .receive(on: DispatchQueue.main)
             .assign(to: &$isWritingData)
@@ -290,24 +308,24 @@ class RecorderViewModel: ObservableObject {
         // After the stop we also rebuild the engine (M1) and re-validate the
         // selected device (M2) so the app is ready for the next take without
         // requiring the user to re-pick a device.
-        audioEngine.onDisconnectedDuringRecording = { [weak self] in
+        audioEngine.onDisconnectedDuringRecording = { [weak self] reason in
             guard let self else { return }
+            self.suppressIdleInputLossAlert = true
+            self.pendingDisconnectReason = reason
             self.stopRecording {
-                // Rebuild with the best available device.
-                self.audioEngine.refreshDevices()
-                let devices = self.availableInputDevices
-                if let device = devices.first(where: { $0.uniqueID == self.selectedInputDeviceID }) {
-                    // M1: selected device is still present — reconnect to it.
-                    self.audioEngine.setDevice(device)
-                } else if let device = self.preferredDefaultDevice() {
-                    // M2: selected device is gone — fall back to the best
-                    // available hardware mic. didSet persists the choice and
-                    // calls setDevice → rebuildEngine automatically.
-                    self.selectedInputDeviceID = device.uniqueID
+                self.presentDisconnectAlert(reason: reason)
+                self.switchToFallbackInputAfterLoss()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    self.suppressIdleInputLossAlert = false
                 }
-                // If no input devices are available at all, the engine stays
-                // stopped; the user will see the normal "no device" state.
             }
+        }
+
+        audioEngine.onActiveInputLostWhileIdle = { [weak self] in
+            guard let self else { return }
+            guard !self.suppressIdleInputLossAlert else { return }
+            self.switchToFallbackInputAfterLoss()
+            self.presentInputLostWhileIdleAlert()
         }
 
         // USB hot-plug: AudioEngine fires this on the main thread when a new
@@ -503,6 +521,9 @@ class RecorderViewModel: ObservableObject {
             diskWatchTimer = Timer.publish(every: Self.diskWatchInterval, on: .main, in: .common)
                 .autoconnect()
                 .sink { [weak self] _ in self?.checkDiskSpaceDuringRecording() }
+            inputWatchTimer = Timer.publish(every: Self.inputWatchInterval, on: .main, in: .common)
+                .autoconnect()
+                .sink { [weak self] _ in self?.audioEngine.checkRecordingInputHealth() }
         } catch {
             state = .error("Failed to start recording: \(error.localizedDescription)")
         }
@@ -526,6 +547,7 @@ class RecorderViewModel: ObservableObject {
     func stopRecording(completion: (() -> Void)? = nil) {
         timer?.cancel()
         diskWatchTimer?.cancel()
+        inputWatchTimer?.cancel()
 
         audioEngine.stopRecording { [weak self] result in
             guard let self = self else {
@@ -551,34 +573,102 @@ class RecorderViewModel: ObservableObject {
                 self.recordingTime = 0
                 self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready
-                completion?()
-                // App-controlled confirmation — same guarantee as Cloud; system
-                // notifications are best-effort and may be disabled.
                 RecordingSavedConfirmation.present(fileName: url.lastPathComponent)
+                self.pendingDisconnectReason = nil
+                completion?()
                 return
                 #endif
             case .success(.none):
-                // Silent discard — AudioEngine captured zero frames and
-                // cancelled the writer (no file on disk). Return to .ready
-                // without surfacing an error: per the architectural
-                // requirement, the user must never see an error for a
-                // session where they did nothing wrong.
                 self.recordingTime = 0
                 self.recordedFileURL = nil
-                self.state = .ready
+                if let reason = self.pendingDisconnectReason {
+                    self.state = .error(
+                        "\(reason). No audio was captured — try again with the built-in microphone."
+                    )
+                } else {
+                    self.state = .ready
+                }
             case .failure(let error):
                 self.recordingTime = 0
-                if self.hasRecoverableSidecar(for: self.recordedFileURL) {
+                if self.recoverSidecarIfNeeded(from: self.recordedFileURL) {
+                    self.recordedFileURL = nil
+                    self.state = .ready
+                } else if self.hasRecoverableSidecar(for: self.recordedFileURL) {
                     self.state = .error(
                         "Recording was interrupted but your audio is safe. "
                             + "Quit and relaunch DoublEnder to recover it as a WAV file."
                     )
                 } else {
-                    self.state = .error("Failed to finalize recording: \(error.localizedDescription)")
+                    let prefix = self.pendingDisconnectReason.map { "\($0). " } ?? ""
+                    self.state = .error("\(prefix)Failed to finalize recording: \(error.localizedDescription)")
                 }
             }
+            self.pendingDisconnectReason = nil
             completion?()
         }
+    }
+
+    /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
+    /// finalize — returns true when a recovered file was saved and presented.
+    private func recoverSidecarIfNeeded(from mainOutput: URL?) -> Bool {
+        guard let mainOutput else { return false }
+        let sidecarURL = PCMSidecar.url(for: mainOutput)
+        guard PCMSidecar.hasRecoverableContent(at: sidecarURL) else { return false }
+        do {
+            let recovered = try PCMSidecar.recoverToWAV(sidecarURL: sidecarURL)
+            try? FileManager.default.removeItem(at: sidecarURL)
+            try? FileManager.default.removeItem(at: mainOutput)
+            Task { await NotificationService.shared.postRecordingSaved(fileURL: recovered) }
+            #if !GCS_ENABLED
+            RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent)
+            #endif
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func switchToFallbackInputAfterLoss() {
+        audioEngine.refreshDevices()
+        if let builtIn = audioEngine.builtInInputDevice() {
+            selectedInputDeviceID = builtIn.uniqueID
+        } else if let fallback = preferredDefaultDevice() {
+            selectedInputDeviceID = fallback.uniqueID
+        } else {
+            audioEngine.start()
+        }
+    }
+
+    private func presentDisconnectAlert(reason: String) {
+        guard shouldPresentInputLossAlert() else { return }
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .warning
+        alert.messageText = "Microphone disconnected"
+        alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. Switched to the built-in microphone."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func presentInputLostWhileIdleAlert() {
+        guard shouldPresentInputLossAlert() else { return }
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .warning
+        alert.messageText = "Microphone disconnected"
+        alert.informativeText = "The selected input is no longer available. Switched to the built-in microphone."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func shouldPresentInputLossAlert() -> Bool {
+        let now = Date()
+        if let last = lastInputLossAlertAt,
+           now.timeIntervalSince(last) < Self.inputLossAlertCooldown {
+            return false
+        }
+        lastInputLossAlertAt = now
+        return true
     }
 
     /// Abort the current recording without finalizing — used by the
@@ -587,6 +677,8 @@ class RecorderViewModel: ObservableObject {
     func abortRecording(completion: (() -> Void)? = nil) {
         timer?.cancel()
         diskWatchTimer?.cancel()
+        inputWatchTimer?.cancel()
+        pendingDisconnectReason = nil
         let url = recordedFileURL
 
         audioEngine.cancelRecording { [weak self] in
@@ -747,6 +839,8 @@ class RecorderViewModel: ObservableObject {
     func reset() {
         timer?.cancel()
         diskWatchTimer?.cancel()
+        inputWatchTimer?.cancel()
+        pendingDisconnectReason = nil
         if audioEngine.isRecordingActive {
             audioEngine.abandonStaleRecordingState()
         }

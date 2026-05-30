@@ -112,6 +112,7 @@ final class FaceplatePopoverManager: NSObject, ObservableObject, NSPopoverDelega
 /// Three independent controls: input button, level meter with CLIP, settings button.
 struct FaceplateMeterRow: View {
     let level: Float
+    let isClipping: Bool
     let inputActive: Bool
     let settingsActive: Bool
     var inputDisabled: Bool = false
@@ -133,7 +134,6 @@ struct FaceplateMeterRow: View {
         let clipW:      CGFloat = 34
         let meterW:     CGFloat = FaceplateDesign.vpContentWidth - (iconBoxW * 2) - (gap * 2)
         let canvasW:    CGFloat = meterW - clipW
-        let clipping   = level >= -0.1
 
         HStack(alignment: .top, spacing: gap) {
             iconButton(
@@ -146,7 +146,7 @@ struct FaceplateMeterRow: View {
                 onTap: { if let av = inputAnchor { onInputTap(av) } }
             )
             meterUnit(meterW: meterW, canvasW: canvasW, clipW: clipW,
-                      containerH: containerH, clipping: clipping)
+                      containerH: containerH, clipping: isClipping)
             iconButton(
                 name: "settings_icon",
                 active: settingsActive,
