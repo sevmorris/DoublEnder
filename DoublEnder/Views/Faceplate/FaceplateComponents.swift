@@ -59,8 +59,11 @@ final class FaceplatePopoverManager: NSObject, ObservableObject, NSPopoverDelega
     func toggleInput(buttonView: NSView, content: AnyView) {
         if inputPop != nil { closeInput(); return }
         settingsPop?.close()
-        guard let windowView = buttonView.window?.contentView else { return }
-        anchoredWindow = buttonView.window
+        guard let window = buttonView.window,
+              let windowView = window.contentView else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        anchoredWindow = window
         let btnInWindow = buttonView.convert(buttonView.bounds, to: windowView)
         let anchor = NSRect(x: 0, y: btnInWindow.minY, width: 0, height: btnInWindow.height)
         let p = makePop(content)
@@ -72,8 +75,11 @@ final class FaceplatePopoverManager: NSObject, ObservableObject, NSPopoverDelega
     func toggleSettings(buttonView: NSView, content: AnyView) {
         if settingsPop != nil { closeSettings(); return }
         inputPop?.close()
-        guard let windowView = buttonView.window?.contentView else { return }
-        anchoredWindow = buttonView.window
+        guard let window = buttonView.window,
+              let windowView = window.contentView else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        anchoredWindow = window
         let btnInWindow = buttonView.convert(buttonView.bounds, to: windowView)
         let anchor = NSRect(x: windowView.bounds.width, y: btnInWindow.minY,
                             width: 0, height: btnInWindow.height)
@@ -251,15 +257,22 @@ struct ViewAnchor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> AnchorView {
         let v = AnchorView()
-        DispatchQueue.main.async { onCapture(v) }
+        v.onCapture = onCapture
         return v
     }
 
     func updateNSView(_ nsView: AnchorView, context: Context) {
-        DispatchQueue.main.async { onCapture(nsView) }
+        nsView.onCapture = onCapture
     }
 
     final class AnchorView: NSView {
+        var onCapture: ((NSView) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { onCapture?(self) }
+        }
+
         override var mouseDownCanMoveWindow: Bool { false }
     }
 }

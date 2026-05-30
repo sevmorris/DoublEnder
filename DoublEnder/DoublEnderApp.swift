@@ -293,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the main recorder window hidden until every sidecar is resolved,
         // then bring it forward. Untouched when no recovery is needed, so
         // the normal launch path has no flicker.
+        NSApp.activate(ignoringOtherApps: true)
         mainWindow?.orderOut(nil)
         for sidecar in recoverable {
             presentRecoveryDialog(for: sidecar)
@@ -354,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         NSApp.runModal(for: window)
     }
 

@@ -35,6 +35,9 @@ final class PCMSidecar {
     private static let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "PCMSidecar")
 
     private let handle: FileHandle
+    /// Serializes all sidecar file I/O so `synchronize()` never blocks the
+    /// capture delegate while it holds the writer lock.
+    private let ioQueue = DispatchQueue(label: "io.github.sevmorris.DoublEnder.pcmrec-io", qos: .utility)
     let url: URL
     private var sampleRate: Double
     private var bytesSinceSync = 0
@@ -82,14 +85,16 @@ final class PCMSidecar {
     /// rate different from the provisional value chosen at record start.
     func updateSampleRateIfNeeded(_ sampleRate: Double) {
         guard abs(sampleRate - self.sampleRate) > 0.5 else { return }
-        self.sampleRate = sampleRate
-        let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: 1)
-        do {
-            try handle.seek(toOffset: 0)
-            try handle.write(contentsOf: header)
-            try handle.seekToEnd()
-        } catch {
-            PCMSidecar.logger.error("Sidecar header update failed: \(error.localizedDescription, privacy: .public)")
+        ioQueue.async { [self] in
+            self.sampleRate = sampleRate
+            let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: 1)
+            do {
+                try self.handle.seek(toOffset: 0)
+                try self.handle.write(contentsOf: header)
+                try self.handle.seekToEnd()
+            } catch {
+                PCMSidecar.logger.error("Sidecar header update failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -98,7 +103,9 @@ final class PCMSidecar {
     func append(_ pointer: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
         let data = Data(bytes: pointer, count: frameCount * PCMSidecar.bytesPerSample)
-        writePayload(data)
+        ioQueue.async { [self] in
+            self.writePayload(data)
+        }
     }
 
     /// Append a CMSampleBuffer, normalizing any supported PCM layout to
@@ -107,9 +114,9 @@ final class PCMSidecar {
         guard let mono = Self.normalizedMonoFloatSamples(from: sampleBuffer), !mono.isEmpty else {
             return
         }
-        mono.withUnsafeBufferPointer { buf in
-            guard let base = buf.baseAddress else { return }
-            append(base, frameCount: buf.count)
+        let data = mono.withUnsafeBufferPointer { Data(buffer: $0) }
+        ioQueue.async { [self] in
+            self.writePayload(data)
         }
     }
 
@@ -235,14 +242,18 @@ final class PCMSidecar {
     /// Close the handle but keep the file — the main file could not be
     /// finalized, so the sidecar is the only intact copy.
     func close() {
-        try? handle.synchronize()
-        try? handle.close()
+        ioQueue.sync {
+            try? self.handle.synchronize()
+            try? self.handle.close()
+        }
     }
 
     /// Close and delete — the main file was finalized successfully (or the
     /// user explicitly discarded the take).
     func discard() {
-        try? handle.close()
+        ioQueue.sync {
+            try? self.handle.close()
+        }
         try? FileManager.default.removeItem(at: url)
     }
 

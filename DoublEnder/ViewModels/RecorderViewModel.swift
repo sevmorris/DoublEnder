@@ -114,6 +114,7 @@ class RecorderViewModel: ObservableObject {
                 }
                 return
             }
+            audioEngine.clearStaleRecordingSessionIfNeeded()
             if let device = availableInputDevices.first(where: { $0.uniqueID == selectedInputDeviceID }) {
                 audioEngine.setDevice(device)
             }
@@ -265,7 +266,13 @@ class RecorderViewModel: ObservableObject {
             .sink { [weak self] message in
                 guard let self else { return }
                 self.timer?.cancel()
-                self.state = .error(message)
+                self.diskWatchTimer?.cancel()
+                if self.isCurrentlyRecording {
+                    self.stopRecording()
+                } else {
+                    self.audioEngine.clearStaleRecordingSessionIfNeeded()
+                    self.state = .error(message)
+                }
             }
             .store(in: &cancellables)
 
@@ -747,6 +754,7 @@ class RecorderViewModel: ObservableObject {
     }
 
     private func finishReset() {
+        audioEngine.clearStaleRecordingSessionIfNeeded()
         audioEngine.clearLastError()
         state = .selectingMic
         recordingTime = 0

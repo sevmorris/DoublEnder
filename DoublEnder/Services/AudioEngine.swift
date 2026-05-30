@@ -721,11 +721,13 @@ class AudioEngine: NSObject, ObservableObject {
         consecutiveWriteErrors = 0
         consecutiveDropCount = 0
         didAppendAtLeastOneSample = false
+        writerLock.unlock()
 
         // Open the crash-recovery sidecar immediately so even a crash before
         // the first CMSampleBuffer leaves a recoverable artifact on disk.
         let provisionalRate = provisionalSidecarSampleRate()
         let sidecar = PCMSidecar(mainOutput: fileURL, sampleRate: provisionalRate, channels: 1)
+        writerLock.lock()
         pcmSidecar = sidecar
         writerLock.unlock()
 
@@ -885,7 +887,28 @@ class AudioEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Drop a stuck `isRecording` flag when the writer is already gone. After
+    /// a writer tear-down the UI may leave `.recording` before the engine flag
+    /// clears, which would otherwise block input changes via `setDevice`.
+    func clearStaleRecordingSessionIfNeeded() {
+        guard isRecording else { return }
+        writerLock.lock()
+        let writerGone = assetWriter == nil
+        writerLock.unlock()
+        guard writerGone else { return }
+        logger.warning("Clearing stale isRecording flag — writer already gone")
+        isRecording = false
+        recordingInputDeviceUID = nil
+        disconnectStopPending = false
+        DispatchQueue.main.async {
+            self.writeIndicatorClearWork?.cancel()
+            self.isWritingData = false
+            self.sidecarUnavailable = false
+        }
+    }
+
     func setDevice(_ device: AVCaptureDevice) {
+        clearStaleRecordingSessionIfNeeded()
         guard !isRecording else {
             logger.info("Refusing device switch during active recording")
             return
@@ -1080,7 +1103,8 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
 
         // First-sample path: now that we know the source format, build the
         // AVAssetWriterInput with `sourceFormatHint`, add it to the writer,
-        // start the writing session, and create the PCMSidecar.
+        // start the writing session, and refine the provisional sidecar rate.
+        var sidecarRateUpdate: Double?
         if assetWriterInput == nil {
             guard let outputSettings = pendingOutputSettings,
                   let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else {
@@ -1109,10 +1133,8 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             writer.startSession(atSourceTime: startTime)
             assetWriterInput = input
 
-            // Refine the provisional sidecar header if the actual capture
-            // rate differs from what we guessed at record start.
             if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
-                pcmSidecar?.updateSampleRateIfNeeded(asbd.pointee.mSampleRate)
+                sidecarRateUpdate = asbd.pointee.mSampleRate
             }
         }
 
@@ -1144,8 +1166,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             didAppendAtLeastOneSample = true
             consecutiveWriteErrors = 0
             consecutiveDropCount = 0
-            pcmSidecar?.append(sampleBuffer: sampleBuffer)
+            let sidecar = pcmSidecar
+            let rateUpdate = sidecarRateUpdate
             writerLock.unlock()
+            if let rate = rateUpdate {
+                sidecar?.updateSampleRateIfNeeded(rate)
+            }
+            sidecar?.append(sampleBuffer: sampleBuffer)
             DispatchQueue.main.async { [weak self] in
                 self?.markDataFlowing()
             }
