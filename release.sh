@@ -123,6 +123,7 @@ xcodebuild \
     -configuration Release \
     -derivedDataPath "$DERIVED_DATA" \
     -quiet
+[[ -d "$APP_PATH" ]] || fail "Build did not produce $APP_PATH"
 ok "Build complete"
 
 # ── Sign ──────────────────────────────────────────────────────────────────────
@@ -178,9 +179,14 @@ ok "DMG contains $DMG_VERSION"
 # ── Tag and push ──────────────────────────────────────────────────────────────
 step "Tagging and pushing"
 git tag "$TAG"
-git push
-git push origin "$TAG"
-ok "Pushed $TAG"
+# Resolve the tracked remote/branch so this works from any branch (e.g. a
+# worktree branch whose name differs from its upstream).
+UPSTREAM=$(git rev-parse --abbrev-ref '@{upstream}')
+REMOTE="${UPSTREAM%%/*}"
+BRANCH="${UPSTREAM#*/}"
+git push "$REMOTE" "HEAD:$BRANCH"
+git push "$REMOTE" "$TAG"
+ok "Pushed $TAG to $REMOTE/$BRANCH"
 
 # ── GitHub release ────────────────────────────────────────────────────────────
 step "Creating GitHub release"
@@ -189,11 +195,16 @@ step "Creating GitHub release"
 PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1 || true)
 if [[ -n "$PREV_TAG" ]]; then
     CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" \
-        | grep -v "^- Bump version" || true)
+        | grep -v "^- Bump version" \
+        | grep -v "^- Bump build number" \
+        | grep -v "^- docs:" || true)
 else
     CHANGES=$(git log --pretty=format:"- %s" \
-        | grep -v "^- Bump version" || true)
+        | grep -v "^- Bump version" \
+        | grep -v "^- Bump build number" \
+        | grep -v "^- docs:" || true)
 fi
+[[ -n "$CHANGES" ]] || CHANGES="- Initial release"
 RELEASE_NOTES="### Changes
 ${CHANGES}"
 gh release create "$TAG" "$DMG" \
