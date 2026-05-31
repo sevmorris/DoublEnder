@@ -145,6 +145,47 @@ class RecorderViewModel: ObservableObject {
         return value
     }
 
+    /// Whether the record button should present a pre-recording name prompt
+    /// before starting. Branded builds opt in by setting
+    /// `BRAND_REQUIRE_RECORDING_NAME="true"` in brand.conf, which causes
+    /// release-cloud-branded.sh to inject `REQUIRE_RECORDING_NAME_AT_START=YES`
+    /// into the Info.plist. Standard Cloud substitutes the unset build setting
+    /// to empty; public DoublEnder doesn't declare the key at all. Both read
+    /// as falsy here, so the prompt code path stays inert for them.
+    static var requiresRecordingNameAtStart: Bool {
+        guard let raw = Bundle.main.infoDictionary?["RequireRecordingNameAtStart"] as? String else {
+            return false
+        }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "yes", "true", "1": return true
+        default: return false
+        }
+    }
+
+    /// Sanitize a user-entered string for use as the entire recording
+    /// filename (extension excluded). Caller must check the result for
+    /// emptiness — sanitization can produce "" from inputs like "/ / /"
+    /// or "...", and an empty string is the signal for the caller to keep
+    /// the submit gate closed.
+    static func sanitizedRecordingName(from raw: String) -> String {
+        let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replaced = String(String.UnicodeScalarView(
+            trimmed.unicodeScalars.map { illegal.contains($0) ? UnicodeScalar("_") : $0 }
+        ))
+        var collapsed = replaced
+        while collapsed.contains("__") {
+            collapsed = collapsed.replacingOccurrences(of: "__", with: "_")
+        }
+        while collapsed.hasPrefix(".") {
+            collapsed.removeFirst()
+        }
+        if collapsed.count > 64 {
+            collapsed = String(collapsed.prefix(64))
+        }
+        return collapsed
+    }
+
     /// Free-form notes written as the file's description metadata tag.
     /// Intentionally not persisted — notes are session-only so stale entries
     /// from a previous session never bleed into a new take.
@@ -496,7 +537,11 @@ class RecorderViewModel: ObservableObject {
         Task { await NotificationService.shared.requestAuthorization() }
     }
 
-    func startRecording() {
+    /// `nameOverride`, when non-nil and non-empty after sanitization, is
+    /// used as the entire filename (no timestamp). Branded builds with the
+    /// pre-recording name prompt pass the user's input here; standard
+    /// callers omit the argument and fall through to the timestamp scheme.
+    func startRecording(nameOverride: String? = nil) {
         if let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
             format: outputFormat
@@ -505,7 +550,7 @@ class RecorderViewModel: ObservableObject {
             return
         }
         do {
-            let fileURL = makeRecordingURL()
+            let fileURL = makeRecordingURL(nameOverride: nameOverride)
 
             // Crash recovery is keyed off the PCM sidecar file, which the
             // audio engine creates the moment the writer starts — no
@@ -718,7 +763,25 @@ class RecorderViewModel: ObservableObject {
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Desktop")
     }
 
-    private func makeRecordingURL() -> URL {
+    private func makeRecordingURL(nameOverride: String? = nil) -> URL {
+        let ext = outputFormat.fileExtension
+        let dir = Self.recordingsDirectory
+
+        // Branded name-prompt path: the user-entered name *is* the filename.
+        // No timestamp. Collisions get _2, _3, … so a guest recorded twice
+        // doesn't clobber the first take.
+        if let override = nameOverride,
+           !Self.sanitizedRecordingName(from: override).isEmpty {
+            let stem = Self.sanitizedRecordingName(from: override)
+            var candidate = dir.appendingPathComponent("\(stem).\(ext)")
+            var n = 2
+            while FileManager.default.fileExists(atPath: candidate.path) {
+                candidate = dir.appendingPathComponent("\(stem)_\(n).\(ext)")
+                n += 1
+            }
+            return candidate
+        }
+
         let formatter = DateFormatter()
         // POSIX locale prevents locale-specific characters (am/pm, RTL
         // markers, non-Gregorian calendars) from appearing in filenames.
@@ -729,8 +792,6 @@ class RecorderViewModel: ObservableObject {
         let prefix = filenameBase.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = prefix.isEmpty ? Self.defaultRecordingPrefix : prefix
         let timestamp = formatter.string(from: Date())
-        let ext = outputFormat.fileExtension
-        let dir = Self.recordingsDirectory
 
         // De-duplicate defensively: if two recordings land on the exact same
         // millisecond (or a stale file already exists), append _2, _3, …

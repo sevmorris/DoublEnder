@@ -7,9 +7,20 @@ struct RecorderMainPanel: View {
     @ObservedObject var popovers: FaceplatePopoverManager
     @Binding var isStopping: Bool
 
+    /// Pre-recording name prompt state. Active only in builds where
+    /// `RecorderViewModel.requiresRecordingNameAtStart` is true (today: the
+    /// hacks-on-tap branded build). Both stay at their initial values in
+    /// every other build because the alert is never presented.
+    @State private var isPresentingNamePrompt = false
+    @State private var nameInput = ""
+
     private var isRecordingState: Bool {
         if case .recording = viewModel.state { return true }
         return false
+    }
+
+    private var sanitizedNameInput: String {
+        RecorderViewModel.sanitizedRecordingName(from: nameInput)
     }
 
     var body: some View {
@@ -157,6 +168,23 @@ struct RecorderMainPanel: View {
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .disabled(isStopping || (!isRecordingState && !viewModel.canStartRecording))
+        .alert("Name this recording", isPresented: $isPresentingNamePrompt) {
+            TextField("Your name", text: $nameInput)
+            Button("Start Recording") {
+                let stem = sanitizedNameInput
+                // Belt-and-braces: the button is also .disabled below, but
+                // the no-op guard means a stray keyboard activation can't
+                // start a recording with an empty/sanitized-to-empty name.
+                guard !stem.isEmpty else { return }
+                let captured = stem
+                nameInput = ""
+                viewModel.startRecording(nameOverride: captured)
+            }
+            .disabled(sanitizedNameInput.isEmpty)
+            Button("Cancel", role: .cancel) {
+                nameInput = ""
+            }
+        }
     }
 
     private func handleRecordTap() {
@@ -167,7 +195,12 @@ struct RecorderMainPanel: View {
             viewModel.stopRecording { isStopping = false }
         case .selectingMic, .ready:
             guard viewModel.canStartRecording else { return }
-            viewModel.startRecording()
+            if RecorderViewModel.requiresRecordingNameAtStart {
+                nameInput = ""
+                isPresentingNamePrompt = true
+            } else {
+                viewModel.startRecording()
+            }
         default:
             break
         }
