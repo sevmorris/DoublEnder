@@ -7,6 +7,16 @@ import Accelerate
 /// `meterLevel` and `isClipping`; `FaceplateMeterRow` renders them). Keep
 /// floor, ceiling, and smoothing constants here so the engine clamp and
 /// viewport scale never drift.
+///
+/// ## Design intent: signal indicator, not a production meter
+///
+/// The meter answers one question: "Is audio coming in?" `AudioEngine`
+/// feeds it the mono-downmixed signal from `PCMSidecar.normalizedMonoFloatSamples`,
+/// so it reflects approximately the same content as the recorded file.
+/// It has no gain control and is not intended as a mix reference — the
+/// ballistics (instant attack, ~250 ms release) and the CLIP latch are tuned
+/// for a guest who needs to confirm their mic is working, not for a producer
+/// setting record levels.
 enum LevelMeter {
     static let dbFloor: Float = -48
     static let dbCeiling: Float = 0

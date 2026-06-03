@@ -1440,52 +1440,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         }
     }
 
-    /// Max absolute sample value (0…1+) across all channels in the buffer.
+    /// Peak of the mono-downmixed signal from a CMSampleBuffer (0…1).
+    ///
+    /// Delegates to `PCMSidecar.normalizedMonoFloatSamples` for the channel
+    /// conversion so the meter reads the same averaged mono signal that ends
+    /// up in the recorded file. Returns 0 for unsupported PCM formats.
     private func peakLinear(from sampleBuffer: CMSampleBuffer) -> Float {
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return 0 }
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        var length = 0
-        guard CMBlockBufferGetDataPointer(
-            blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
-            totalLengthOut: &length, dataPointerOut: &dataPointer
-        ) == kCMBlockBufferNoErr, let ptr = dataPointer, length > 0 else { return 0 }
-
-        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
-            let floatCount = length / MemoryLayout<Float>.size
-            guard floatCount > 0 else { return 0 }
-            var peak: Float = 0
-            ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { floats in
-                vDSP_maxmgv(floats, 1, &peak, vDSP_Length(floatCount))
-            }
-            return peak
-        }
-
-        let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-        let isInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
-
-        if isFloat && asbd.mBitsPerChannel == 32 {
-            let floatCount = length / MemoryLayout<Float>.size
-            guard floatCount > 0 else { return 0 }
-            var peak: Float = 0
-            ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { floats in
-                vDSP_maxmgv(floats, 1, &peak, vDSP_Length(floatCount))
-            }
-            return peak
-        }
-
-        if isInt && asbd.mBitsPerChannel == 16 {
-            let intCount = length / MemoryLayout<Int16>.size
-            guard intCount > 0 else { return 0 }
-            let ints = ptr.withMemoryRebound(to: Int16.self, capacity: intCount) { $0 }
-            var peakSample: Int32 = 0
-            for i in 0..<intCount {
-                let absVal = Int32(abs(ints[i]))
-                if absVal > peakSample { peakSample = absVal }
-            }
-            return Float(peakSample) / 32768.0
-        }
-
-        return 0
+        guard let mono = PCMSidecar.normalizedMonoFloatSamples(from: sampleBuffer) else { return 0 }
+        return LevelMeter.peakLinear(in: mono)
     }
 }
