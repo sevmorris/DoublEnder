@@ -222,11 +222,19 @@ class RecorderViewModel: ObservableObject {
     /// Non-fatal condition worth surfacing in the UI, or nil.
     /// Shown as a compact warning line below the counter in ContentView.
     var recordingWarning: String? {
+        // Interruption is the most urgent condition — the session has gone
+        // dark and audio may not be flowing. Show it prominently while the
+        // watchdog countdown runs.
+        if isCurrentlyRecording && audioEngine.sessionInterrupted {
+            return "Input interrupted — reconnecting…"
+        }
         // SCO / low-quality input: show regardless of recording state so the
         // user can switch devices before pressing record.
         if audioEngine.lowQualityInput { return "Low-quality input (BT SCO?)" }
         // Sidecar failure: only relevant once recording has started.
         if isCurrentlyRecording && audioEngine.sidecarUnavailable { return "No crash recovery" }
+        // Dropped frames: at least one buffer was discarded this take.
+        if isCurrentlyRecording && audioEngine.droppedFrameWarning { return "Dropped frames — check disk" }
         return nil
     }
 
@@ -282,6 +290,14 @@ class RecorderViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         audioEngine.$sidecarUnavailable
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        audioEngine.$sessionInterrupted
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        audioEngine.$droppedFrameWarning
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)

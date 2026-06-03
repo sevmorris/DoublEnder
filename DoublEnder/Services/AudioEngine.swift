@@ -89,6 +89,15 @@ class AudioEngine: NSObject, ObservableObject {
     /// Distinct from `isRecording` (record-button state) — this only goes
     /// true when AVAssetWriterInput.append actually returns true.
     @Published var isWritingData: Bool = false
+    /// True while AVCaptureSession is interrupted mid-recording — another
+    /// app has grabbed the audio hardware. The interruption watchdog will
+    /// fail the take if the session doesn't recover within 5 s. Published
+    /// so the VM can surface a non-modal warning without stopping the clock.
+    @Published var sessionInterrupted: Bool = false
+    /// True after the first dropped frame this take — `isReadyForMoreMediaData`
+    /// returned false and at least one buffer was discarded. Cleared on
+    /// recording start and on stop. Published for the VM warning display.
+    @Published var droppedFrameWarning: Bool = false
 
     private let aacBitRate: Int = 256_000
 
@@ -126,11 +135,18 @@ class AudioEngine: NSObject, ObservableObject {
     /// doesn't re-query CoreAudio on every SwiftUI render.
     private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
-    private let writeErrorThreshold = 5
+    // 3 consecutive drops ≈ 30 ms of silence before failing the take.
+    // Lowered from 5 (≈50 ms) — 30 ms is already audible on a word boundary;
+    // failing sooner triggers the sidecar recovery path before more audio is lost.
+    private let writeErrorThreshold = 3
     /// Consecutive sample buffers dropped because the writer wasn't ready.
     /// Sustained backpressure means audio is being lost — treat like a
     /// write failure once the threshold is hit.
     private var consecutiveDropCount = 0
+    /// True once a dropped-frame warning has been published for the current
+    /// take. Prevents re-publishing the same warning on every subsequent drop
+    /// in the same run. Protected by writerLock; reset in startRecording.
+    private var hasWarnedDroppedFrame = false
     /// True once the delegate has appended at least one sample buffer to
     /// the writer in the current take. stopRecording uses this to
     /// distinguish "writer never started a session" (silent discard,
@@ -161,6 +177,11 @@ class AudioEngine: NSObject, ObservableObject {
     /// every successful writer append so isWritingData only flips to false
     /// when buffers stop arriving for 150 ms.
     private var writeIndicatorClearWork: DispatchWorkItem?
+    /// Watchdog fired when `AVCaptureSessionWasInterrupted` is not resolved
+    /// within 5 s by either `InterruptionEnded` or an incoming sample buffer.
+    /// Cancellation points: `captureSessionInterruptionEnded`, first successful
+    /// sample in `markDataFlowing`, and all recording-stop/cancel paths.
+    private var interruptionWatchdog: DispatchWorkItem?
 
     /// Called on the main thread when a device disconnects mid-recording.
     /// The string is a user-facing reason (device name + "disconnected").
@@ -457,7 +478,17 @@ class AudioEngine: NSObject, ObservableObject {
     /// isWritingData true (if needed) and reschedules the "clear after
     /// 150 ms" task so the indicator stays lit while buffers keep arriving
     /// and goes dark only when the flow actually stops.
+    ///
+    /// Also cancels the interruption watchdog — a successfully appended
+    /// sample proves the session recovered, regardless of whether
+    /// `AVCaptureSessionInterruptionEnded` fired. Doing this here avoids
+    /// scheduling a dedicated main-thread dispatch on every buffer.
     private func markDataFlowing() {
+        if interruptionWatchdog != nil {
+            interruptionWatchdog?.cancel()
+            interruptionWatchdog = nil
+            sessionInterrupted = false
+        }
         if !isWritingData { isWritingData = true }
         writeIndicatorClearWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -631,11 +662,35 @@ class AudioEngine: NSObject, ObservableObject {
 
     @objc private func captureSessionWasInterrupted(_ notification: Notification) {
         logger.warning("AVCaptureSession interrupted")
-        // Wait for InterruptionEnded before stopping — brief system interruptions
-        // (phone call overlay, etc.) may recover without ending the take.
+        // Cancel any stale watchdog from a previous interruption, then arm a
+        // new one. If neither InterruptionEnded nor an incoming sample buffer
+        // clears the watchdog within 5 s, treat this as a hard device failure —
+        // the session is permanently interrupted and the recording would be
+        // silent. Brief interruptions (phone call overlay, Siri, etc.) recover
+        // before the watchdog fires; only permanent losses trigger the teardown.
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
+        guard isRecording else { return }
+        sessionInterrupted = true
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording, !self.disconnectStopPending else { return }
+            logger.warning("Interruption watchdog fired — no recovery after 5 s")
+            self.interruptionWatchdog = nil
+            self.sessionInterrupted = false
+            self.disconnectStopPending = true
+            self.handleRecordingCaptureFailure(
+                reason: "Recording stopped: microphone access was interrupted"
+            )
+        }
+        interruptionWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: watchdog)
     }
 
     @objc private func captureSessionInterruptionEnded(_ notification: Notification) {
+        // Disarm the watchdog before any other work — the interruption resolved.
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
+        sessionInterrupted = false
         guard isRecording else { return }
         if captureSession?.isRunning == false {
             captureSession?.startRunning()
@@ -730,6 +785,7 @@ class AudioEngine: NSObject, ObservableObject {
             self.clipClearWork?.cancel()
             self.clipClearWork = nil
             self.isClipping = false
+            self.droppedFrameWarning = false
         }
 
         // AVAssetWriter refuses to start if the file already exists.
@@ -796,6 +852,7 @@ class AudioEngine: NSObject, ObservableObject {
         consecutiveWriteErrors = 0
         consecutiveDropCount = 0
         didAppendAtLeastOneSample = false
+        hasWarnedDroppedFrame = false
         writerLock.unlock()
 
         // Open the crash-recovery sidecar immediately so even a crash before
@@ -829,10 +886,14 @@ class AudioEngine: NSObject, ObservableObject {
         isRecording = false
         recordingInputDeviceUID = nil
         disconnectStopPending = false
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
         DispatchQueue.main.async {
+            self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
             self.sidecarUnavailable = false
+            self.droppedFrameWarning = false
         }
         writerQueue.sync {}
         writerLock.lock()
@@ -864,10 +925,14 @@ class AudioEngine: NSObject, ObservableObject {
         isRecording = false
         recordingInputDeviceUID = nil
         disconnectStopPending = false
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
         DispatchQueue.main.async {
+            self.sessionInterrupted = false
             self.sidecarUnavailable = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
+            self.droppedFrameWarning = false
         }
         // Drain any delegate calls already in flight on writerQueue before
         // isRecording was cleared.
@@ -904,10 +969,14 @@ class AudioEngine: NSObject, ObservableObject {
         isRecording = false
         recordingInputDeviceUID = nil
         disconnectStopPending = false
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
         DispatchQueue.main.async {
+            self.sessionInterrupted = false
             self.sidecarUnavailable = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
+            self.droppedFrameWarning = false
         }
         // Drain any delegate calls already in flight on writerQueue before
         // isRecording was cleared, so the snapshot we take below sees
@@ -975,10 +1044,14 @@ class AudioEngine: NSObject, ObservableObject {
         isRecording = false
         recordingInputDeviceUID = nil
         disconnectStopPending = false
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
         DispatchQueue.main.async {
+            self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
             self.sidecarUnavailable = false
+            self.droppedFrameWarning = false
         }
     }
 
@@ -1229,6 +1302,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         // the take once the threshold is hit (same as consecutive writes).
         guard input.isReadyForMoreMediaData else {
             consecutiveDropCount += 1
+            // Warn the user on the first drop of this take. The latch
+            // prevents re-publishing on every subsequent drop in the same run;
+            // it is reset in startRecording for the next take.
+            if !hasWarnedDroppedFrame {
+                hasWarnedDroppedFrame = true
+                DispatchQueue.main.async { [weak self] in self?.droppedFrameWarning = true }
+            }
             if consecutiveDropCount >= writeErrorThreshold {
                 tearDownWriterLocked(reason: "Recording stopped: disk or encoder could not keep up (audio was being dropped)")
             } else {
@@ -1288,6 +1368,9 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             writerLock.unlock()
             logger.error("AVAssetWriter error — deferring finalize to stopRecording: \(reason, privacy: .public)")
             DispatchQueue.main.async {
+                self.interruptionWatchdog?.cancel()
+                self.interruptionWatchdog = nil
+                self.sessionInterrupted = false
                 self.writeIndicatorClearWork?.cancel()
                 self.isWritingData = false
                 self.onDisconnectedDuringRecording?("Recording stopped: \(reason)")
@@ -1302,6 +1385,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         pendingFileURL = nil
         consecutiveWriteErrors = 0
         consecutiveDropCount = 0
+        hasWarnedDroppedFrame = false
         writerLock.unlock()
 
         logger.error("AVAssetWriter tear-down: \(reason, privacy: .public)")
@@ -1309,6 +1393,9 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         writer?.cancelWriting()
         guard shouldNotifyVM else { return }
         DispatchQueue.main.async {
+            self.interruptionWatchdog?.cancel()
+            self.interruptionWatchdog = nil
+            self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
             self.onDisconnectedDuringRecording?("Recording stopped: \(reason)")
