@@ -1,4 +1,6 @@
 import XCTest
+import CoreMedia
+import CoreAudio
 @testable import DoublEnder
 
 final class PCMSidecarTests: XCTestCase {
@@ -13,6 +15,160 @@ final class PCMSidecarTests: XCTestCase {
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    // MARK: - Int24 / Int32 normalization
+
+    func testNormalizedMonoFloatSamplesInt24Mono() throws {
+        // Three little-endian 24-bit samples: 0, +max (0x7FFFFF), -max (0x800000)
+        let bytes: [UInt8] = [
+            0x00, 0x00, 0x00,   // 0
+            0xFF, 0xFF, 0x7F,   // +8388607
+            0x00, 0x00, 0x80,   // -8388608 (sign extended)
+        ]
+        let buffer = try makePCMSampleBuffer(
+            bytes: bytes, channels: 1, bitsPerChannel: 24, frameCount: 3
+        )
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 3)
+        XCTAssertEqual(result?[0] ?? -99, 0.0, accuracy: 1e-6)
+        XCTAssertEqual(result?[1] ?? -99, 8_388_607.0 / 8_388_608.0, accuracy: 1e-6)
+        XCTAssertEqual(result?[2] ?? -99, -1.0, accuracy: 1e-6)
+    }
+
+    func testNormalizedMonoFloatSamplesInt24StereoAveragesChannels() throws {
+        // 2 stereo frames. Frame 1: (+max, -max) → ~0. Frame 2: (0, +max) → max/2.
+        let bytes: [UInt8] = [
+            0xFF, 0xFF, 0x7F,   // L: +8388607
+            0x00, 0x00, 0x80,   // R: -8388608
+            0x00, 0x00, 0x00,   // L: 0
+            0xFF, 0xFF, 0x7F,   // R: +8388607
+        ]
+        let buffer = try makePCMSampleBuffer(
+            bytes: bytes, channels: 2, bitsPerChannel: 24, frameCount: 2
+        )
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 2)
+        let frame1Expected = (Float(8_388_607) / 8_388_608.0 + Float(-8_388_608) / 8_388_608.0) / 2
+        let frame2Expected = (0 + Float(8_388_607) / 8_388_608.0) / 2
+        XCTAssertEqual(result?[0] ?? -99, frame1Expected, accuracy: 1e-6)
+        XCTAssertEqual(result?[1] ?? -99, frame2Expected, accuracy: 1e-6)
+    }
+
+    func testNormalizedMonoFloatSamplesInt32Mono() throws {
+        // Three little-endian 32-bit samples: 0, Int32.max, Int32.min
+        let bytes: [UInt8] = [
+            0x00, 0x00, 0x00, 0x00,   // 0
+            0xFF, 0xFF, 0xFF, 0x7F,   // Int32.max
+            0x00, 0x00, 0x00, 0x80,   // Int32.min
+        ]
+        let buffer = try makePCMSampleBuffer(
+            bytes: bytes, channels: 1, bitsPerChannel: 32, frameCount: 3
+        )
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 3)
+        XCTAssertEqual(result?[0] ?? -99, 0.0, accuracy: 1e-6)
+        XCTAssertEqual(result?[1] ?? -99, 1.0, accuracy: 1e-6)
+        // Int32.min / Int32.max is slightly more negative than -1 (asymmetric range)
+        XCTAssertEqual(result?[2] ?? -99, Float(Int32.min) / Float(Int32.max), accuracy: 1e-6)
+    }
+
+    func testNormalizedMonoFloatSamplesInt32StereoAveragesChannels() throws {
+        // 2 stereo frames. Frame 1: (max, min) → ~0. Frame 2: (0, max) → ~0.5.
+        let bytes: [UInt8] = [
+            0xFF, 0xFF, 0xFF, 0x7F,   // L: Int32.max
+            0x00, 0x00, 0x00, 0x80,   // R: Int32.min
+            0x00, 0x00, 0x00, 0x00,   // L: 0
+            0xFF, 0xFF, 0xFF, 0x7F,   // R: Int32.max
+        ]
+        let buffer = try makePCMSampleBuffer(
+            bytes: bytes, channels: 2, bitsPerChannel: 32, frameCount: 2
+        )
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 2)
+        let divisor = Float(Int32.max)
+        let frame1Expected = (Float(Int32.max) / divisor + Float(Int32.min) / divisor) / 2
+        let frame2Expected = (0 + Float(Int32.max) / divisor) / 2
+        XCTAssertEqual(result?[0] ?? -99, frame1Expected, accuracy: 1e-6)
+        XCTAssertEqual(result?[1] ?? -99, frame2Expected, accuracy: 1e-6)
+    }
+
+    /// Build an interleaved little-endian signed-integer PCM CMSampleBuffer.
+    private func makePCMSampleBuffer(
+        bytes: [UInt8],
+        channels: UInt32,
+        bitsPerChannel: UInt32,
+        frameCount: Int
+    ) throws -> CMSampleBuffer {
+        let bytesPerSample = bitsPerChannel / 8
+        let bytesPerFrame = channels * bytesPerSample
+
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: 48_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: bytesPerFrame,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: bytesPerFrame,
+            mChannelsPerFrame: channels,
+            mBitsPerChannel: bitsPerChannel,
+            mReserved: 0
+        )
+
+        var formatDesc: CMAudioFormatDescription?
+        let formatStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0, layout: nil,
+            magicCookieSize: 0, magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDesc
+        )
+        guard formatStatus == noErr, let formatDesc else {
+            throw NSError(domain: "PCMSidecarTests", code: Int(formatStatus))
+        }
+
+        let dataLength = bytes.count
+        guard let memoryBlock = malloc(dataLength) else {
+            throw NSError(domain: "PCMSidecarTests", code: -1)
+        }
+        bytes.withUnsafeBytes { src in
+            if let base = src.baseAddress {
+                memoryBlock.copyMemory(from: base, byteCount: dataLength)
+            }
+        }
+
+        var blockBuffer: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: memoryBlock,
+            blockLength: dataLength,
+            blockAllocator: kCFAllocatorMalloc,   // CMBlockBuffer will free() it
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: dataLength,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        )
+        guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else {
+            free(memoryBlock)
+            throw NSError(domain: "PCMSidecarTests", code: Int(blockStatus))
+        }
+
+        var sampleBuffer: CMSampleBuffer?
+        let sbStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: formatDesc,
+            sampleCount: CMItemCount(frameCount),
+            presentationTimeStamp: .zero,
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sbStatus == noErr, let sampleBuffer else {
+            throw NSError(domain: "PCMSidecarTests", code: Int(sbStatus))
+        }
+        return sampleBuffer
     }
 
     func testRecoverToWAVProducesValidRIFF() throws {

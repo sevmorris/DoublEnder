@@ -174,6 +174,20 @@ final class PCMSidecar {
             )
         }
 
+        if isInt, asbd.mBitsPerChannel == 24 {
+            return monoFromInt24(
+                ptr: ptr, length: length, channels: channels,
+                frameCount: frameCount, isNonInterleaved: isNonInterleaved
+            )
+        }
+
+        if isInt, asbd.mBitsPerChannel == 32 {
+            return monoFromInt32(
+                ptr: ptr, length: length, channels: channels,
+                frameCount: frameCount, isNonInterleaved: isNonInterleaved
+            )
+        }
+
         return nil
     }
 
@@ -240,6 +254,87 @@ final class PCMSidecar {
         return (0..<frames).map { f in
             var sum: Float = 0
             for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / 32768.0 }
+            return sum / Float(channels)
+        }
+    }
+
+    private static func monoFromInt24(
+        ptr: UnsafeMutablePointer<Int8>,
+        length: Int,
+        channels: Int,
+        frameCount: Int,
+        isNonInterleaved: Bool
+    ) -> [Float]? {
+        let bytesPerSample = 3
+        let bytes = UnsafeBufferPointer(
+            start: ptr.withMemoryRebound(to: UInt8.self, capacity: length) { $0 },
+            count: length
+        )
+        let divisor: Float = 8_388_608.0  // 2^23
+
+        // Sign-extend a little-endian 24-bit sample at `offset` into Int32.
+        func sample(at offset: Int) -> Float {
+            let b0 = Int32(bytes[offset])
+            let b1 = Int32(bytes[offset + 1])
+            let b2 = Int32(bytes[offset + 2])
+            var raw = (b2 << 16) | (b1 << 8) | b0
+            if raw & 0x800000 != 0 { raw |= Int32(bitPattern: 0xFF000000) }
+            return Float(raw) / divisor
+        }
+
+        if isNonInterleaved && channels > 1 {
+            let bytesPerChannel = frameCount * bytesPerSample
+            guard length >= bytesPerChannel else { return nil }
+            return (0..<frameCount).map { sample(at: $0 * bytesPerSample) }
+        }
+
+        let frameStride = channels * bytesPerSample
+        guard frameStride > 0 else { return nil }
+        let frames = length / frameStride
+        guard frames > 0 else { return nil }
+
+        if channels == 1 {
+            return (0..<frames).map { sample(at: $0 * bytesPerSample) }
+        }
+
+        return (0..<frames).map { f in
+            var sum: Float = 0
+            for ch in 0..<channels {
+                sum += sample(at: f * frameStride + ch * bytesPerSample)
+            }
+            return sum / Float(channels)
+        }
+    }
+
+    private static func monoFromInt32(
+        ptr: UnsafeMutablePointer<Int8>,
+        length: Int,
+        channels: Int,
+        frameCount: Int,
+        isNonInterleaved: Bool
+    ) -> [Float]? {
+        let divisor = Float(Int32.max)
+
+        if isNonInterleaved && channels > 1 {
+            let bytesPerChannel = frameCount * MemoryLayout<Int32>.size
+            guard length >= bytesPerChannel else { return nil }
+            let ints = ptr.withMemoryRebound(to: Int32.self, capacity: frameCount) { $0 }
+            return (0..<frameCount).map { Float(ints[$0]) / divisor }
+        }
+
+        let intCount = length / MemoryLayout<Int32>.size
+        guard intCount > 0 else { return nil }
+        let ints = ptr.withMemoryRebound(to: Int32.self, capacity: intCount) { $0 }
+
+        if channels == 1 {
+            return (0..<intCount).map { Float(ints[$0]) / divisor }
+        }
+
+        let frames = intCount / channels
+        guard frames > 0 else { return nil }
+        return (0..<frames).map { f in
+            var sum: Float = 0
+            for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / divisor }
             return sum / Float(channels)
         }
     }

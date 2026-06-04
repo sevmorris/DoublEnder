@@ -15,10 +15,13 @@ final class AppStateTests: XCTestCase {
         )
     }
 
-    func testRecordingBlockedWhenDiskSpaceLow() {
+    func testRecordingBlockedWhenSpaceCannotBeQueried() {
+        // Fail-closed contract: if the volume's free-space API returns nil
+        // (e.g., the directory doesn't exist), recording is blocked rather
+        // than silently allowed.
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("DiskSpaceTests-\(UUID().uuidString)", isDirectory: true)
         let reason = DiskSpaceChecker.recordingBlockedReason(for: dir, format: .aac)
-        XCTAssertNil(reason)
+        XCTAssertNotNil(reason)
     }
 }

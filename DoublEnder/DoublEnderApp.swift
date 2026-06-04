@@ -284,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.window.appearance = NSAppearance(named: .darkAqua)
             alert.alertStyle = .warning
             alert.messageText = "Couldn't Check for Unsaved Recordings"
-            alert.informativeText = "DoublEnder couldn't access the Desktop to check for recordings from a previous session. To fix this, go to System Settings → Privacy & Security → Files and Folders, allow DoublEnder to access the Desktop, then relaunch."
+            alert.informativeText = "DoublEnder couldn't check the Desktop for recordings from a previous session: \(error.localizedDescription). Check that the Desktop is accessible and relaunch to retry."
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return

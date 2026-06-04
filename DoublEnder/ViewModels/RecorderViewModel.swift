@@ -275,6 +275,13 @@ class RecorderViewModel: ObservableObject {
     /// CoreAudio callbacks land in the same unplug event.
     private var lastInputLossAlertAt: Date?
     private static let inputLossAlertCooldown: TimeInterval = 3
+    /// True from the start of stopRecording until the engine's completion
+    /// fires. Disconnect handler, disk watcher, and user STOP can all call
+    /// stopRecording close together — the first call clears the engine's
+    /// writer refs, so followers get .noActiveRecording back. This flag lets
+    /// us swallow that spurious failure instead of surfacing it as a
+    /// "failed to finalize" error to the user.
+    private var isFinalizingRecording = false
     private(set) var recordedFileURL: URL?
 
     var availableInputDevices: [AVCaptureDevice] {
@@ -622,6 +629,11 @@ class RecorderViewModel: ObservableObject {
     /// Cleanly finalize the current recording. `completion` runs on the main
     /// queue once the writer has closed the file (or failed).
     func stopRecording(completion: (() -> Void)? = nil) {
+        // Snapshot before flipping so we can tell apart "first call into the
+        // engine" from "a follower racing the first one". `isFinalizingRecording`
+        // is cleared only when finalization completes (success or real failure).
+        let alreadyFinalizing = isFinalizingRecording
+        isFinalizingRecording = true
         timer?.cancel()
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()
@@ -631,6 +643,19 @@ class RecorderViewModel: ObservableObject {
                 completion?()
                 return
             }
+            // A follower call into the engine after the first one already
+            // cleared its writer refs — engine returned noActiveRecording but
+            // the file is being saved by the first call's path. Surfacing an
+            // error here would be a lie. Leave the in-flight flag set; the
+            // originating call will clear it.
+            if alreadyFinalizing,
+               case .failure(let error) = result,
+               let recError = error as? RecordingError,
+               case .noActiveRecording = recError {
+                completion?()
+                return
+            }
+            self.isFinalizingRecording = false
             switch result {
             case .success(.some(let url)):
                 // Notify the user that the recording is on disk — fires for both

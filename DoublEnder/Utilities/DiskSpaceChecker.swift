@@ -17,7 +17,9 @@ enum DiskSpaceChecker {
     /// Returns nil when the volume has enough space, or a user-facing message.
     static func recordingBlockedReason(for directory: URL, format: OutputFormat = .aac) -> String? {
         let required = minimumFreeBytes(for: format)
-        guard let free = availableBytes(at: directory) else { return nil }
+        guard let free = availableBytes(at: directory) else {
+            return "Could not verify available disk space. Free up space on the Desktop and try again."
+        }
         guard free < required else { return nil }
         let mb = max(1, free / (1024 * 1024))
         let requiredMB = max(1, required / (1024 * 1024))
