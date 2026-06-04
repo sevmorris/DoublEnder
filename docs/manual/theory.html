@@ -436,9 +436,9 @@
   <!-- Hero -->
   <div class="hero" id="intro">
     <h1>Theory of Operation</h1>
-    <p>A complete technical reference for DoublEnder and DoublEnder Cloud — every significant design decision and data flow, without reading source code.</p>
+    <p>This covers the architecture, data flows, and design decisions behind DoublEnder and DoublEnder Cloud, from the audio capture pipeline to the release model.</p>
     <p style="margin-top: 12px;">A <strong>double-ender</strong> is a standard remote podcast recording technique. The host and guest each record their own microphone locally; a producer combines the two independent stems in post. This eliminates the compression artifacts and latency of a live stream capture and gives the editor full-quality audio from both sides. DoublEnder is the guest's end of that equation.</p>
-    <p style="margin-top: 12px;">The design philosophy is deliberately Voice Memos-like in UX simplicity and field-recorder-like in reliability — closer to a hardware recorder (Zoom H6, Sound Devices MixPre) than to a consumer screen recorder: it records continuously to a safe format, mirrors a crash-recovery copy in parallel, and never silently loses a take.</p>
+    <p style="margin-top: 12px;">The design philosophy is deliberately Voice Memos-like in UX simplicity and field-recorder-like in reliability, closer to a hardware recorder (Zoom H6, Sound Devices MixPre) than to a consumer screen recorder: it records continuously to a safe format, mirrors a crash-recovery copy in parallel, and never silently loses a take.</p>
     <p style="margin-top: 12px; color: var(--muted); font-size: 0.9rem;">Written for the developer who maintains the codebase. Assumes familiarity with Swift, AVFoundation, and audio fundamentals.</p>
   </div>
 
@@ -476,7 +476,7 @@
         </tr>
       </tbody>
     </table>
-    <p>The <code>GCS_ENABLED</code> Swift compilation condition gates every Cloud-only code path. Every <code>#if GCS_ENABLED</code> block in the shared source tree compiles to nothing in Local builds — the service-account key and upload logic are never shipped in the public app.</p>
+    <p>The <code>GCS_ENABLED</code> Swift compilation condition gates every Cloud-only code path. Every <code>#if GCS_ENABLED</code> block in the shared source tree compiles to nothing in Local builds; the service-account key and upload logic are never shipped in the public app.</p>
   </section>
 
   <!-- Architecture -->
@@ -512,18 +512,18 @@
     <h3>Layer Responsibilities</h3>
     <p><strong>AppDelegate</strong> owns three things the WindowGroup lifecycle cannot: borderless window configuration (done before first paint to eliminate chrome flash), the quit intercept (<code>applicationShouldTerminate</code>), and the crash-recovery sidecar scan that must complete before the main window appears.</p>
     <p><strong>RecorderViewModel</strong> is the single source of truth. It holds <code>AppState</code>, all timers, <code>selectedInputDeviceID</code>, and user preferences. It mediates between AppDelegate's event-driven callbacks and AudioEngine's completion handlers. It is a singleton (<code>shared</code>) because AppDelegate needs access independently of SwiftUI's view hierarchy.</p>
-    <p><strong>AudioEngine</strong> owns all AVFoundation objects. It knows nothing about SwiftUI or app state — it publishes <code>@Published</code> flags and fires callbacks that the VM handles. This isolation means the engine can be rebuilt, stopped, or torn down without touching the UI layer.</p>
+    <p><strong>AudioEngine</strong> owns all AVFoundation objects. It knows nothing about SwiftUI or app state. It publishes <code>@Published</code> flags and fires callbacks that the VM handles, so the engine can be rebuilt, stopped, or torn down without touching the UI layer.</p>
     <p><strong>PCMSidecar</strong> is a pure I/O object. It writes a flat raw-PCM crash-recovery file alongside the main output, on the same writer queue as the AVAssetWriter, with no dependency on AudioEngine or the VM.</p>
 
     <details class="callout callout-history">
       <summary><span class="callout-cat">Design Rationale</span> AVCaptureSession over AVAudioEngine</summary>
-      <p>The pre-1.6 AUHAL-based path had a race condition: AUHAL's <code>kAudioUnitProperty_CurrentDevice</code> setter required the device's hardware stream description to already be committed, but freshly-plugged USB devices sometimes hadn't done so yet — causing silent capture failures or click artifacts regardless of retry delay. AVAudioEngine's installTap requires explicit format negotiation and delivers samples through PCM buffer intermediates.</p>
+      <p>The pre-1.6 AUHAL-based path had a race condition: AUHAL's <code>kAudioUnitProperty_CurrentDevice</code> setter required the device's hardware stream description to already be committed, but freshly-plugged USB devices sometimes hadn't done so yet, causing silent capture failures or click artifacts regardless of retry delay. AVAudioEngine's installTap requires explicit format negotiation and delivers samples through PCM buffer intermediates.</p>
       <p>AVCaptureSession binds the device directly (not via the system default), delivers CMSampleBuffers in the device's native format through <code>AVCaptureAudioDataOutput</code>, and eliminates both the format negotiation and the AUHAL race. The per-buffer PCM conversion that produced click artifacts in every prior attempt is simply not present.</p>
     </details>
 
     <details class="callout callout-history">
       <summary><span class="callout-cat">Design Rationale</span> AVAssetWriter over AudioFile / ExtAudioFile</summary>
-      <p>AVAssetWriter streams directly to the output file with no intermediate buffer. It handles AAC encoding internally, manages the moov atom for M4A, and applies any necessary sample-rate conversion (for AAC only; WAV is written at native rate). It is the same foundation Apple uses in QuickTime Player's recording mode and the Camera app — battle-tested at the OS level, with failure surfaces (<code>writer.status</code>, write errors) that are explicit and catchable.</p>
+      <p>AVAssetWriter streams directly to the output file with no intermediate buffer. It handles AAC encoding internally, manages the moov atom for M4A, and applies any necessary sample-rate conversion (for AAC only; WAV is written at native rate). It is the same foundation Apple uses in QuickTime Player's recording mode and the Camera app, battle-tested at the OS level, with failure surfaces (<code>writer.status</code>, write errors) that are explicit and catchable.</p>
     </details>
   </section>
 
@@ -566,16 +566,16 @@
     </details>
 
     <h3>No audioSettings on the Output</h3>
-    <p><code>AVCaptureAudioDataOutput</code> is created with default (nil) <code>audioSettings</code>, so the session delivers CMSampleBuffers in whatever native format the device produces — typically <code>kAudioFormatLinearPCM</code> interleaved at the device's own bit depth and sample rate (e.g. 24-bit at 48 kHz for a Scarlett 2i2, 32-bit float at 96 kHz for some Apollo interfaces).</p>
-    <p>Every prior attempt to set explicit <code>audioSettings</code> at the capture stage produced click artifacts at format conversion boundaries — at USB device attach/detach and on CoreAudio reconfiguration events. The AVAssetWriter's internal transcoder handles format adaptation far more reliably when it sees the source format hint at writer-input creation time.</p>
+    <p><code>AVCaptureAudioDataOutput</code> is created with default (nil) <code>audioSettings</code>, so the session delivers CMSampleBuffers in whatever native format the device produces, typically <code>kAudioFormatLinearPCM</code> interleaved at the device's own bit depth and sample rate (e.g. 24-bit at 48 kHz for a Scarlett 2i2, 32-bit float at 96 kHz for some Apollo interfaces).</p>
+    <p>Every prior attempt to set explicit <code>audioSettings</code> at the capture stage produced click artifacts at format conversion boundaries, at USB device attach/detach and on CoreAudio reconfiguration events. The AVAssetWriter's internal transcoder handles format adaptation far more reliably when it sees the source format hint at writer-input creation time.</p>
 
     <h3>The Lazy AVAssetWriterInput</h3>
     <p><code>startRecording()</code> creates the <code>AVAssetWriter</code> and stores the output settings (<code>pendingOutputSettings</code>) but does <em>not</em> create an <code>AVAssetWriterInput</code>. That happens in <code>captureOutput(_:didOutput:from:)</code> on the very first CMSampleBuffer.</p>
     <p>The reason is <code>sourceFormatHint</code>: the <code>AVAssetWriterInput</code> initializer accepts a <code>CMFormatDescription</code> that describes the source PCM it will receive. With the hint derived from the first buffer's actual format description, the writer knows exactly what to expect and can configure its internal transcoder once rather than on every append. The first buffer's PTS also becomes <code>writer.startSession(atSourceTime:)</code>, giving exact CoreMedia timestamps.</p>
 
     <h3>Format Resolution: AAC vs. WAV</h3>
-    <p><strong>AAC:</strong> <code>kAudioFormatMPEG4AAC</code>, <code>AVSampleRateKey: 48_000</code>, mono, 256 kbps. These are final — the writer downmixes multi-channel input and resamples to 48 kHz internally. Fixed rate is intentional: AAC is a delivery format.</p>
-    <p><strong>WAV (LPCM):</strong> <code>kAudioFormatLinearPCM</code>, 24-bit, little-endian, interleaved, mono. <code>AVSampleRateKey: 48_000</code> is a <em>placeholder only</em> — <code>kAudioFormatLinearPCM</code> requires an explicit rate or <code>canAddInput</code> returns false, but 48 kHz is never actually used for WAV output.</p>
+    <p><strong>AAC:</strong> <code>kAudioFormatMPEG4AAC</code>, <code>AVSampleRateKey: 48_000</code>, mono, 256 kbps. These are final. The writer downmixes multi-channel input and resamples to 48 kHz internally. Fixed rate is intentional: AAC is a delivery format.</p>
+    <p><strong>WAV (LPCM):</strong> <code>kAudioFormatLinearPCM</code>, 24-bit, little-endian, interleaved, mono. <code>AVSampleRateKey: 48_000</code> is a <em>placeholder only</em>: <code>kAudioFormatLinearPCM</code> requires an explicit rate or <code>canAddInput</code> returns false, but 48 kHz is never actually used for WAV output.</p>
     <p>In the first-buffer delegate path, when the pending format ID is <code>kAudioFormatLinearPCM</code>, the placeholder is replaced with the device's actual sample rate extracted from the buffer's <code>CMFormatDescription</code> before the <code>AVAssetWriterInput</code> is created. A 48 kHz Scarlett gets a 48 kHz WAV; a 96 kHz Apollo gets a 96 kHz WAV. No resampling occurs for WAV.</p>
   </section>
 
@@ -598,7 +598,7 @@
         <tr><td>16</td><td>4 bytes</td><td>Payload format code (UInt32, little-endian; <code>1</code> = Float32)</td></tr>
       </tbody>
     </table>
-    <p>DEP1 (<code>"DEP1"</code>, 16-byte) omits the format code field. The recovery parser handles both for backward compatibility with sidecars written by pre-1.6 builds. The sidecar flushes to disk via <code>FileHandle.synchronize()</code> every 512 KB of payload — at 48 kHz Float32 mono (192 KB/min), approximately every 2.6 minutes.</p>
+    <p>DEP1 (<code>"DEP1"</code>, 16-byte) omits the format code field. The recovery parser handles both for backward compatibility with sidecars written by pre-1.6 builds. The sidecar flushes to disk via <code>FileHandle.synchronize()</code> every 512 KB of payload; at 48 kHz Float32 mono (192 KB/min) that's approximately every 2.6 minutes.</p>
 
     <h3>PCM Normalization: Four Formats</h3>
     <p><code>PCMSidecar.normalizedMonoFloatSamples(from:)</code> reads the buffer's <code>AudioStreamBasicDescription</code> and dispatches to one of four helpers. The same function drives the level meter, so the UI always reflects the same averaged-mono signal that ends up in the sidecar.</p>
@@ -611,7 +611,7 @@
         <li><strong>Int24</strong> (+ 24 bits): 3 bytes per sample, little-endian. Read <code>b0, b1, b2</code> and sign-extend: <code>raw = (b2 &lt;&lt; 16) | (b1 &lt;&lt; 8) | b0</code>; if <code>raw &amp; 0x800000 != 0</code>, set high byte to <code>0xFF</code>. Divide by <code>8388608.0</code> (2²³). This path covers Scarlett, Apollo, and similar pro USB interfaces that deliver 24-bit PCM natively.</li>
         <li><strong>Int32</strong> (+ 32 bits): reinterpret as <code>Int32</code>, divide by <code>Float(Int32.max)</code>.</li>
       </ul>
-      <p>Any other format (unsupported <code>mBitsPerChannel</code> or <code>mFormatFlags</code>) returns nil. The main writer still records normally — the sidecar gets no data for that buffer.</p>
+      <p>Any other format (unsupported <code>mBitsPerChannel</code> or <code>mFormatFlags</code>) returns nil. The main writer still records normally; the sidecar gets no data for that buffer.</p>
     </details>
   </section>
 
@@ -658,17 +658,17 @@
 
     <h3>Abnormal Paths</h3>
 
-    <p><strong>Device disconnect during recording:</strong> <code>audioEngine.onDisconnectedDuringRecording</code> fires on the main thread. RecorderViewModel sets <code>suppressIdleInputLossAlert</code>, stores <code>pendingDisconnectReason</code>, and calls <code>stopRecording</code>. <code>finishWriting</code> is attempted — if the writer was healthy, the file is saved. <code>presentDisconnectAlert</code> runs after the completion block, then <code>switchToFallbackInputAfterLoss</code> rebuilds with the built-in mic.</p>
+    <p><strong>Device disconnect during recording:</strong> <code>audioEngine.onDisconnectedDuringRecording</code> fires on the main thread. RecorderViewModel sets <code>suppressIdleInputLossAlert</code>, stores <code>pendingDisconnectReason</code>, and calls <code>stopRecording</code>. <code>finishWriting</code> is attempted; if the writer was healthy, the file is saved. <code>presentDisconnectAlert</code> runs after the completion block, then <code>switchToFallbackInputAfterLoss</code> rebuilds with the built-in mic.</p>
 
     <p><strong>Session interruption (another app takes the mic):</strong> The interruption watchdog arms for 5 seconds. <code>sessionInterrupted = true</code> is published and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers within 5 seconds, the watchdog is cancelled and the take continues. If not, the watchdog fires <code>handleRecordingCaptureFailure</code> and the take is stopped and saved.</p>
 
     <p><strong>Data-flow stall (driver silently stops delivering):</strong> The data-flow watchdog fires after 3 seconds with no successful append. This catches USB hub starvation, driver firmware hangs, and Bluetooth profile transitions that don't generate an <code>AVCaptureSessionWasInterrupted</code> notification.</p>
 
-    <p><strong>Sustained backpressure (writer can't keep up):</strong> If <code>AVAssetWriterInput.isReadyForMoreMediaData</code> returns false for 3 consecutive buffers (≈30 ms of dropped audio), <code>tearDownWriterLocked</code> is called. If the writer has already received at least one sample, writer refs are left intact for <code>stopRecording</code> to finalize — producing a partial-but-valid file.</p>
+    <p><strong>Sustained backpressure (writer can't keep up):</strong> If <code>AVAssetWriterInput.isReadyForMoreMediaData</code> returns false for 3 consecutive buffers (≈30 ms of dropped audio), <code>tearDownWriterLocked</code> is called. If the writer has already received at least one sample, writer refs are left intact for <code>stopRecording</code> to finalize, producing a partial-but-valid file.</p>
 
     <p><strong>Disk full during recording:</strong> <code>diskWatchTimer</code> fires every 5 seconds. If <code>DiskSpaceChecker.recordingBlockedReason</code> returns non-nil, <code>stopRecording()</code> is called immediately. Because the writer is still active, <code>finishWriting</code> usually succeeds.</p>
 
-    <p><strong>Duplicate stop calls:</strong> <code>RecorderViewModel.isFinalizingRecording</code> is set true at the top of <code>stopRecording</code> and cleared when the engine's completion fires. A second call that gets back <code>RecordingError.noActiveRecording</code> while <code>isFinalizingRecording</code> is true is silently swallowed — the recording was already saved by the first call.</p>
+    <p><strong>Duplicate stop calls:</strong> <code>RecorderViewModel.isFinalizingRecording</code> is set true at the top of <code>stopRecording</code> and cleared when the engine's completion fires. A second call that gets back <code>RecordingError.noActiveRecording</code> while <code>isFinalizingRecording</code> is true is silently swallowed; the recording was already saved by the first call.</p>
 
     <p><strong>Crash/force-quit:</strong> <code>applicationWillTerminate</code> never fires. The PCM sidecar is left open on disk. At next launch, the crash-recovery scan finds it and presents the recovery dialog. See <a href="#crash-recovery">Crash Recovery</a>.</p>
   </section>
@@ -680,12 +680,12 @@
     <p>DoublEnder records conversations that cannot be re-recorded. The reliability model is closer to a hardware field recorder than a consumer screen recorder: no recording is lost to a recoverable failure, and no failure is silent.</p>
 
     <h3>Watchdog 1: Interruption (5 seconds)</h3>
-    <p><strong>What it covers:</strong> <code>AVCaptureSessionWasInterrupted</code> — another app has taken exclusive control of the audio hardware (FaceTime, Siri, phone call overlay). Most interruptions last a few seconds and the session resumes automatically.</p>
-    <p><strong>Mechanism:</strong> On notification, arm a <code>DispatchWorkItem</code> for 5 seconds. Cancel it if the session recovers — either via <code>captureSessionInterruptionEnded</code> or a successful sample buffer arriving (whichever is first). If 5 seconds pass without recovery, call <code>handleRecordingCaptureFailure</code>.</p>
+    <p><strong>What it covers:</strong> <code>AVCaptureSessionWasInterrupted</code>, fired when another app takes exclusive control of the audio hardware (FaceTime, Siri, phone call overlay). Most interruptions last a few seconds and the session resumes automatically.</p>
+    <p><strong>Mechanism:</strong> On notification, arm a <code>DispatchWorkItem</code> for 5 seconds. Cancel it if the session recovers, either via <code>captureSessionInterruptionEnded</code> or a successful sample buffer arriving (whichever is first). If 5 seconds pass without recovery, call <code>handleRecordingCaptureFailure</code>.</p>
     <p><strong>UI surface:</strong> While the watchdog runs, <code>sessionInterrupted = true</code> is published. The VM surfaces "Input interrupted — reconnecting…" as a yellow badge. The clock keeps running.</p>
 
     <h3>Watchdog 2: Data-Flow (3 seconds, re-armed per buffer)</h3>
-    <p><strong>What it covers:</strong> "Session running but driver stopped delivering" — USB hub power starvation, driver firmware hangs, Bluetooth profile transitions where the hardware silently switches to SCO mode without signalling the session. <code>AVCaptureSessionWasInterrupted</code> does not fire for these.</p>
+    <p><strong>What it covers:</strong> Sessions where the driver stops delivering buffers without signalling an interruption: USB hub power starvation, driver firmware hangs, Bluetooth profile transitions where the hardware silently switches to SCO mode. <code>AVCaptureSessionWasInterrupted</code> does not fire for these.</p>
     <p><strong>Mechanism:</strong> On every call to <code>markDataFlowing</code> (called whenever <code>input.append</code> returns true), the existing watchdog is cancelled and a new <code>DispatchWorkItem</code> is created for 3 seconds. If 3 seconds pass without a successful append, the watchdog fires the same failure path as the interruption watchdog.</p>
 
     <h3>Watchdog 3: Input-Health Poll (1 second)</h3>
@@ -693,29 +693,29 @@
     <p><strong>Mechanism:</strong> <code>inputWatchTimer</code> fires every second. <code>AudioEngine.checkRecordingInputHealth()</code> reads <code>currentInput?.device.isConnected</code> and checks whether the device UID still appears in <code>availableInputDevices</code>. Either failure triggers <code>triggerRecordingInputDisconnect</code>.</p>
 
     <h3>Drop Threshold: 3 Consecutive Drops</h3>
-    <p><code>AVAssetWriterInput.isReadyForMoreMediaData</code> returning false is a backpressure signal — the writer's ring buffer is momentarily full. A single false is normal. Three consecutive false values (≈30 ms at a 48 kHz, 10 ms buffer) means sustained loss — audio is being dropped, the take is already compromised, and failing sooner triggers sidecar recovery before more audio is lost. On the first drop, <code>droppedFrameWarning = true</code> is published and the UI shows "Dropped frames — check disk."</p>
+    <p><code>AVAssetWriterInput.isReadyForMoreMediaData</code> returning false is a backpressure signal: the writer's ring buffer is momentarily full. A single false is normal. Three consecutive false values (≈30 ms at a 48 kHz, 10 ms buffer) means sustained loss: audio is being dropped, the take is already compromised, and failing sooner triggers sidecar recovery before more audio is lost. On the first drop, <code>droppedFrameWarning = true</code> is published and the UI shows "Dropped frames — check disk."</p>
 
     <h3>The Disconnect Latch Chain</h3>
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> Three latches preventing duplicate teardowns</summary>
       <p>When the interruption watchdog, data-flow watchdog, runtime error, and health poll all arrive at roughly the same moment, three latches ensure exactly one teardown path fires and exactly one user-facing stop occurs:</p>
       <ol>
-        <li><strong><code>disconnectStopPending</code> (AudioEngine):</strong> Set by <code>triggerRecordingInputDisconnect</code> and <code>tearDownWriterLocked</code>. Guards both methods against re-entrancy — once set, neither fires again for the current take.</li>
+        <li><strong><code>disconnectStopPending</code> (AudioEngine):</strong> Set by <code>triggerRecordingInputDisconnect</code> and <code>tearDownWriterLocked</code>. Guards both methods against re-entrancy; once set, neither fires again for the current take.</li>
         <li><strong><code>didDispatchDisconnect</code> (AudioEngine):</strong> Set in <code>dispatchDisconnectIfNeeded</code>. Multiple paths arrive at <code>handleRecordingCaptureFailure → dispatchDisconnectIfNeeded</code>; this latch guarantees <code>onDisconnectedDuringRecording</code> fires exactly once per take. Reset in <code>startRecording</code>.</li>
         <li><strong><code>isFinalizingRecording</code> (RecorderViewModel):</strong> Set at the top of <code>stopRecording</code>, cleared in the engine completion block. When AudioEngine has already cleared its writer refs (the first caller won), a second <code>stopRecording</code> gets <code>RecordingError.noActiveRecording</code> back. With this flag true, the VM swallows it as a no-op instead of surfacing a spurious "failed to finalize" error.</li>
       </ol>
     </details>
 
     <h3>The PCM Sidecar as Crash Safety Net</h3>
-    <p>The sidecar parallel-writes the entire session as uncompressed Float32 mono PCM. Because it is a flat append-only file with a self-describing header, even an abruptly truncated sidecar (power loss mid-session) re-wraps into a valid WAV at recovery time — there is no moov atom, no container integrity requirement. The invariant: a sidecar file exists on disk if and only if the main recording is unrecoverable.</p>
+    <p>The sidecar parallel-writes the entire session as uncompressed Float32 mono PCM. Because it is a flat append-only file with a self-describing header, even an abruptly truncated sidecar (power loss mid-session) re-wraps into a valid WAV at recovery time. There is no moov atom and no container integrity requirement. The invariant: a sidecar file exists on disk if and only if the main recording is unrecoverable.</p>
     <p>On a normal successful stop, <code>sidecar.discard()</code> deletes the <code>.pcmrec</code> file. On any failure where <code>finishWriting</code> could not be called, <code>sidecar.close()</code> leaves the file intact for recovery.</p>
-    <p><strong>Sidecar write failure mid-take:</strong> If any <code>FileHandle.write</code> fails, <code>onFirstWriteFailure</code> fires once and sets <code>audioEngine.sidecarFailedDuringRecording = true</code>. The main recording continues — the sidecar is the backup, not the primary. The VM surfaces "Crash backup unavailable."</p>
+    <p><strong>Sidecar write failure mid-take:</strong> If any <code>FileHandle.write</code> fails, <code>onFirstWriteFailure</code> fires once and sets <code>audioEngine.sidecarFailedDuringRecording = true</code>. The main recording continues; the sidecar is the backup, not the primary. The VM surfaces "Crash backup unavailable."</p>
 
     <h3>Quit Protection</h3>
     <p><code>applicationShouldTerminate</code> returns <code>.terminateLater</code> when <code>isCurrentlyRecording</code> is true. The alert offers three paths: <strong>Stop &amp; Save</strong> (calls <code>vm.stopRecording</code>, stays alive until <code>finishWriting</code> completes, then terminates), <strong>Quit Without Saving</strong> (<code>vm.abortRecording</code> → <code>cancelWriting()</code> + <code>sidecar.discard()</code>), and <strong>Cancel</strong> (<code>NSApp.reply(toApplicationShouldTerminate: false)</code>).</p>
 
     <h3>Disk Space Fail-Closed</h3>
-    <p>At record start: if <code>DiskSpaceChecker.recordingBlockedReason</code> returns non-nil, state goes to <code>.error(reason)</code> and recording does not start. Thresholds: 50 MB for AAC, 200 MB for WAV. If <code>volumeAvailableCapacityForImportantUsage</code> cannot be queried, the function returns a blocking message rather than allowing recording — fail-closed means a recording cannot start on a volume the app cannot measure.</p>
+    <p>At record start: if <code>DiskSpaceChecker.recordingBlockedReason</code> returns non-nil, state goes to <code>.error(reason)</code> and recording does not start. Thresholds: 50 MB for AAC, 200 MB for WAV. If <code>volumeAvailableCapacityForImportantUsage</code> cannot be queried, the function returns a blocking message rather than allowing recording; a recording cannot start on a volume the app cannot measure.</p>
   </section>
 
   <!-- Device Management -->
@@ -723,7 +723,7 @@
     <h2>Device Management and Hot-Plug</h2>
 
     <h3>Device Enumeration</h3>
-    <p><code>AudioEngine.refreshDevices()</code> calls <code>AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio)</code> and filters the result to remove <code>CADefaultDeviceAggregate-*</code> entries. These are macOS-internal aggregates CoreAudio auto-creates around the current system default for AUHAL compatibility — picking one is a no-op and confusing to the user.</p>
+    <p><code>AudioEngine.refreshDevices()</code> calls <code>AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio)</code> and filters the result to remove <code>CADefaultDeviceAggregate-*</code> entries. These are macOS-internal aggregates CoreAudio auto-creates around the current system default for AUHAL compatibility; picking one is a no-op and confusing to the user.</p>
     <p>Hardware vs. virtual classification uses CoreAudio <code>kAudioDevicePropertyTransportType</code>. Devices with transport <code>kAudioDeviceTransportTypeAggregate</code> or <code>kAudioDeviceTransportTypeVirtual</code> are classified as <code>.virtual</code>; everything else is <code>.microphone</code>. The <code>hardwareInputDevices()</code> filter exposes only <code>.microphone</code> devices to the picker, so BlackHole, Loopback, and similar routing devices never appear in the UI.</p>
 
     <h3>Four Refresh Triggers</h3>
@@ -735,17 +735,17 @@
     </ol>
 
     <h3>Hot-Plug Offer</h3>
-    <p>On each <code>refreshDevices</code>, new UIDs that are USB devices trigger <code>onNewUSBDeviceDetected</code>. RecorderViewModel presents an <code>NSAlert</code> app-modal offering to switch. <code>knownInputDeviceUIDs</code> is updated <em>before</em> firing the callback, so any re-entrant <code>refreshDevices</code> call arriving during the modal's <code>runModal()</code> loop sees the new UID as already known and does not stack a duplicate prompt. The first <code>refreshDevices</code> after init seeds <code>knownInputDeviceUIDs</code> silently — launch-time device population is not a "new arrival."</p>
+    <p>On each <code>refreshDevices</code>, new UIDs that are USB devices trigger <code>onNewUSBDeviceDetected</code>. RecorderViewModel presents an <code>NSAlert</code> app-modal offering to switch. <code>knownInputDeviceUIDs</code> is updated <em>before</em> firing the callback, so any re-entrant <code>refreshDevices</code> call arriving during the modal's <code>runModal()</code> loop sees the new UID as already known and does not stack a duplicate prompt. The first <code>refreshDevices</code> after init seeds <code>knownInputDeviceUIDs</code> silently; launch-time device population is not a "new arrival."</p>
 
     <h3>USB First-Seen Map</h3>
-    <p><code>recordCurrentUSBDevicesFirstSeen()</code> stamps every currently-present USB device with a timestamp in <code>UserDefaults</code> (<code>usbDeviceFirstSeenAt</code>, keyed by UID). Entries are never pruned — UIDs are stable per physical device. At launch, <code>mostRecentlyConnectedUSBDevice()</code> picks the USB device with the most recent timestamp and offers it via <code>presentUSBSwitchPrompt</code>. This captures "the one I just plugged in" intent when multiple USB devices are present.</p>
+    <p><code>recordCurrentUSBDevicesFirstSeen()</code> stamps every currently-present USB device with a timestamp in <code>UserDefaults</code> (<code>usbDeviceFirstSeenAt</code>, keyed by UID). Entries are never pruned; UIDs are stable per physical device. At launch, <code>mostRecentlyConnectedUSBDevice()</code> picks the USB device with the most recent timestamp and offers it via <code>presentUSBSwitchPrompt</code>. This captures "the one I just plugged in" intent when multiple USB devices are present.</p>
 
     <h3>setDevice Flow</h3>
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> selectedInputDeviceID.didSet → AudioEngine.setDevice</summary>
       <ol>
         <li><strong>Pre-check:</strong> <code>deviceHasInputStreams</code> queries CoreAudio for input stream count. Zero → set <code>selectedDeviceUsable = false</code> and return (no session rebuild). The previously-bound device keeps recording. Returns true on query failure to avoid false rejections.</li>
-        <li><strong>System default:</strong> <code>setSystemDefaultInputDevice</code> is called for cross-app consistency — other apps that honor the system default follow the pick. Note: some virtual devices accept this call with no error but CoreAudio ignores it silently.</li>
+        <li><strong>System default:</strong> <code>setSystemDefaultInputDevice</code> is called for cross-app consistency; other apps that honor the system default follow the pick. Note: some virtual devices accept this call with no error but CoreAudio ignores it silently.</li>
         <li><strong>Session rebuild:</strong> <code>rebuildSession(with: device, intendedDeviceID: id)</code> tears down the current session on <code>sessionQueue</code> and builds a new one bound to the explicit <code>AVCaptureDevice</code>. After <code>startRunning()</code>, the code resolves <code>intendedDeviceID</code> back to an <code>AVCaptureDevice</code> and compares UIDs. If they differ (CoreAudio ignored the system-default set), <code>selectedDeviceUsable = false</code> is published.</li>
       </ol>
     </details>
@@ -760,21 +760,21 @@
     <h3>Launch-Time Scan</h3>
     <p><code>AppDelegate.runCrashRecoveryIfNeeded</code> runs after <code>configureMainWindow</code> and before the main window is shown:</p>
     <ol>
-      <li><strong>Read the Desktop directory.</strong> <code>FileManager.contentsOfDirectory(at: recordingsDirectory)</code>. If this throws, an alert shows <code>error.localizedDescription</code> and the function returns — an inaccessible Desktop is surfaced to the user rather than silently skipped.</li>
+      <li><strong>Read the Desktop directory.</strong> <code>FileManager.contentsOfDirectory(at: recordingsDirectory)</code>. If this throws, an alert shows <code>error.localizedDescription</code> and the function returns; an inaccessible Desktop is surfaced to the user rather than silently skipped.</li>
       <li><strong>Filter for sidecars.</strong> <code>pathExtension == "pcmrec"</code>.</li>
-      <li><strong>Discard empty sidecars</strong> (<code>hasRecoverableContent</code> checks file size vs. 20-byte header). Their companion main files: if &gt; 8 KB, the main file is a valid finalized recording — keep it and log a warning. If ≤ 8 KB — stub/aborted container — delete both.</li>
+      <li><strong>Discard empty sidecars</strong> (<code>hasRecoverableContent</code> checks file size vs. 20-byte header). Their companion main files: if &gt; 8 KB, the main file is a valid finalized recording; keep it and log a warning. If ≤ 8 KB (stub/aborted container), delete both.</li>
       <li><strong>Recover non-empty sidecars.</strong> The main window is hidden, <code>NSApp.activate(ignoringOtherApps: true)</code> brings DoublEnder forward, and each recoverable sidecar gets a sequential modal <code>presentRecoveryDialog</code> call. After all dialogs complete, <code>mainWindow?.makeKeyAndOrderFront(nil)</code>.</li>
     </ol>
 
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> The 8 KB threshold</summary>
-      <p>8 KB is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where <code>finishWriting</code> was never called) falls below it. The smallest valid AAC M4A the writer produces — even a 0.1-second take with a valid moov atom — exceeds 8 KB. A container where <code>cancelWriting()</code> ran typically has fewer than 1 KB. The threshold matches the <code>RecoveryModel.hasValidMainFile</code> check in the recovery dialog.</p>
+      <p>8 KB is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where <code>finishWriting</code> was never called) falls below it. The smallest valid AAC M4A the writer produces (even a 0.1-second take with a valid moov atom) exceeds 8 KB. A container where <code>cancelWriting()</code> ran typically has fewer than 1 KB. The threshold matches the <code>RecoveryModel.hasValidMainFile</code> check in the recovery dialog.</p>
     </details>
 
     <h3>RecoveryModel Phases and Prompt Options</h3>
     <p><code>RecoveryModel</code> drives the recovery dialog through four phases: <code>.prompt</code> → <code>.working</code> → <code>.success(URL)</code> or <code>.failure(String)</code>. The expensive <code>PCMSidecar.recoverToWAV</code> conversion runs on <code>DispatchQueue.global(qos: .userInitiated)</code> so the spinner keeps animating.</p>
-    <p><strong>When <code>hasValidMainFile = false</code></strong> (interrupted recording — most common): <strong>RECOVER</strong> (re-wrap sidecar to WAV, delete both sidecar and partial main file) or <strong>DELETE</strong> (delete both without recovering).</p>
-    <p><strong>When <code>hasValidMainFile = true</code></strong> (sidecar orphaned next to a valid main file — the tiny window between <code>finishWriting</code> completing and <code>sidecar.discard()</code> running before a crash): <strong>KEEP SAVED</strong> (delete sidecar only), <strong>RECOVER</strong>, or <strong>DELETE</strong>.</p>
+    <p><strong>When <code>hasValidMainFile = false</code></strong> (interrupted recording, the most common case): <strong>RECOVER</strong> (re-wrap sidecar to WAV, delete both sidecar and partial main file) or <strong>DELETE</strong> (delete both without recovering).</p>
+    <p><strong>When <code>hasValidMainFile = true</code></strong> (sidecar orphaned next to a valid main file: the tiny window between <code>finishWriting</code> completing and <code>sidecar.discard()</code> running before a crash): <strong>KEEP SAVED</strong> (delete sidecar only), <strong>RECOVER</strong>, or <strong>DELETE</strong>.</p>
 
     <h3>Recovery WAV Format</h3>
     <p><code>PCMSidecar.recoverToWAV</code> reads the sidecar header for sample rate and channel count, writes a canonical 44-byte RIFF/WAVE header (<code>WAVE_FORMAT_IEEE_FLOAT</code>, 32-bit), and streams the sidecar payload in 1 MB chunks. Output path: <code>"{stem} (recovered).wav"</code> adjacent to the main output file, de-duplicated with <code>" (recovered 2)"</code>, <code>" (recovered 3)"</code>, etc.</p>
@@ -782,7 +782,7 @@
 
   <!-- Cloud Variant -->
   <section id="cloud">
-    <h2>Cloud Variant — What's Added</h2>
+    <h2>Cloud Variant: What's Added</h2>
 
     <p>The <code>GCS_ENABLED</code> compilation condition gates all Cloud-only code. <code>Uploader.swift</code>, <code>CloudConnectivity.swift</code>, <code>CloudContentView.swift</code>, upload-related <code>RecorderViewModel</code> branches, and the Cloud <code>UpdateChecker</code> path all compile out in Local and unbranded builds.</p>
 
@@ -793,10 +793,10 @@
       <li>Parse <code>private_key</code> (PEM-encoded PKCS#8 RSA key) and <code>client_email</code></li>
       <li>Build a canonical GCS PUT request string per the V4 signing protocol</li>
       <li>SHA-256 hash it with CryptoKit</li>
-      <li>Sign the hash with RSASSA-PKCS1-v1_5 via <code>SecKeyCreateSignature</code> (Security.framework — CryptoKit has no RSA)</li>
+      <li>Sign the hash with RSASSA-PKCS1-v1_5 via <code>SecKeyCreateSignature</code> (Security.framework; CryptoKit has no RSA)</li>
       <li>The PKCS#8 outer <code>PrivateKeyInfo</code> wrapper is stripped via a minimal DER walk to extract the bare PKCS#1 <code>RSAPrivateKey</code> that <code>SecKeyCreateWithData</code> expects</li>
     </ol>
-    <p>The resulting URL is valid for 15 minutes — enough for any take to upload, with no long-lived credential exposed. The URL is single-use.</p>
+    <p>The resulting URL is valid for 15 minutes, enough for any take to upload, with no long-lived credential exposed. The URL is single-use.</p>
 
     <h3>Upload Flow</h3>
     <p><code>stopRecording</code> completion (<code>.success(.some(url))</code>) triggers: <code>state = .uploading</code> → <code>setPendingUpload(path:)</code> persisted to <code>UserDefaults</code> before the PUT starts (survives a mid-upload quit) → <code>performUpload()</code> off the main actor → <code>URLSession.upload(for:fromFile:)</code> PUT to the signed URL → progress via <code>urlSession(_:task:didSendBodyData:...)</code> delegate.</p>
@@ -807,10 +807,10 @@
     <p><code>runPendingUploadCheckIfNeeded</code> (in <code>applicationDidFinishLaunching</code>) reads <code>pendingUploadPath</code> from <code>UserDefaults</code>. If the file still exists on disk, <code>PendingUploadPrompt.present</code> shows a modal offering Upload or Skip. If the file is gone (user deleted it between sessions), the path is cleared silently.</p>
 
     <h3>CloudConnectivity and the Blue LED</h3>
-    <p><code>CloudConnectivity</code> (singleton, <code>@MainActor</code>) publishes a single <code>isReady</code> flag: <code>credentialsOK &amp;&amp; networkSatisfied</code>. <code>credentialsOK</code> is checked once at init by parsing the service-account JSON. <code>networkSatisfied</code> is tracked live by <code>NWPathMonitor</code>, updating within ~1 second of any path change. The blue LED in <code>CloudContentView</code> reflects <code>connectivity.isReady</code> — solid on/off, not flashing (contrast with the red recording LED, which flashes at 0.75 s).</p>
+    <p><code>CloudConnectivity</code> (singleton, <code>@MainActor</code>) publishes a single <code>isReady</code> flag: <code>credentialsOK &amp;&amp; networkSatisfied</code>. <code>credentialsOK</code> is checked once at init by parsing the service-account JSON. <code>networkSatisfied</code> is tracked live by <code>NWPathMonitor</code>, updating within ~1 second of any path change. The blue LED in <code>CloudContentView</code> reflects <code>connectivity.isReady</code>, solid on/off, not flashing (contrast with the red recording LED, which flashes at 0.75 s).</p>
 
     <h3>Update Checker: Cloud vs. Local</h3>
-    <p><strong>Local:</strong> queries <code>https://api.github.com/repos/sevmorris/DoublEnder/releases/latest</code>. "Download" opens the GCS permalink (<code>doublender-downloads/DoublEnder.dmg</code>) rather than a version-pinned GitHub asset — the permalink always resolves to the current build.</p>
+    <p><strong>Local:</strong> queries <code>https://api.github.com/repos/sevmorris/DoublEnder/releases/latest</code>. "Download" opens the GCS permalink (<code>doublender-downloads/DoublEnder.dmg</code>) rather than a version-pinned GitHub asset; the permalink always resolves to the current build.</p>
     <p><strong>Cloud:</strong> queries the <code>UpdateManifestURL</code> from the bundle's <code>Info.plist</code>. The manifest is a small JSON <code>{ "version": "1.7.2cr", "url": "https://…" }</code> written by <code>release-cloud.sh</code> on every release. For branded builds, <code>UpdateManifestURL</code> is set at build time per brand, so each client has its own independent update channel.</p>
   </section>
 
@@ -819,12 +819,12 @@
     <h2>App Lifecycle and Release Model</h2>
 
     <h3>Launch Sequence</h3>
-    <p><code>applicationWillFinishLaunching</code>: <code>registerBundledFonts</code> (DSEG7 Classic for the seven-segment counter), <code>NotificationService.shared.configure</code> (register "Reveal in Finder" action category), <code>RecorderViewModel.eraseSessionDefaults()</code> (clear custom filename from prior session — runs even after a crash where <code>applicationWillTerminate</code> never fired).</p>
+    <p><code>applicationWillFinishLaunching</code>: <code>registerBundledFonts</code> (DSEG7 Classic for the seven-segment counter), <code>NotificationService.shared.configure</code> (register "Reveal in Finder" action category), <code>RecorderViewModel.eraseSessionDefaults()</code> (clear custom filename from prior session; runs even after a crash where <code>applicationWillTerminate</code> never fired).</p>
     <p><code>applicationDidFinishLaunching</code>: <code>configureMainWindow</code> (borderless, transparent, <code>object_setClass</code> to <code>KeyableBorderlessWindow</code>), <code>runCrashRecoveryIfNeeded</code>, <code>runPendingUploadCheckIfNeeded</code> (Cloud only), <code>checkForUpdates(silent: true)</code>.</p>
 
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> Why object_setClass must happen after setStyleMask</summary>
-      <p>SwiftUI's <code>WindowGroup</code> creates a stock <code>NSWindow</code>. After <code>setStyleMask = [.borderless]</code>, AppKit's default <code>canBecomeKey</code> returns false for borderless windows — clicks on the window while the app is backgrounded fail to activate it. The fix uses <code>object_setClass</code> to re-class the SwiftUI-owned instance to <code>KeyableBorderlessWindow</code> (overrides <code>canBecomeKey</code> and <code>canBecomeMain</code> to return true).</p>
+      <p>SwiftUI's <code>WindowGroup</code> creates a stock <code>NSWindow</code>. After <code>setStyleMask = [.borderless]</code>, AppKit's default <code>canBecomeKey</code> returns false for borderless windows; clicks on the window while the app is backgrounded fail to activate it. The fix uses <code>object_setClass</code> to re-class the SwiftUI-owned instance to <code>KeyableBorderlessWindow</code> (overrides <code>canBecomeKey</code> and <code>canBecomeMain</code> to return true).</p>
       <p>The class swap <em>must</em> happen after <code>setStyleMask</code>. SwiftUI's <code>NSHostingView.viewWillMove(toWindow:)</code> registers KVO observers keyed on the window class. If the class is swapped before <code>setStyleMask</code>, the subsequent <code>removeObserver:forKeyPath:</code> call fails to find the observer in the class-keyed table and crashes with "Cannot remove an observer … is not registered." After all window mutations are complete, no SwiftUI path triggers another KVO cleanup, so the swap is safe.</p>
     </details>
 
@@ -849,22 +849,22 @@
 
     <h3>release.sh Pipeline</h3>
     <ol>
-      <li>Preflight — check tools, working tree clean, tag available</li>
-      <li>Version bump — rewrite <code>MARKETING_VERSION</code> in <code>project.yml</code>, update README + <code>docs/index.html</code> DMG URL patterns</li>
-      <li>Build number bump — increment <code>CURRENT_PROJECT_VERSION</code></li>
-      <li><code>xcodegen generate</code> — regenerate <code>.xcodeproj</code></li>
+      <li>Preflight: check tools, working tree clean, tag available</li>
+      <li>Version bump: rewrite <code>MARKETING_VERSION</code> in <code>project.yml</code>, update README + <code>docs/index.html</code> DMG URL patterns</li>
+      <li>Build number bump: increment <code>CURRENT_PROJECT_VERSION</code></li>
+      <li><code>xcodegen generate</code>: regenerate <code>.xcodeproj</code></li>
       <li><code>xcodebuild -configuration Release</code></li>
-      <li>Codesign — <code>codesign --force --options runtime --entitlements … --sign "Developer ID Application: Seven Morris (T9RLNAXPWU)"</code></li>
-      <li>Verify version — <code>defaults read</code> on built app's Info.plist</li>
-      <li>Stage DMG — copy <code>.app</code> + <code>/Applications</code> symlink</li>
-      <li>Create DMG — <code>hdiutil create -format UDZO</code></li>
-      <li>Notarize — <code>xcrun notarytool submit --wait --keychain-profile WoWoNotary</code> + <code>xcrun stapler staple</code></li>
-      <li>Verify DMG — mount, read version, unmount</li>
-      <li>Tag and push — <code>git tag vX.Y.Zlr</code>, push branch and tag</li>
-      <li>GitHub release — <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
-      <li>GCS permalink — <code>gsutil cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: no-cache</code></li>
-      <li>Cloud + branded releases — if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
-      <li>Prune old releases — keep the 5 most recent GitHub releases; delete older tags and assets</li>
+      <li>Codesign: <code>codesign --force --options runtime --entitlements … --sign "Developer ID Application: Seven Morris (T9RLNAXPWU)"</code></li>
+      <li>Verify version: <code>defaults read</code> on built app's Info.plist</li>
+      <li>Stage DMG: copy <code>.app</code> + <code>/Applications</code> symlink</li>
+      <li>Create DMG: <code>hdiutil create -format UDZO</code></li>
+      <li>Notarize: <code>xcrun notarytool submit --wait --keychain-profile WoWoNotary</code> + <code>xcrun stapler staple</code></li>
+      <li>Verify DMG: mount, read version, unmount</li>
+      <li>Tag and push: <code>git tag vX.Y.Zlr</code>, push branch and tag</li>
+      <li>GitHub release: <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
+      <li>GCS permalink: <code>gsutil cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: no-cache</code></li>
+      <li>Cloud + branded releases: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
+      <li>Prune old releases: keep the 5 most recent GitHub releases; delete older tags and assets</li>
     </ol>
   </section>
 
@@ -881,23 +881,23 @@
       <tbody>
         <tr>
           <td>No sandbox</td>
-          <td>Sandboxing would require a security-scoped bookmark or a save panel to establish Desktop write access — both add friction for guests who should just press record. <code>ENABLE_HARDENED_RUNTIME: YES</code> is still set so the binary is notarization-eligible.</td>
+          <td>Sandboxing would require a security-scoped bookmark or a save panel to establish Desktop write access, which adds friction for guests who should just press record. <code>ENABLE_HARDENED_RUNTIME: YES</code> is still set so the binary is notarization-eligible.</td>
         </tr>
         <tr>
           <td>No save panel</td>
-          <td>Files go to <code>~/Desktop/DoublEnder_&lt;timestamp&gt;.&lt;ext&gt;</code> automatically. The <code>DateFormatter</code> uses <code>en_US_POSIX</code> locale (prevents locale-specific AM/PM markers, RTL text, non-Gregorian calendars) at millisecond precision (<code>yyyy-MM-dd_HH-mm-ss-SSS</code>) — shrinks the same-timestamp collision window from 1 second to 1 ms.</td>
+          <td>Files go to <code>~/Desktop/DoublEnder_&lt;timestamp&gt;.&lt;ext&gt;</code> automatically. The <code>DateFormatter</code> uses <code>en_US_POSIX</code> locale (prevents locale-specific AM/PM markers, RTL text, non-Gregorian calendars) at millisecond precision (<code>yyyy-MM-dd_HH-mm-ss-SSS</code>), shrinking the same-timestamp collision window from 1 second to 1 ms.</td>
         </tr>
         <tr>
           <td>Mono output</td>
-          <td>Podcast production almost universally uses mono guest stems. Stereo doubles the file size for no benefit — podcast editors sum to mono anyway. Multi-channel input is averaged to mono per frame before encoding.</td>
+          <td>Podcast production almost universally uses mono guest stems. Stereo doubles the file size for no benefit; podcast editors sum to mono anyway. Multi-channel input is averaged to mono per frame before encoding.</td>
         </tr>
         <tr>
           <td>AAC as default</td>
-          <td>256 kbps AAC is transparent quality for voice at ~1.9 MB/min. A 1-hour guest recording is ~115 MB — safely below the attachment limit of most email providers. WAV is available for guests explicitly instructed to record lossless, but defaults to off because naive guests will record 90-minute WAVs and struggle to send them.</td>
+          <td>256 kbps AAC is transparent quality for voice at ~1.9 MB/min. A 1-hour guest recording is ~115 MB, safely below the attachment limit of most email providers. WAV is available for guests explicitly instructed to record lossless, but defaults to off because naive guests will record 90-minute WAVs and struggle to send them.</td>
         </tr>
         <tr>
           <td>Meter floor −36 dB</td>
-          <td>The meter answers one question: "Is audio coming in?" The 36 dB range covers what matters — a quiet room with ambient noise sits around −25 to −30 dBFS; speech peaks around −12 to −6 dBFS. The bottom 24 dB (−60 to −36) is below ambient room noise for any practical recording environment. The 1 dB deadzone above <code>dbMin</code> in the meter rendering prevents the leftmost segment from staying lit at idle. This is deliberate: the meter is a <em>signal activity indicator</em>, not a precision level tool.</td>
+          <td>The meter answers one question: "Is audio coming in?" The 36 dB range covers what matters: a quiet room with ambient noise sits around −25 to −30 dBFS; speech peaks around −12 to −6 dBFS. The bottom 24 dB (−60 to −36) is below ambient room noise for any practical recording environment. The 1 dB deadzone above <code>dbMin</code> in the meter rendering prevents the leftmost segment from staying lit at idle. This is deliberate: the meter is a <em>signal activity indicator</em>, not a precision level tool.</td>
         </tr>
         <tr>
           <td>WAV at device native rate (not fixed 48 kHz)</td>
@@ -905,7 +905,7 @@
         </tr>
         <tr>
           <td>Session defaults cleared at every launch</td>
-          <td><code>RecorderViewModel.eraseSessionDefaults()</code> runs in <code>applicationWillFinishLaunching</code>, before the VM is initialized. This catches crashes and force-quits where <code>applicationWillTerminate</code> never fired — the custom filename prefix from a previous session cannot bleed into the next launch regardless of how the previous session ended.</td>
+          <td><code>RecorderViewModel.eraseSessionDefaults()</code> runs in <code>applicationWillFinishLaunching</code>, before the VM is initialized. This catches crashes and force-quits where <code>applicationWillTerminate</code> never fired. The custom filename prefix from a previous session cannot bleed into the next launch regardless of how the previous session ended.</td>
         </tr>
         <tr>
           <td>Notes metadata not stored in WAV</td>
@@ -913,7 +913,7 @@
         </tr>
         <tr>
           <td>WRITING indicator: 150 ms trail</td>
-          <td>The "WRITING" label reflects "did <code>AVAssetWriterInput.append</code> return true in the last 150 ms," not "is the capture session running." A session that is running but delivering no data correctly shows a dim WRITING label — useful diagnostic for stalled-driver scenarios even before the 3-second data-flow watchdog fires.</td>
+          <td>The "WRITING" label reflects "did <code>AVAssetWriterInput.append</code> return true in the last 150 ms," not "is the capture session running." A session that is running but delivering no data correctly shows a dim WRITING label, a useful diagnostic for stalled-driver scenarios even before the 3-second data-flow watchdog fires.</td>
         </tr>
       </tbody>
     </table>
