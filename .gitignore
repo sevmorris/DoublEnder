@@ -35,3 +35,8 @@ doublender-*.json
 
 # Local Cloud build output folder (macOS may create this name when testing)
 .project.merged.yml
+
+# Personal annotated study edition of the Theory of Operation — not for
+# publication. Lives in docs/manual/ so its relative links resolve when
+# opened locally, but is untracked so GitHub Pages never serves it.
+docs/manual/theory-annotated.html
