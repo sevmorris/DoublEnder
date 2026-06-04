@@ -291,12 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
-        // 8 KB threshold: a valid finalized AAC recording (even a fraction
-        // of a second long) exceeds this; an empty or stub container does
-        // not. Guards against a header-only orphan sidecar (from a transient
-        // PCMSidecar.init FileHandle failure) destroying a saved m4a that
-        // happens to share its name.
-        let mainFileValidThreshold: Int64 = 8 * 1024
+        let mainFileValidThreshold = PCMSidecar.mainFileValidThresholdBytes
         for sidecar in sidecars where !PCMSidecar.hasRecoverableContent(at: sidecar) {
             try? fm.removeItem(at: sidecar)
             let mainURL = PCMSidecar.mainOutputURL(for: sidecar)

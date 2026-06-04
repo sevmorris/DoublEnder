@@ -293,6 +293,31 @@ final class PCMSidecarTests: XCTestCase {
         XCTAssertEqual(main.lastPathComponent, "Take_2026.m4a")
     }
 
+    func testMainFileValidThresholdBytes() {
+        XCTAssertEqual(PCMSidecar.mainFileValidThresholdBytes, 8 * 1024)
+    }
+
+    func testRecoveryModelDetectsValidMainFile() throws {
+        let mainURL = tempDir.appendingPathComponent("saved.m4a")
+        let sidecarURL = tempDir.appendingPathComponent("saved.m4a.pcmrec")
+        let payload = Data(repeating: 0, count: Int(PCMSidecar.mainFileValidThresholdBytes) + 1)
+        try payload.write(to: mainURL)
+        try Data("DEP2".utf8).write(to: sidecarURL)
+
+        let model = RecoveryModel(sidecarURL: sidecarURL)
+        XCTAssertTrue(model.hasValidMainFile)
+    }
+
+    func testRecoveryModelRejectsStubMainFile() throws {
+        let mainURL = tempDir.appendingPathComponent("stub.m4a")
+        let sidecarURL = tempDir.appendingPathComponent("stub.m4a.pcmrec")
+        try Data(repeating: 0, count: 64).write(to: mainURL)
+        try Data("DEP2".utf8).write(to: sidecarURL)
+
+        let model = RecoveryModel(sidecarURL: sidecarURL)
+        XCTAssertFalse(model.hasValidMainFile)
+    }
+
     func testUpdateSampleRateIfNeededRewritesHeader() throws {
         let mainOutput = tempDir.appendingPathComponent("rate_update.m4a")
         guard let sidecar = PCMSidecar(mainOutput: mainOutput, sampleRate: 48_000, channels: 1) else {

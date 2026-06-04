@@ -55,7 +55,7 @@ final class RecoveryModel: ObservableObject {
         self.mainFileURL = main
         let attrs = try? FileManager.default.attributesOfItem(atPath: main.path)
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-        self.hasValidMainFile = size > 8 * 1024
+        self.hasValidMainFile = size > PCMSidecar.mainFileValidThresholdBytes
     }
 
     var fileName: String { mainFileURL.lastPathComponent }

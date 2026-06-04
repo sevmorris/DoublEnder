@@ -19,6 +19,11 @@ final class PCMSidecar {
     /// Extension appended to the main output path: `Recording.m4a.pcmrec`.
     static let pathExtension = "pcmrec"
 
+    /// Minimum main-file size (bytes) to treat a companion `.m4a`/`.wav` as
+    /// successfully finalized rather than a stub container. Used by launch-
+    /// time recovery cleanup and `RecoveryModel.hasValidMainFile`.
+    static let mainFileValidThresholdBytes: Int64 = 8 * 1024
+
     /// v1 header: magic + sample rate + channels (legacy, still recovered).
     private static let magicV1: [UInt8] = Array("DEP1".utf8)
     /// v2 header: same fields + payload format code (all new recordings).
@@ -35,8 +40,11 @@ final class PCMSidecar {
     private static let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "PCMSidecar")
 
     private let handle: FileHandle
-    /// Serializes all sidecar file I/O so `synchronize()` never blocks the
-    /// capture delegate while it holds the writer lock.
+    /// Serializes sidecar disk I/O off the capture/writer hot path.
+    /// `append` is called from `writerQueue` but dispatches writes here so
+    /// a slow disk never blocks `AVAssetWriterInput.append`. Under disk
+    /// pressure the sidecar can lag the main file by more than one buffer;
+    /// `close()` / `discard()` `ioQueue.sync` to flush before the handle closes.
     private let ioQueue = DispatchQueue(label: "io.github.sevmorris.DoublEnder.pcmrec-io", qos: .utility)
     let url: URL
     private var sampleRate: Double

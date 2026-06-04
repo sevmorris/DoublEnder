@@ -1,7 +1,6 @@
 import Foundation
 import AppKit
 import AVFoundation
-import Accelerate
 import Combine
 import OSLog
 
@@ -39,7 +38,6 @@ private enum InputDeviceKind {
 
 class AudioEngine: NSObject, ObservableObject {
     @Published var availableInputDevices: [AVCaptureDevice] = []
-    @Published var selectedInputDevice: AVCaptureDevice?
 
     @Published var lastError: String?
     /// Current input level in dBFS (`LevelMeter.dbFloor`…0). Peak-hold,
@@ -595,17 +593,14 @@ class AudioEngine: NSObject, ObservableObject {
             knownInputDeviceUIDs = currentUIDs
             for uid in newUIDs {
                 if let device = visibleDevices.first(where: { $0.uniqueID == uid }),
-                   isUSBDevice(device) {
+                   isUSBDevice(device),
+                   !isRecording {
                     onNewUSBDeviceDetected?(device)
                 }
             }
         } else {
             hasSeededKnownDevices = true
             knownInputDeviceUIDs = currentUIDs
-        }
-
-        if selectedInputDevice == nil {
-            selectedInputDevice = AVCaptureDevice.default(for: .audio)
         }
 
         notifyIfRecordingInputDisconnected()
@@ -1188,28 +1183,6 @@ class AudioEngine: NSObject, ObservableObject {
         // the old code path require multi-retry warm-up.
         _ = setSystemDefaultInputDevice(id)
         rebuildSession(with: device, intendedDeviceID: id)
-    }
-
-    /// Read the current macOS system-wide default input device via
-    /// CoreAudio. Returned for diagnostic comparisons — AVCaptureSession
-    /// binds the device we hand it directly (no reliance on the system
-    /// default), but `setDevice` updates the system default for
-    /// cross-app consistency, and some virtual devices accept that call
-    /// with no error while CoreAudio quietly leaves the property at its
-    /// previous value. Returns nil on query failure.
-    private func currentSystemDefaultInputDevice() -> AudioDeviceID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var deviceID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address, 0, nil, &size, &deviceID
-        )
-        return (status == noErr && deviceID != 0) ? deviceID : nil
     }
 
     /// Set the macOS system-wide default input device via CoreAudio.

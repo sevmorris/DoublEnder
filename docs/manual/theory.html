@@ -561,8 +561,8 @@
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> sessionQueue and writerQueue</summary>
       <p><strong>sessionQueue</strong> (<code>.userInitiated</code>): All <code>AVCaptureSession</code> configuration and control runs here. <code>startRunning()</code> is a blocking call; Apple recommends a dedicated serial non-main queue for all <code>beginConfiguration/commitConfiguration/stopRunning</code> calls.</p>
-      <p><strong>writerQueue</strong> (<code>.userInitiated</code>): Set as the <code>setSampleBufferDelegate(_, queue:)</code> argument. Every <code>CMSampleBuffer</code> delivery lands here in serial order, meaning the delegate, the <code>AVAssetWriterInput.append</code>, and the <code>PCMSidecar.append</code> all run on the same queue without additional synchronization.</p>
-      <p><code>stopRecording</code> drains this queue with <code>writerQueue.sync {}</code> before taking the writer lock, guaranteeing any in-flight delegate call completes before writer refs are cleared. <code>writerLock</code> (NSLock) mediates shared state between main-thread callers and the delegate.</p>
+      <p><strong>writerQueue</strong> (<code>.userInitiated</code>): Set as the <code>setSampleBufferDelegate(_, queue:)</code> argument. Every <code>CMSampleBuffer</code> delivery lands here in serial order — the delegate and <code>AVAssetWriterInput.append</code> run synchronously on this queue. <code>PCMSidecar.append</code> is <em>invoked</em> from the delegate on <code>writerQueue</code>, but the sidecar's disk writes are dispatched to a separate <code>ioQueue</code> so capture is never blocked on sidecar I/O.</p>
+      <p><code>stopRecording</code> drains <code>writerQueue</code> with <code>writerQueue.sync {}</code> before taking the writer lock, guaranteeing any in-flight delegate call completes before writer refs are cleared; <code>sidecar.close()</code> / <code>sidecar.discard()</code> then <code>ioQueue.sync</code> to flush pending sidecar writes. <code>writerLock</code> (NSLock) mediates shared state between main-thread callers and the delegate.</p>
     </details>
 
     <h3>No audioSettings on the Output</h3>
@@ -583,7 +583,7 @@
   <section id="sidecar">
     <h2>PCM Sidecar</h2>
 
-    <p>While <code>AVAssetWriterInput.append</code> streams to the M4A or WAV, <code>PCMSidecar.append(sampleBuffer:)</code> writes a parallel IEEE Float32 mono stream to a companion file (<code>&lt;filename&gt;.pcmrec</code>). The sidecar runs on the same <code>writerQueue</code> as the writer append, so it is always at most one buffer behind the main file.</p>
+    <p>While <code>AVAssetWriterInput.append</code> streams to the M4A or WAV, <code>PCMSidecar.append(sampleBuffer:)</code> is called from the capture delegate on <code>writerQueue</code> and writes a parallel IEEE Float32 mono stream to a companion file (<code>&lt;filename&gt;.pcmrec</code>). Normalization happens on <code>writerQueue</code>; the actual <code>FileHandle.write</code> runs on a dedicated <code>ioQueue</code> so a slow disk never blocks the writer append. Under light load the sidecar is typically one buffer behind; under disk pressure the gap can grow until <code>onFirstWriteFailure</code> fires — the main recording continues regardless. On stop, <code>sidecar.close()</code> / <code>sidecar.discard()</code> synchronizes <code>ioQueue</code> so all samples dispatched before the delegate returned are flushed before the handle closes.</p>
     <p>The sidecar is opened in <code>startRecording()</code> before <code>isRecording</code> is set, using a provisional sample rate from the device's <code>activeFormat</code>. Even a crash before the first buffer arrives leaves a sidecar on disk with a valid header. The provisional rate is patched later via <code>updateSampleRateIfNeeded</code> on every buffer where the rate changed.</p>
 
     <h3>DEP2 Header Format</h3>
@@ -630,7 +630,7 @@
         <tr><td><code>.recording</code></td><td>Take in progress</td></tr>
         <tr><td><code>.uploading</code> <span class="tag tag-cloud">Cloud</span></td><td>Writer done; GCS upload running</td></tr>
         <tr><td><code>.uploadFailed(URL)</code> <span class="tag tag-cloud">Cloud</span></td><td>Retries exhausted; file still on Desktop</td></tr>
-        <tr><td><code>.error(String)</code></td><td>Fatal condition; <code>reset()</code> returns to <code>.selectingMic</code></td></tr>
+        <tr><td><code>.error(String)</code></td><td>Fatal condition; <code>reset()</code> returns to <code>.ready</code></td></tr>
       </tbody>
     </table>
 
@@ -735,7 +735,7 @@
     </ol>
 
     <h3>Hot-Plug Offer</h3>
-    <p>On each <code>refreshDevices</code>, new UIDs that are USB devices trigger <code>onNewUSBDeviceDetected</code>. RecorderViewModel presents an <code>NSAlert</code> app-modal offering to switch. <code>knownInputDeviceUIDs</code> is updated <em>before</em> firing the callback, so any re-entrant <code>refreshDevices</code> call arriving during the modal's <code>runModal()</code> loop sees the new UID as already known and does not stack a duplicate prompt. The first <code>refreshDevices</code> after init seeds <code>knownInputDeviceUIDs</code> silently; launch-time device population is not a "new arrival."</p>
+    <p>On each <code>refreshDevices</code>, new UIDs that are USB devices trigger <code>onNewUSBDeviceDetected</code> — but only while no take is in progress (<code>AudioEngine</code> skips the callback when <code>isRecording</code>; <code>RecorderViewModel.presentUSBSwitchPrompt</code> also bails on <code>isCurrentlyRecording</code>). RecorderViewModel presents an <code>NSAlert</code> app-modal offering to switch. <code>knownInputDeviceUIDs</code> is updated <em>before</em> firing the callback, so any re-entrant <code>refreshDevices</code> call arriving during the modal's <code>runModal()</code> loop sees the new UID as already known and does not stack a duplicate prompt. The first <code>refreshDevices</code> after init seeds <code>knownInputDeviceUIDs</code> silently; launch-time device population is not a "new arrival."</p>
 
     <h3>USB First-Seen Map</h3>
     <p><code>recordCurrentUSBDevicesFirstSeen()</code> stamps every currently-present USB device with a timestamp in <code>UserDefaults</code> (<code>usbDeviceFirstSeenAt</code>, keyed by UID). Entries are never pruned; UIDs are stable per physical device. At launch, <code>mostRecentlyConnectedUSBDevice()</code> picks the USB device with the most recent timestamp and offers it via <code>presentUSBSwitchPrompt</code>. This captures "the one I just plugged in" intent when multiple USB devices are present.</p>
@@ -762,13 +762,13 @@
     <ol>
       <li><strong>Read the Desktop directory.</strong> <code>FileManager.contentsOfDirectory(at: recordingsDirectory)</code>. If this throws, an alert shows <code>error.localizedDescription</code> and the function returns; an inaccessible Desktop is surfaced to the user rather than silently skipped.</li>
       <li><strong>Filter for sidecars.</strong> <code>pathExtension == "pcmrec"</code>.</li>
-      <li><strong>Discard empty sidecars</strong> (<code>hasRecoverableContent</code> checks file size vs. 20-byte header). Their companion main files: if &gt; 8 KB, the main file is a valid finalized recording; keep it and log a warning. If ≤ 8 KB (stub/aborted container), delete both.</li>
+      <li><strong>Discard empty sidecars</strong> (<code>hasRecoverableContent</code> checks file size vs. 20-byte header). Their companion main files: if &gt; <code>PCMSidecar.mainFileValidThresholdBytes</code> (8 KB), the main file is a valid finalized recording; keep it and log a warning. If ≤ 8 KB (stub/aborted container), delete both.</li>
       <li><strong>Recover non-empty sidecars.</strong> The main window is hidden, <code>NSApp.activate(ignoringOtherApps: true)</code> brings DoublEnder forward, and each recoverable sidecar gets a sequential modal <code>presentRecoveryDialog</code> call. After all dialogs complete, <code>mainWindow?.makeKeyAndOrderFront(nil)</code>.</li>
     </ol>
 
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> The 8 KB threshold</summary>
-      <p>8 KB is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where <code>finishWriting</code> was never called) falls below it. The smallest valid AAC M4A the writer produces (even a 0.1-second take with a valid moov atom) exceeds 8 KB. A container where <code>cancelWriting()</code> ran typically has fewer than 1 KB. The threshold matches the <code>RecoveryModel.hasValidMainFile</code> check in the recovery dialog.</p>
+      <p><code>PCMSidecar.mainFileValidThresholdBytes</code> (8 KB) is the single source of truth for this check in launch-time cleanup and <code>RecoveryModel.hasValidMainFile</code>. It is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where <code>finishWriting</code> was never called) falls below it. The smallest valid AAC M4A the writer produces (even a 0.1-second take with a valid moov atom) exceeds 8 KB. A container where <code>cancelWriting()</code> ran typically has fewer than 1 KB.</p>
     </details>
 
     <h3>RecoveryModel Phases and Prompt Options</h3>

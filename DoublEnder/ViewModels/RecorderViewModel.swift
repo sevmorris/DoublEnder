@@ -2,6 +2,9 @@ import Foundation
 import Combine
 import AVFoundation
 import AppKit
+import OSLog
+
+private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "RecorderViewModel")
 
 enum AppState {
     case selectingMic
@@ -79,14 +82,12 @@ class RecorderViewModel: ObservableObject {
     /// label shows "(no input)" so the user knows their pick didn't take.
     ///
     /// Computed rather than stored because there is no single AudioEngine
-    /// event that can reliably produce a name string — the AUHAL deviceID
-    /// races device-default propagation, the CoreAudio name lookup can
-    /// silently fail, and several rebuild paths exit early without ever
-    /// reaching the "publish a name" line. Driving the label from intent +
-    /// health makes it impossible for any code path to leave the label
-    /// stale: any change to `selectedInputDeviceID`, `availableInputDevices`,
-    /// or `audioEngine.engineHealthy` triggers `objectWillChange` and the
-    /// view re-evaluates this property.
+    /// event that can reliably produce a name string — several rebuild paths
+    /// exit early without ever reaching a "publish a name" line. Driving the
+    /// label from intent + health makes it impossible for any code path to
+    /// leave the label stale: any change to `selectedInputDeviceID`,
+    /// `availableInputDevices`, or `audioEngine.engineHealthy` triggers
+    /// `objectWillChange` and the view re-evaluates this property.
     var boundInputDeviceName: String? {
         guard let device = audioEngine.availableInputDevices
             .first(where: { $0.uniqueID == selectedInputDeviceID })
@@ -95,7 +96,7 @@ class RecorderViewModel: ObservableObject {
         }
         // Two independent reasons the label shows "(no input)":
         //   1. The picked device has no input streams — setDevice rejected
-        //      it pre-switch so we never even handed it to AUHAL. The
+        //      it pre-switch so the session was never rebuilt for it. The
         //      previously-bound device is still active.
         //   2. The engine itself failed to build/start (rebuild error path).
         if !audioEngine.selectedDeviceUsable { return "(no input)" }
@@ -469,10 +470,7 @@ class RecorderViewModel: ObservableObject {
             // Defer to the next runloop tick so we're not running engine
             // teardown from inside the CoreAudio device-list listener's
             // call frame (which previously crashed via NSException out of
-            // SetOutputFormat). AudioEngine.setDevice now goes through the
-            // system-default-device CoreAudio API rather than AUHAL's
-            // setDeviceID — see the comment in AudioEngine.setDevice for
-            // the full rationale.
+            // SetOutputFormat).
             let uid = device.uniqueID
             DispatchQueue.main.async { [weak self] in
                 self?.selectedInputDeviceID = uid
@@ -532,9 +530,7 @@ class RecorderViewModel: ObservableObject {
                     // Mac's built-in hardware mic, regardless of any saved
                     // preference or currently-attached USB device. This
                     // gives every launch the same predictable starting
-                    // state and avoids the AUHAL setDeviceID race that
-                    // freshly-bound USB devices can trigger before
-                    // CoreAudio has committed their HW stream description.
+                    // state.
                     //
                     // The post-init USB prompt below offers a one-tap
                     // switch when a USB input is present, so podcast
@@ -726,7 +722,7 @@ class RecorderViewModel: ObservableObject {
             #endif
             return true
         } catch {
-            NSLog("[DoublEnder] Sidecar recovery failed: %@", error.localizedDescription)
+            logger.error("Sidecar recovery failed: \(error.localizedDescription, privacy: .public)")
             state = .error("The recording couldn't be recovered: \(error.localizedDescription). The recovery file is still on disk — check disk space and permissions, then relaunch to retry.")
             return false
         }
@@ -976,7 +972,7 @@ class RecorderViewModel: ObservableObject {
     private func finishReset() {
         audioEngine.clearStaleRecordingSessionIfNeeded()
         audioEngine.clearLastError()
-        state = .selectingMic
+        state = .ready
         recordingTime = 0
         #if GCS_ENABLED
         uploadProgress = 0

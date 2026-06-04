@@ -120,7 +120,7 @@ graph LR
 
 **`sessionQueue` (`.userInitiated`):** All `AVCaptureSession` configuration and control runs here. `startRunning()` is a blocking call; Apple recommends it and all `beginConfiguration/commitConfiguration/stopRunning` calls be on a dedicated serial non-main queue. Every `rebuildSession` invocation dispatches its entire body to this queue and hops results back to the main actor.
 
-**`writerQueue` (`.userInitiated`):** Set as the `setSampleBufferDelegate(_, queue:)` argument. Every `CMSampleBuffer` delivery lands here in serial order, which means the delegate, the `AVAssetWriterInput.append`, and the `PCMSidecar.append` all run on the same queue without additional synchronization. `stopRecording` drains this queue with `writerQueue.sync {}` before taking the writer lock, guaranteeing that any in-flight delegate call completes before writer refs are cleared.
+**`writerQueue` (`.userInitiated`):** Set as the `setSampleBufferDelegate(_, queue:)` argument. Every `CMSampleBuffer` delivery lands here in serial order — the delegate and `AVAssetWriterInput.append` run synchronously on this queue. `PCMSidecar.append` is *invoked* from the delegate on `writerQueue`, but the sidecar's disk writes are dispatched to a separate `ioQueue` (see §3 sidecar) so capture is never blocked on sidecar I/O. `stopRecording` drains `writerQueue` with `writerQueue.sync {}` before taking the writer lock, guaranteeing any in-flight delegate call completes before writer refs are cleared; `sidecar.close()` / `sidecar.discard()` then `ioQueue.sync {}` to flush pending sidecar writes.
 
 `writerLock` (an `NSLock`) mediates shared state between main-thread callers (`startRecording`, `stopRecording`, `cancelRecording`) and the delegate (which arrives on `writerQueue`). The lock scope is kept as narrow as possible: only the operations that read or write `assetWriter`, `assetWriterInput`, `pcmSidecar`, `pendingOutputSettings`, `pendingFileURL`, and the error/drop counters.
 
@@ -157,7 +157,7 @@ The `AVAssetWriterInput` is then created with `resolvedSettings` — so a 48 kHz
 
 ### The PCM sidecar mirror
 
-While `AVAssetWriterInput.append` streams to the M4A/WAV, `PCMSidecar.append(sampleBuffer:)` writes a parallel Float32 mono stream to a companion file (`<filename>.pcmrec`). The sidecar runs on the same `writerQueue` as the writer append, so it is always at most one buffer behind the main file.
+While `AVAssetWriterInput.append` streams to the M4A/WAV, `PCMSidecar.append(sampleBuffer:)` is called from the capture delegate on `writerQueue` and writes a parallel Float32 mono stream to a companion file (`<filename>.pcmrec`). Normalization happens on `writerQueue`; the actual `FileHandle.write` runs on a dedicated `ioQueue` so a slow disk never blocks the writer append. Under light load the sidecar is typically one buffer behind; under disk pressure the gap can grow until `onFirstWriteFailure` fires — the main recording continues regardless. On stop, `sidecar.close()` / `sidecar.discard()` synchronizes `ioQueue` so all samples dispatched before the delegate returned are flushed before the handle closes.
 
 The sidecar is opened in `startRecording()` before `isRecording` is set, using a provisional sample rate from the device's `activeFormat`. Even a crash before the first buffer arrives leaves a sidecar on disk with a valid header. The provisional rate is patched later via `updateSampleRateIfNeeded` on every buffer where the rate changed (a no-op in practice unless a CoreAudio rate-change event occurred mid-session).
 
@@ -200,7 +200,7 @@ AppState (RecorderViewModel.state):
   .recording          — take in progress
   .uploading          — (GCS only) writer done, upload running
   .uploadFailed(URL)  — (GCS only) retries exhausted; file still on Desktop
-  .error(String)      — fatal condition; reset() returns to .selectingMic
+  .error(String)      — fatal condition; reset() returns to .ready
 ```
 
 ### Normal lifecycle
@@ -256,7 +256,7 @@ If `AVAssetWriterInput.isReadyForMoreMediaData` returns false for 3 consecutive 
 `applicationWillTerminate` never fires. The PCM sidecar is left open on disk. At next launch, the crash-recovery scan finds it and presents the recovery dialog. See §7.
 
 **Reset after error:**
-`viewModel.reset()` is called from `FaceplateErrorView`'s "TRY AGAIN" button. It cancels all timers, abandons stale engine state (via `audioEngine.abandonStaleRecordingState()` if `isRecordingActive`), clears `lastError`, sets state to `.selectingMic`, and calls `audioEngine.start()` to rebuild the capture session. The sidecar is closed but not deleted by `abandonStaleRecordingState` — it stays on disk for the next launch recovery scan.
+`viewModel.reset()` is called from `FaceplateErrorView`'s "TRY AGAIN" button. It cancels all timers, abandons stale engine state (via `audioEngine.abandonStaleRecordingState()` if `isRecordingActive`), clears `lastError`, sets state to `.ready`, and calls `audioEngine.start()` to rebuild the capture session. The sidecar is closed but not deleted by `abandonStaleRecordingState` — it stays on disk for the next launch recovery scan.
 
 ---
 
@@ -352,7 +352,7 @@ The listener and the notifications are belt-and-suspenders — in practice the C
 
 ### Hot-plug offer
 
-On each `refreshDevices`, new UIDs (UIDs present now but absent in `knownInputDeviceUIDs`) that are USB devices trigger `onNewUSBDeviceDetected`. RecorderViewModel's handler presents an `NSAlert` app-modal offering to switch. `knownInputDeviceUIDs` is updated **before** firing the callback, so any re-entrant `refreshDevices` call that arrives during the modal's `runModal()` loop sees the new UID as already known and does not stack a duplicate prompt. The first `refreshDevices` after init seeds `knownInputDeviceUIDs` silently — launch-time device population is not a "new arrival."
+On each `refreshDevices`, new UIDs (UIDs present now but absent in `knownInputDeviceUIDs`) that are USB devices trigger `onNewUSBDeviceDetected` — but only while no take is in progress (`AudioEngine` skips the callback when `isRecording`; `RecorderViewModel.presentUSBSwitchPrompt` also bails on `isCurrentlyRecording`). The handler presents an `NSAlert` app-modal offering to switch. `knownInputDeviceUIDs` is updated **before** firing the callback, so any re-entrant `refreshDevices` call that arrives during the modal's `runModal()` loop sees the new UID as already known and does not stack a duplicate prompt. The first `refreshDevices` after init seeds `knownInputDeviceUIDs` silently — launch-time device population is not a "new arrival."
 
 If the user dismisses with "Keep Current," the UID is stored in `dismissedUSBDevices` (memory-only, per-session). It will not be offered again until the next app launch. The same UID will be offered at the next launch if the device is still present (via the post-init USB prompt path in `requestPermissions`).
 
@@ -392,14 +392,14 @@ In `AppDelegate.applicationDidFinishLaunching` → `runCrashRecoveryIfNeeded`:
 2. **Filter for sidecars.** `pathExtension == "pcmrec"`.
 
 3. **Discard empty sidecars.** `PCMSidecar.hasRecoverableContent` checks the file size against the 20-byte V2 header size. Sidecars that are header-only (result of a `PCMSidecar.init` FileHandle failure where the file was created but not written to) are discarded. Their companion main files are checked:
-   - Main file `> 8 KB` → the main file is a valid finalized recording; keep it, log a warning that the sidecar was orphaned.
-   - Main file `≤ 8 KB` → stub/aborted container; delete both.
+   - Main file `> PCMSidecar.mainFileValidThresholdBytes` (8 KB) → the main file is a valid finalized recording; keep it, log a warning that the sidecar was orphaned.
+   - Main file `≤ PCMSidecar.mainFileValidThresholdBytes` → stub/aborted container; delete both.
 
 4. **Recover non-empty sidecars.** The main window is hidden (`mainWindow?.orderOut(nil)`), `NSApp.activate(ignoringOtherApps: true)` brings DoublEnder forward, and each recoverable sidecar gets a `presentRecoveryDialog` call. The dialogs are sequential modals — the user must clear each before seeing the next. After all dialogs complete, `mainWindow?.makeKeyAndOrderFront(nil)` brings the app forward normally.
 
 ### The 8 KB threshold
 
-8 KB is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where `finishWriting` was never called and only the initial container header was written) falls below it. The threshold was chosen by examining the smallest valid AAC M4A output the writer produces: even a 0.1-second take with a valid moov atom exceeds 8 KB. A container where `cancelWriting()` ran typically has fewer than 1 KB.
+`PCMSidecar.mainFileValidThresholdBytes` (8 KB) is the single source of truth for this check in launch-time cleanup and `RecoveryModel.hasValidMainFile`. It is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where `finishWriting` was never called and only the initial container header was written) falls below it. The threshold was chosen by examining the smallest valid AAC M4A output the writer produces: even a 0.1-second take with a valid moov atom exceeds 8 KB. A container where `cancelWriting()` ran typically has fewer than 1 KB.
 
 ### RecoveryModel and RecoveryView
 
@@ -409,7 +409,7 @@ In `AppDelegate.applicationDidFinishLaunching` → `runCrashRecoveryIfNeeded`:
 - `.success(URL)` — the recovered WAV path
 - `.failure(String)` — error message; the sidecar is left in place
 
-`hasValidMainFile` is computed at init by checking whether the companion `.m4a` exists and is `> 8 KB`. This captures the race window where `finishWriting` completed but `sidecar.discard()` hadn't run before the crash — a valid recording is on disk alongside a now-redundant sidecar.
+`hasValidMainFile` is computed at init by checking whether the companion `.m4a` exists and exceeds `PCMSidecar.mainFileValidThresholdBytes`. This captures the race window where `finishWriting` completed but `sidecar.discard()` hadn't run before the crash — a valid recording is on disk alongside a now-redundant sidecar.
 
 **Prompt options:**
 
