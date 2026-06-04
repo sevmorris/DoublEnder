@@ -9,6 +9,8 @@
   <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.7.2lr.dmg"><strong>Download Latest (DMG)</strong></a>
   ·
   <a href="https://sevmorris.github.io/DoublEnder/">App Page</a>
+  ·
+  <a href="https://sevmorris.github.io/DoublEnder/manual/theory.html">Theory of Operation</a>
 </p>
 
 > **No installer needed.** DoublEnder is a self-contained app — just double-click it wherever it is: your Desktop, Downloads folder, an external drive, or anywhere else you like.
