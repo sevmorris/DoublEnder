@@ -469,8 +469,8 @@
           <td>GCS (private)</td>
         </tr>
         <tr>
-          <td>Branded (e.g. Hacks on Tap)</td>
-          <td>e.g. <code>ht</code></td>
+          <td>Branded</td>
+          <td>per-brand</td>
           <td>Per-client faceplate, bundle ID, update channel, optional pre-recording name prompt</td>
           <td>GCS (private, per-brand path)</td>
         </tr>
@@ -842,7 +842,7 @@
         <tr><td><code>CURRENT_PROJECT_VERSION</code></td><td><code>16</code></td><td>Build number; <code>CFBundleVersion</code></td></tr>
         <tr><td>Suffix <code>lr</code></td><td><code>1.7.2lr</code></td><td>Local release</td></tr>
         <tr><td>Suffix <code>cr</code></td><td><code>1.7.2cr</code></td><td>Cloud release</td></tr>
-        <tr><td>Suffix <code>ht</code></td><td><code>1.7.2ht</code></td><td>Hacks on Tap branded release</td></tr>
+        <tr><td>Suffix (per-brand)</td><td><code>1.7.2xx</code></td><td>Branded release; suffix defined in brand.conf</td></tr>
       </tbody>
     </table>
     <p><code>VersionFormatting.numericVersion</code> strips the suffix for version comparisons: <code>"1.7.2lr"</code> → <code>"1.7.2"</code>. <code>splitSuffix</code> splits <code>"1.7.2lr"</code> → <code>("1.7.2", "lr")</code> for the on-screen version overlay, where the suffix is shown in uppercase.</p>
