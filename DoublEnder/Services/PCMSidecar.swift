@@ -41,6 +41,10 @@ final class PCMSidecar {
     let url: URL
     private var sampleRate: Double
     private var bytesSinceSync = 0
+    /// Called once, on the first write failure, so AudioEngine can surface
+    /// a "crash backup unavailable" warning without polling. Nil if unused.
+    var onFirstWriteFailure: (() -> Void)?
+    private var reportedWriteFailure = false
 
     /// Sidecar location for a given main output file.
     static func url(for mainOutput: URL) -> URL {
@@ -68,14 +72,28 @@ final class PCMSidecar {
         let url = PCMSidecar.url(for: mainOutput)
         let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: channels)
 
-        guard FileManager.default.createFile(atPath: url.path, contents: header),
-              let handle = try? FileHandle(forWritingTo: url) else {
+        guard FileManager.default.createFile(atPath: url.path, contents: header) else {
+            PCMSidecar.logger.error("Failed to create sidecar at \(url.lastPathComponent, privacy: .public)")
+            return nil
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else {
+            try? FileManager.default.removeItem(at: url)
             PCMSidecar.logger.error("Failed to open sidecar at \(url.lastPathComponent, privacy: .public)")
             return nil
         }
         // forWritingTo opens at offset 0 without truncating — seek past the
-        // header so the first sample write doesn't overwrite it.
-        _ = try? handle.seekToEnd()
+        // header so the first sample write doesn't overwrite it. If the seek
+        // fails the next write would clobber the header, leaving a sidecar
+        // whose parser can't read the magic at next launch (unrecoverable),
+        // so treat seek failure as an init failure and clean up the orphaned
+        // file — same pattern as the FileHandle-failure branch above.
+        do {
+            try handle.seekToEnd()
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            PCMSidecar.logger.error("Failed to seek sidecar at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
         self.handle = handle
         self.url = url
         self.sampleRate = sampleRate
@@ -236,6 +254,10 @@ final class PCMSidecar {
             }
         } catch {
             PCMSidecar.logger.error("Sidecar write failed: \(error.localizedDescription, privacy: .public)")
+            if !reportedWriteFailure {
+                reportedWriteFailure = true
+                onFirstWriteFailure?()
+            }
         }
     }
 

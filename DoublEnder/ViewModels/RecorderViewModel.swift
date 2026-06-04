@@ -233,6 +233,8 @@ class RecorderViewModel: ObservableObject {
         if audioEngine.lowQualityInput { return "Low-quality input (BT SCO?)" }
         // Sidecar failure: only relevant once recording has started.
         if isCurrentlyRecording && audioEngine.sidecarUnavailable { return "No crash recovery" }
+        // Sidecar write failure mid-take: backup was running but stopped.
+        if isCurrentlyRecording && audioEngine.sidecarFailedDuringRecording { return "Crash backup unavailable" }
         // Dropped frames: at least one buffer was discarded this take.
         if isCurrentlyRecording && audioEngine.droppedFrameWarning { return "Dropped frames — check disk" }
         return nil
@@ -246,6 +248,10 @@ class RecorderViewModel: ObservableObject {
     private var dismissedUSBDevices: Set<String> = []
     /// Prevents re-entrancy when reverting a device pick during recording.
     private var suppressDeviceSelectionRevert = false
+    /// True while any app-modal NSAlert runModal() is active. Guards against
+    /// a CoreAudio hot-plug callback stacking a second runModal on top of an
+    /// open disconnect/idle-loss alert. Set/cleared around every runModal call.
+    private var isShowingModalAlert = false
 
     private let audioEngine = AudioEngine()
     #if GCS_ENABLED
@@ -258,7 +264,7 @@ class RecorderViewModel: ObservableObject {
     /// Polls input health during recording — catches USB unplug before the
     /// device-list listener updates.
     private var inputWatchTimer: AnyCancellable?
-    private static let diskWatchInterval: TimeInterval = 30
+    private static let diskWatchInterval: TimeInterval = 5
     private static let inputWatchInterval: TimeInterval = 1
     /// Set when stop was triggered by a disconnect so we can alert the user.
     private var pendingDisconnectReason: String?
@@ -275,9 +281,10 @@ class RecorderViewModel: ObservableObject {
         audioEngine.availableInputDevices
     }
 
-    /// Hardware mics vs. aggregate/virtual devices for the grouped picker.
-    var inputDeviceGroups: (microphones: [AVCaptureDevice], virtual: [AVCaptureDevice]) {
-        audioEngine.groupedInputDevices()
+    /// Hardware input devices for the picker. Aggregate / virtual devices
+    /// are intentionally excluded.
+    var hardwareInputDevices: [AVCaptureDevice] {
+        audioEngine.hardwareInputDevices()
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -298,6 +305,10 @@ class RecorderViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         audioEngine.$droppedFrameWarning
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        audioEngine.$sidecarFailedDuringRecording
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
@@ -419,6 +430,9 @@ class RecorderViewModel: ObservableObject {
         if device.uniqueID == selectedInputDeviceID { return }
         // User said "Keep Current" for this device earlier this session.
         if dismissedUSBDevices.contains(device.uniqueID) { return }
+        // Another alert is already on screen — the device will still appear
+        // in the picker; the user can switch manually after dismissing.
+        if isShowingModalAlert { return }
 
         // Refresh first-seen tracking so this device is timestamped — any
         // future launch with multiple USB devices will weight this one as
@@ -441,7 +455,9 @@ class RecorderViewModel: ObservableObject {
         // never delivers clicks, leaving the alert visible but unresponsive
         // (force-quit only). runModal() spins its own nested event loop
         // independent of the parent window's style.
+        isShowingModalAlert = true
         let response = alert.runModal()
+        isShowingModalAlert = false
         if response == .alertFirstButtonReturn {
             // Defer to the next runloop tick so we're not running engine
             // teardown from inside the CoreAudio device-list listener's
@@ -459,12 +475,12 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
-    /// First hardware mic (built-in, USB, Bluetooth) in discovery order,
-    /// falling back to the first virtual/aggregate device, then nil.
-    /// Used wherever the app needs to pick a sensible default without user input.
+    /// First hardware mic (built-in, USB, Bluetooth) in discovery order, or
+    /// nil if none are present. Used wherever the app needs to pick a sensible
+    /// default without user input. Virtual / aggregate devices are never
+    /// considered — the engine stays stopped instead.
     private func preferredDefaultDevice() -> AVCaptureDevice? {
-        let groups = audioEngine.groupedInputDevices()
-        return groups.microphones.first ?? groups.virtual.first
+        audioEngine.hardwareInputDevices().first
     }
 
     /// Stamp every currently-present USB device that we haven't seen before
@@ -522,9 +538,9 @@ class RecorderViewModel: ObservableObject {
                         self.selectedInputDeviceID = builtIn.uniqueID
                     } else if let fallback = self.preferredDefaultDevice() {
                         // No built-in mic on this Mac (Mac mini, Mac
-                        // Studio, etc.). Fall back to the first non-
-                        // virtual mic so we still have an engine running
-                        // when the USB prompt fires below.
+                        // Studio, etc.). Fall back to the first hardware
+                        // input so we still have an engine running when
+                        // the USB prompt fires below.
                         self.selectedInputDeviceID = fallback.uniqueID
                     } else {
                         // No input devices at all — engine stays stopped;
@@ -685,6 +701,8 @@ class RecorderViewModel: ObservableObject {
             #endif
             return true
         } catch {
+            NSLog("[DoublEnder] Sidecar recovery failed: %@", error.localizedDescription)
+            state = .error("The recording couldn't be recovered: \(error.localizedDescription). The recovery file is still on disk — check disk space and permissions, then relaunch to retry.")
             return false
         }
     }
@@ -702,24 +720,30 @@ class RecorderViewModel: ObservableObject {
 
     private func presentDisconnectAlert(reason: String) {
         guard shouldPresentInputLossAlert() else { return }
+        guard !isShowingModalAlert else { return }
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Microphone disconnected"
         alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. Switched to the built-in microphone."
         alert.addButton(withTitle: "OK")
+        isShowingModalAlert = true
         alert.runModal()
+        isShowingModalAlert = false
     }
 
     private func presentInputLostWhileIdleAlert() {
         guard shouldPresentInputLossAlert() else { return }
+        guard !isShowingModalAlert else { return }
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Microphone disconnected"
         alert.informativeText = "The selected input is no longer available. Switched to the built-in microphone."
         alert.addButton(withTitle: "OK")
+        isShowingModalAlert = true
         alert.runModal()
+        isShowingModalAlert = false
     }
 
     private func shouldPresentInputLossAlert() -> Bool {

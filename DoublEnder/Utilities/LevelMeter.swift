@@ -18,7 +18,7 @@ import Accelerate
 /// for a guest who needs to confirm their mic is working, not for a producer
 /// setting record levels.
 enum LevelMeter {
-    static let dbFloor: Float = -48
+    static let dbFloor: Float = -36
     static let dbCeiling: Float = 0
     static let segmentCount = 40
 
@@ -32,8 +32,8 @@ enum LevelMeter {
     static let clipIndicatorHoldDuration: TimeInterval = 3.0
 
     static let scaleLabels: [(Float, String)] = [
-        (dbFloor, "-48"), (-36, "-36"), (-24, "-24"),
-        (-12, "-12"), (-6, "-6"), (dbCeiling, "0")
+        (dbFloor, "-36"), (-24, "-24"), (-12, "-12"),
+        (-6, "-6"), (dbCeiling, "0")
     ]
 
     static func dbFS(fromLinear linear: Float) -> Float {

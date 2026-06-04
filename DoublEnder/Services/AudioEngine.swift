@@ -98,6 +98,10 @@ class AudioEngine: NSObject, ObservableObject {
     /// returned false and at least one buffer was discarded. Cleared on
     /// recording start and on stop. Published for the VM warning display.
     @Published var droppedFrameWarning: Bool = false
+    /// True after the first sidecar write failure this take, meaning crash
+    /// recovery is no longer mirroring audio. Distinct from `sidecarUnavailable`
+    /// (which fires when the sidecar can't be opened at record start).
+    @Published var sidecarFailedDuringRecording: Bool = false
 
     private let aacBitRate: Int = 256_000
 
@@ -161,6 +165,15 @@ class AudioEngine: NSObject, ObservableObject {
     /// through several device-list updates for a single physical unplug.
     private var idleInputLossNotified = false
 
+    // Dedicated serial queue for AVCaptureSession configuration and control.
+    // Apple documents startRunning() as blocking and recommends calling it
+    // (and all session configuration: beginConfiguration, addInput/Output,
+    // commitConfiguration, stopRunning) on a non-main serial queue so the
+    // main thread is never blocked during device bring-up or tear-down.
+    private let sessionQueue = DispatchQueue(
+        label: "io.github.sevmorris.doublender.avcapture",
+        qos: .userInitiated
+    )
     // Serial queue for all AVAssetWriter / PCMSidecar work. Set as the
     // delegate queue on AVCaptureAudioDataOutput, so every CMSampleBuffer
     // arrives here in serial order — no extra dispatch needed between the
@@ -182,6 +195,19 @@ class AudioEngine: NSObject, ObservableObject {
     /// Cancellation points: `captureSessionInterruptionEnded`, first successful
     /// sample in `markDataFlowing`, and all recording-stop/cancel paths.
     private var interruptionWatchdog: DispatchWorkItem?
+    /// Watchdog fired when no successful sample buffer arrives within 3 s of
+    /// the previous one. Catches "session running but driver stopped
+    /// delivering" failures that AVCaptureSession does not surface as an
+    /// interruption (USB hub starvation, driver firmware hang, Bluetooth
+    /// profile transitions without an interruption notification). Re-armed
+    /// on every `markDataFlowing` call; cancelled in every recording-stop /
+    /// cancel / teardown path alongside `interruptionWatchdog`.
+    private var dataFlowWatchdog: DispatchWorkItem?
+    /// Latch preventing duplicate `onDisconnectedDuringRecording` dispatches
+    /// when the interruption watchdog, data-flow watchdog, and writer
+    /// tear-down race close together. The VM would otherwise see a stacked
+    /// stopRecording / alert pair. Reset in `startRecording` for each new take.
+    private var didDispatchDisconnect = false
 
     /// Called on the main thread when a device disconnects mid-recording.
     /// The string is a user-facing reason (device name + "disconnected").
@@ -295,10 +321,10 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     /// Build (or rebuild) the AVCaptureSession for audio-only capture and
-    /// start it running. Mirrors the public-facing semantics of the old
-    /// `rebuildEngine`: marks `isRebuilding` true, publishes errors via
-    /// `lastError`, sets `engineHealthy` based on whether the session
-    /// reached `.startRunning()` without throwing.
+    /// start it running. All AVCaptureSession configuration work (inputs,
+    /// outputs, startRunning) runs on `sessionQueue` — Apple documents
+    /// startRunning() as blocking and recommends a dedicated serial queue.
+    /// @Published state updates always hop back to main.
     ///
     /// `device` nil → use the system default input device (which is what
     /// AVCaptureDevice.default(for: .audio) returns).
@@ -308,6 +334,11 @@ class AudioEngine: NSObject, ObservableObject {
     /// system default after the session is running so silent CoreAudio
     /// rejections (some virtual devices) still surface as `selectedDeviceUsable`
     /// false.
+    ///
+    /// Always called from main; callers rely on `isRebuilding` (set
+    /// synchronously before dispatch) and `canStartRecording` to gate
+    /// recording attempts while the session is in flux — nothing expects
+    /// the session to be running synchronously on return.
     private func rebuildSession(
         with device: AVCaptureDevice? = nil,
         intendedDeviceID: AudioDeviceID? = nil
@@ -316,144 +347,151 @@ class AudioEngine: NSObject, ObservableObject {
             logger.info("Refusing capture session rebuild during active recording")
             return
         }
-        DispatchQueue.main.async { self.isRebuilding = true }
+        // Set synchronously (called from main) so the UI reflects rebuilding
+        // state before the first sessionQueue item runs.
+        isRebuilding = true
 
-        // Tear down the prior session before building the new one. setSampleBufferDelegate(nil, ...)
-        // first so any in-flight delegate callbacks complete before we drop refs.
-        if let prior = captureSession {
-            removeSessionObservers(for: prior)
-            prior.stopRunning()
-            if let out = audioOutput {
-                out.setSampleBufferDelegate(nil, queue: nil)
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+
+            // Tear down the prior session before building the new one.
+            // setSampleBufferDelegate(nil, ...) first so any in-flight
+            // delegate callbacks complete before we drop refs.
+            if let prior = self.captureSession {
+                self.removeSessionObservers(for: prior)
+                prior.stopRunning()
+                if let out = self.audioOutput {
+                    out.setSampleBufferDelegate(nil, queue: nil)
+                }
             }
-        }
-        captureSession = nil
-        currentInput = nil
-        audioOutput = nil
-        writerQueue.sync { self.smoothedPeakLevel = LevelMeter.dbFloor }
-        DispatchQueue.main.async {
-            self.clipClearWork?.cancel()
-            self.clipClearWork = nil
-            self.meterLevel = LevelMeter.dbFloor
-            self.isClipping = false
-        }
-
-        let target: AVCaptureDevice
-        if let device = device {
-            target = device
-        } else if let def = AVCaptureDevice.default(for: .audio) {
-            target = def
-        } else {
-            let message = "No audio input device available."
+            self.captureSession = nil
+            self.currentInput = nil
+            self.audioOutput = nil
+            self.writerQueue.sync { self.smoothedPeakLevel = LevelMeter.dbFloor }
             DispatchQueue.main.async {
-                self.lastError = message
-                self.engineHealthy = false
-                self.isRebuilding = false
+                self.clipClearWork?.cancel()
+                self.clipClearWork = nil
+                self.meterLevel = LevelMeter.dbFloor
+                self.isClipping = false
             }
-            return
-        }
 
-        let input: AVCaptureDeviceInput
-        do {
-            input = try AVCaptureDeviceInput(device: target)
-        } catch {
-            logger.error("AVCaptureDeviceInput init failed: \(error.localizedDescription, privacy: .public)")
-            let message = "Could not bind to the selected input: \(error.localizedDescription)"
-            DispatchQueue.main.async {
-                self.lastError = message
-                self.engineHealthy = false
-                self.isRebuilding = false
+            let target: AVCaptureDevice
+            if let device = device {
+                target = device
+            } else if let def = AVCaptureDevice.default(for: .audio) {
+                target = def
+            } else {
+                let message = "No audio input device available."
+                DispatchQueue.main.async {
+                    self.lastError = message
+                    self.engineHealthy = false
+                    self.isRebuilding = false
+                }
+                return
             }
-            return
-        }
 
-        let session = AVCaptureSession()
-        session.beginConfiguration()
+            let input: AVCaptureDeviceInput
+            do {
+                input = try AVCaptureDeviceInput(device: target)
+            } catch {
+                logger.error("AVCaptureDeviceInput init failed: \(error.localizedDescription, privacy: .public)")
+                let message = "Could not bind to the selected input: \(error.localizedDescription)"
+                DispatchQueue.main.async {
+                    self.lastError = message
+                    self.engineHealthy = false
+                    self.isRebuilding = false
+                }
+                return
+            }
 
-        guard session.canAddInput(input) else {
+            let session = AVCaptureSession()
+            session.beginConfiguration()
+
+            guard session.canAddInput(input) else {
+                session.commitConfiguration()
+                let message = "Selected input device could not be added to the session."
+                DispatchQueue.main.async {
+                    self.lastError = message
+                    self.engineHealthy = false
+                    self.isRebuilding = false
+                }
+                return
+            }
+            session.addInput(input)
+
+            let output = AVCaptureAudioDataOutput()
+            // No audioSettings — capture output delivers buffers in the device's
+            // native format. The writer accepts whatever the device produces via
+            // sourceFormatHint at writer-input creation time (see captureOutput
+            // delegate); no per-buffer PCM conversion happens anywhere in the
+            // path. Format forcing here was the source of click artifacts in
+            // every prior attempt to set audioSettings, regardless of whether
+            // interleaved or non-interleaved was specified — the writer's
+            // internal transcoder handles any container/codec conversion needed
+            // more reliably than a capture-stage conversion ever did.
+            guard session.canAddOutput(output) else {
+                session.commitConfiguration()
+                let message = "Could not add audio output to the session."
+                DispatchQueue.main.async {
+                    self.lastError = message
+                    self.engineHealthy = false
+                    self.isRebuilding = false
+                }
+                return
+            }
+            session.addOutput(output)
+            // Delegate runs on writerQueue — the same serial queue stopRecording
+            // uses with .sync to drain in-flight callbacks. The writerLock
+            // mediates shared state with main-thread callers of startRecording /
+            // stopRecording / cancelRecording.
+            output.setSampleBufferDelegate(self, queue: self.writerQueue)
+
             session.commitConfiguration()
-            let message = "Selected input device could not be added to the session."
+            session.startRunning()
+            self.installSessionObservers(for: session)
+
+            self.captureSession = session
+            self.currentInput = input
+            self.audioOutput = output
+
+            // Surface the low-quality-input warning from the device's activeFormat
+            // (best guess — the actual CMSampleBuffer rate could differ, but in
+            // practice activeFormat reflects what AVCaptureSession will deliver).
+            let nativeASBD = CMAudioFormatDescriptionGetStreamBasicDescription(
+                target.activeFormat.formatDescription
+            )?.pointee
+            let nativeSampleRate = nativeASBD?.mSampleRate ?? 48_000
+            let isLowQuality = nativeSampleRate <= 16_000
+
+            // Verify the session is on the intended device. Some virtual
+            // devices accept setSystemDefaultInputDevice with noErr but
+            // CoreAudio silently keeps the previous default; AVCaptureDevice
+            // honors the user pick verbatim, so the more reliable check here is
+            // simply comparing input.device.uniqueID to the intent. If the
+            // caller passed `intendedDeviceID` (the CoreAudio AudioDeviceID),
+            // resolve it back to an AVCaptureDevice and compare.
+            let silentFallback: Bool
+            if let intended = intendedDeviceID,
+               let intendedDevice = self.audioCaptureDevice(forCoreAudioID: intended) {
+                silentFallback = input.device.uniqueID != intendedDevice.uniqueID
+                if silentFallback {
+                    logger.warning(
+                        "Capture session bound to \(input.device.uniqueID, privacy: .public) but caller wanted \(intendedDevice.uniqueID, privacy: .public)"
+                    )
+                }
+            } else {
+                silentFallback = false
+            }
+
             DispatchQueue.main.async {
-                self.lastError = message
-                self.engineHealthy = false
+                self.lowQualityInput = isLowQuality
+                self.engineHealthy = true
                 self.isRebuilding = false
+                if silentFallback {
+                    self.selectedDeviceUsable = false
+                }
+                self.idleInputLossNotified = false
             }
-            return
-        }
-        session.addInput(input)
-
-        let output = AVCaptureAudioDataOutput()
-        // No audioSettings — capture output delivers buffers in the device's
-        // native format. The writer accepts whatever the device produces via
-        // sourceFormatHint at writer-input creation time (see captureOutput
-        // delegate); no per-buffer PCM conversion happens anywhere in the
-        // path. Format forcing here was the source of click artifacts in
-        // every prior attempt to set audioSettings, regardless of whether
-        // interleaved or non-interleaved was specified — the writer's
-        // internal transcoder handles any container/codec conversion needed
-        // more reliably than a capture-stage conversion ever did.
-        guard session.canAddOutput(output) else {
-            session.commitConfiguration()
-            let message = "Could not add audio output to the session."
-            DispatchQueue.main.async {
-                self.lastError = message
-                self.engineHealthy = false
-                self.isRebuilding = false
-            }
-            return
-        }
-        session.addOutput(output)
-        // Delegate runs on writerQueue — the same serial queue stopRecording
-        // uses with .sync to drain in-flight callbacks. The writerLock
-        // mediates shared state with main-thread callers of startRecording /
-        // stopRecording / cancelRecording.
-        output.setSampleBufferDelegate(self, queue: writerQueue)
-
-        session.commitConfiguration()
-        session.startRunning()
-        installSessionObservers(for: session)
-
-        self.captureSession = session
-        self.currentInput = input
-        self.audioOutput = output
-
-        // Surface the low-quality-input warning from the device's activeFormat
-        // (best guess — the actual CMSampleBuffer rate could differ, but in
-        // practice activeFormat reflects what AVCaptureSession will deliver).
-        let nativeASBD = CMAudioFormatDescriptionGetStreamBasicDescription(
-            target.activeFormat.formatDescription
-        )?.pointee
-        let nativeSampleRate = nativeASBD?.mSampleRate ?? 48_000
-        let isLowQuality = nativeSampleRate <= 16_000
-        DispatchQueue.main.async { self.lowQualityInput = isLowQuality }
-
-        // Verify the session is on the intended device. Some virtual
-        // devices accept setSystemDefaultInputDevice with noErr but
-        // CoreAudio silently keeps the previous default; AVCaptureDevice
-        // honors the user pick verbatim, so the more reliable check here is
-        // simply comparing input.device.uniqueID to the intent. If the
-        // caller passed `intendedDeviceID` (the CoreAudio AudioDeviceID),
-        // resolve it back to an AVCaptureDevice and compare.
-        let silentFallback: Bool
-        if let intended = intendedDeviceID,
-           let intendedDevice = audioCaptureDevice(forCoreAudioID: intended) {
-            silentFallback = input.device.uniqueID != intendedDevice.uniqueID
-            if silentFallback {
-                logger.warning(
-                    "Capture session bound to \(input.device.uniqueID, privacy: .public) but caller wanted \(intendedDevice.uniqueID, privacy: .public)"
-                )
-            }
-        } else {
-            silentFallback = false
-        }
-
-        DispatchQueue.main.async {
-            self.engineHealthy = true
-            self.isRebuilding = false
-            if silentFallback {
-                self.selectedDeviceUsable = false
-            }
-            self.idleInputLossNotified = false
         }
     }
 
@@ -489,6 +527,21 @@ class AudioEngine: NSObject, ObservableObject {
             interruptionWatchdog = nil
             sessionInterrupted = false
         }
+        // Re-arm the data-flow watchdog on every successful buffer. If the
+        // driver silently stops delivering (USB hub starvation, firmware
+        // hang, BT profile transition with no interruption signal), this
+        // fires after 3 s and routes through the same failure path as the
+        // interruption watchdog.
+        dataFlowWatchdog?.cancel()
+        let dfWatchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording, !self.disconnectStopPending else { return }
+            logger.warning("Data-flow watchdog fired — no buffers for 3 s")
+            self.dataFlowWatchdog = nil
+            self.disconnectStopPending = true
+            self.handleRecordingCaptureFailure(reason: "Microphone stopped delivering audio")
+        }
+        dataFlowWatchdog = dfWatchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: dfWatchdog)
         if !isWritingData { isWritingData = true }
         writeIndicatorClearWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -631,8 +684,19 @@ class AudioEngine: NSObject, ObservableObject {
         guard isRecording, disconnectStopPending else { return }
         logger.warning("Recording capture failure: \(reason, privacy: .public)")
         DispatchQueue.main.async { [weak self] in
-            self?.onDisconnectedDuringRecording?(reason)
+            self?.dispatchDisconnectIfNeeded(reason)
         }
+    }
+
+    /// Main-thread gate that prevents `onDisconnectedDuringRecording` from
+    /// firing twice when the interruption watchdog, data-flow watchdog, and
+    /// writer tear-down race close together. Whoever lands here first wins;
+    /// later callers see the latch set and bail. The latch is reset in
+    /// `startRecording` for each new take.
+    private func dispatchDisconnectIfNeeded(_ reason: String) {
+        guard !didDispatchDisconnect else { return }
+        didDispatchDisconnect = true
+        onDisconnectedDuringRecording?(reason)
     }
 
     private func installSessionObservers(for session: AVCaptureSession) {
@@ -655,50 +719,69 @@ class AudioEngine: NSObject, ObservableObject {
     @objc private func captureSessionRuntimeError(_ notification: Notification) {
         let err = notification.userInfo?[AVCaptureSessionErrorKey] as? Error
         logger.error("AVCaptureSession runtime error: \(err?.localizedDescription ?? "unknown", privacy: .public)")
-        guard isRecording, !disconnectStopPending else { return }
-        disconnectStopPending = true
-        handleRecordingCaptureFailure(reason: err?.localizedDescription ?? "runtime error")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard self.isRecording, !self.disconnectStopPending else { return }
+            self.disconnectStopPending = true
+            self.handleRecordingCaptureFailure(reason: err?.localizedDescription ?? "runtime error")
+        }
     }
 
     @objc private func captureSessionWasInterrupted(_ notification: Notification) {
         logger.warning("AVCaptureSession interrupted")
-        // Cancel any stale watchdog from a previous interruption, then arm a
-        // new one. If neither InterruptionEnded nor an incoming sample buffer
-        // clears the watchdog within 5 s, treat this as a hard device failure —
-        // the session is permanently interrupted and the recording would be
-        // silent. Brief interruptions (phone call overlay, Siri, etc.) recover
-        // before the watchdog fires; only permanent losses trigger the teardown.
-        interruptionWatchdog?.cancel()
-        interruptionWatchdog = nil
-        guard isRecording else { return }
-        sessionInterrupted = true
-        let watchdog = DispatchWorkItem { [weak self] in
-            guard let self, self.isRecording, !self.disconnectStopPending else { return }
-            logger.warning("Interruption watchdog fired — no recovery after 5 s")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            // Cancel any stale watchdog from a previous interruption, then arm a
+            // new one. If neither InterruptionEnded nor an incoming sample buffer
+            // clears the watchdog within 5 s, treat this as a hard device failure —
+            // the session is permanently interrupted and the recording would be
+            // silent. Brief interruptions (phone call overlay, Siri, etc.) recover
+            // before the watchdog fires; only permanent losses trigger the teardown.
+            self.interruptionWatchdog?.cancel()
             self.interruptionWatchdog = nil
-            self.sessionInterrupted = false
-            self.disconnectStopPending = true
-            self.handleRecordingCaptureFailure(
-                reason: "Recording stopped: microphone access was interrupted"
-            )
+            guard self.isRecording else { return }
+            self.sessionInterrupted = true
+            let watchdog = DispatchWorkItem { [weak self] in
+                guard let self, self.isRecording, !self.disconnectStopPending else { return }
+                logger.warning("Interruption watchdog fired — no recovery after 5 s")
+                self.interruptionWatchdog = nil
+                self.sessionInterrupted = false
+                self.disconnectStopPending = true
+                self.handleRecordingCaptureFailure(
+                    reason: "Recording stopped: microphone access was interrupted"
+                )
+            }
+            self.interruptionWatchdog = watchdog
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: watchdog)
         }
-        interruptionWatchdog = watchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: watchdog)
     }
 
     @objc private func captureSessionInterruptionEnded(_ notification: Notification) {
-        // Disarm the watchdog before any other work — the interruption resolved.
-        interruptionWatchdog?.cancel()
-        interruptionWatchdog = nil
-        sessionInterrupted = false
-        guard isRecording else { return }
-        if captureSession?.isRunning == false {
-            captureSession?.startRunning()
-        }
-        if captureSession?.isRunning == false {
-            guard !disconnectStopPending else { return }
-            disconnectStopPending = true
-            handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            // Disarm the watchdog before any other work — the interruption resolved.
+            self.interruptionWatchdog?.cancel()
+            self.interruptionWatchdog = nil
+            self.dataFlowWatchdog?.cancel()
+            self.dataFlowWatchdog = nil
+            self.sessionInterrupted = false
+            guard self.isRecording else { return }
+            // startRunning() is blocking — dispatch to sessionQueue.
+            // Check the result on sessionQueue and hop back to main for
+            // any state mutation or failure path call.
+            self.sessionQueue.async { [weak self] in
+                guard let self else { return }
+                if self.captureSession?.isRunning == false {
+                    self.captureSession?.startRunning()
+                }
+                let stillDown = self.captureSession?.isRunning == false
+                DispatchQueue.main.async {
+                    guard stillDown else { return }
+                    guard !self.disconnectStopPending else { return }
+                    self.disconnectStopPending = true
+                    self.handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+                }
+            }
         }
     }
 
@@ -739,13 +822,12 @@ class AudioEngine: NSObject, ObservableObject {
         availableInputDevices.first { isBuiltInDevice($0) }
     }
 
-    /// Hardware mics vs. aggregate/virtual devices, preserving discovery
-    /// order within each group. Driven by the cache built in
-    /// `refreshDevices()`, with a lazy fallback for safety.
-    func groupedInputDevices() -> (microphones: [AVCaptureDevice], virtual: [AVCaptureDevice]) {
-        var microphones: [AVCaptureDevice] = []
-        var virtual: [AVCaptureDevice] = []
-        for device in availableInputDevices {
+    /// Hardware-only input devices in discovery order. Aggregate and virtual
+    /// devices (BlackHole, Loopback, etc.) are filtered out — they are never
+    /// surfaced in the picker or used as auto-selection fallbacks. Driven by
+    /// the cache built in `refreshDevices()`, with a lazy fallback for safety.
+    func hardwareInputDevices() -> [AVCaptureDevice] {
+        availableInputDevices.filter { device in
             let kind: InputDeviceKind
             if let cached = deviceKindCache[device.uniqueID] {
                 kind = cached
@@ -753,13 +835,8 @@ class AudioEngine: NSObject, ObservableObject {
                 kind = classify(device)
                 deviceKindCache[device.uniqueID] = kind
             }
-            if kind == .virtual {
-                virtual.append(device)
-            } else {
-                microphones.append(device)
-            }
+            return kind == .microphone
         }
-        return (microphones, virtual)
     }
 
     // MARK: - Recording lifecycle
@@ -802,15 +879,20 @@ class AudioEngine: NSObject, ObservableObject {
 
         let fileType: AVFileType = (format == .aac) ? .m4a : .wav
 
-        // outputSettings — fixed parameters for the encode/transcode. The
-        // writer's internal transcoder handles any sample-rate or channel
-        // conversion needed between the source (whatever the capture
-        // device delivers) and these targets.
+        // outputSettings — encode/container parameters stored here at record
+        // start and consumed in the captureOutput delegate on the first buffer.
         //
         // AAC: mono at 48 kHz, 256 kbps — podcast-grade. Writer downmixes
-        //   multi-channel input and resamples to 48 kHz internally.
-        // WAV: mono int24 at 48 kHz — uncompressed podcast-delivery standard.
-        //   Writer downmixes / resamples and packs Float32 input to int24.
+        //   multi-channel input and resamples to 48 kHz internally. Fixed
+        //   rate is intentional: AAC is a delivery format.
+        //
+        // WAV (LPCM): mono int24. AVSampleRateKey: 48_000 is a placeholder
+        //   only — kAudioFormatLinearPCM requires an explicit rate key or
+        //   canAddInput returns false, but the actual value used is patched
+        //   in the first-buffer delegate path once the device's real rate is
+        //   known from the CMSampleBuffer format description. This ensures
+        //   the WAV is written at the hardware's native rate rather than
+        //   always resampling to 48 kHz.
         let outputSettings: [String: Any]
         switch format {
         case .aac:
@@ -823,7 +905,7 @@ class AudioEngine: NSObject, ObservableObject {
         case .wav:
             outputSettings = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: 48_000,
+                AVSampleRateKey: 48_000,   // placeholder — replaced in captureOutput
                 AVNumberOfChannelsKey: 1,
                 AVLinearPCMBitDepthKey: 24,
                 AVLinearPCMIsBigEndianKey: false,
@@ -867,11 +949,16 @@ class AudioEngine: NSObject, ObservableObject {
             logger.warning("PCMSidecar init failed — this recording has no crash-recovery safety net.")
             DispatchQueue.main.async { self.sidecarUnavailable = true }
         } else {
+            sidecar?.onFirstWriteFailure = { [weak self] in
+                DispatchQueue.main.async { self?.sidecarFailedDuringRecording = true }
+            }
             DispatchQueue.main.async { self.sidecarUnavailable = false }
         }
 
         recordingInputDeviceUID = currentInput?.device.uniqueID
         disconnectStopPending = false
+        didDispatchDisconnect = false
+        sidecarFailedDuringRecording = false
         isRecording = true
     }
 
@@ -888,6 +975,8 @@ class AudioEngine: NSObject, ObservableObject {
         disconnectStopPending = false
         interruptionWatchdog?.cancel()
         interruptionWatchdog = nil
+        dataFlowWatchdog?.cancel()
+        dataFlowWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
@@ -927,6 +1016,8 @@ class AudioEngine: NSObject, ObservableObject {
         disconnectStopPending = false
         interruptionWatchdog?.cancel()
         interruptionWatchdog = nil
+        dataFlowWatchdog?.cancel()
+        dataFlowWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.sidecarUnavailable = false
@@ -971,6 +1062,8 @@ class AudioEngine: NSObject, ObservableObject {
         disconnectStopPending = false
         interruptionWatchdog?.cancel()
         interruptionWatchdog = nil
+        dataFlowWatchdog?.cancel()
+        dataFlowWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.sidecarUnavailable = false
@@ -1046,6 +1139,8 @@ class AudioEngine: NSObject, ObservableObject {
         disconnectStopPending = false
         interruptionWatchdog?.cancel()
         interruptionWatchdog = nil
+        dataFlowWatchdog?.cancel()
+        dataFlowWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
@@ -1249,19 +1344,46 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             return
         }
 
+        // Read this buffer's sample rate for the sidecar header on every
+        // buffer (not just the first). Without this, a mid-session rate
+        // change (Bluetooth A2DP↔SCO transition, or another CoreAudio
+        // client forcing a rate change) leaves the sidecar header at the
+        // original rate while subsequent samples are written at the new
+        // rate — the recovered WAV plays at the wrong speed from the
+        // transition onward. `PCMSidecar.updateSampleRateIfNeeded` early-
+        // exits when the rate is unchanged, so the per-buffer cost is one
+        // float compare.
+        var sidecarRateUpdate: Double?
+        if let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
+            sidecarRateUpdate = asbd.pointee.mSampleRate
+        }
+
         // First-sample path: now that we know the source format, build the
         // AVAssetWriterInput with `sourceFormatHint`, add it to the writer,
-        // start the writing session, and refine the provisional sidecar rate.
-        var sidecarRateUpdate: Double?
+        // and start the writing session. The sidecar rate update above
+        // already captured this buffer's rate.
         if assetWriterInput == nil {
             guard let outputSettings = pendingOutputSettings,
                   let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else {
                 writerLock.unlock()
                 return
             }
+            // For WAV (LPCM) output, replace the 48 kHz placeholder with the
+            // device's actual sample rate. sidecarRateUpdate already extracted
+            // this from the same formatDesc above; fall back to the stored
+            // value if the extraction failed (device delivers an exotic format
+            // the sidecar normalizer doesn't handle). AAC is untouched — its
+            // fixed 48 kHz is intentional for delivery.
+            var resolvedSettings = outputSettings
+            if let formatID = outputSettings[AVFormatIDKey] as? UInt32,
+               formatID == kAudioFormatLinearPCM,
+               let actualRate = sidecarRateUpdate {
+                resolvedSettings[AVSampleRateKey] = actualRate
+            }
             let input = AVAssetWriterInput(
                 mediaType: .audio,
-                outputSettings: outputSettings,
+                outputSettings: resolvedSettings,
                 sourceFormatHint: formatDesc
             )
             input.expectsMediaDataInRealTime = true
@@ -1280,10 +1402,6 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             writer.startSession(atSourceTime: startTime)
             assetWriterInput = input
-
-            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
-                sidecarRateUpdate = asbd.pointee.mSampleRate
-            }
         }
 
         guard let input = assetWriterInput else {
@@ -1370,10 +1488,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             DispatchQueue.main.async {
                 self.interruptionWatchdog?.cancel()
                 self.interruptionWatchdog = nil
+                self.dataFlowWatchdog?.cancel()
+                self.dataFlowWatchdog = nil
                 self.sessionInterrupted = false
+                self.droppedFrameWarning = false
                 self.writeIndicatorClearWork?.cancel()
                 self.isWritingData = false
-                self.onDisconnectedDuringRecording?("Recording stopped: \(reason)")
+                self.dispatchDisconnectIfNeeded("Recording stopped: \(reason)")
             }
             return
         }
@@ -1395,10 +1516,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async {
             self.interruptionWatchdog?.cancel()
             self.interruptionWatchdog = nil
+            self.dataFlowWatchdog?.cancel()
+            self.dataFlowWatchdog = nil
             self.sessionInterrupted = false
+            self.droppedFrameWarning = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
-            self.onDisconnectedDuringRecording?("Recording stopped: \(reason)")
+            self.dispatchDisconnectIfNeeded("Recording stopped: \(reason)")
         }
     }
 

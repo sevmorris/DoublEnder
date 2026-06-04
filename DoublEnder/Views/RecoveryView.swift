@@ -36,6 +36,14 @@ final class RecoveryModel: ObservableObject {
 
     let sidecarURL: URL
     let mainFileURL: URL
+    /// True when the main file at `mainFileURL` already exists and is large
+    /// enough (>8 KB) to be a real finalized recording. Happens when the
+    /// app dies in the tiny window between `writer.finishWriting` completing
+    /// and `sidecar.discard()` running — m4a is fine, sidecar is leftover.
+    /// When true, the prompt offers a "Keep Saved" option so the user
+    /// doesn't lose a valid recording by recovering or deleting. Threshold
+    /// matches the launch-cleanup logic in `DoublEnderApp.runCrashRecoveryIfNeeded`.
+    let hasValidMainFile: Bool
 
     /// Invoked when this sidecar is fully handled (recovered, deleted, or
     /// dismissed) so the host can close the window and advance to the next.
@@ -43,7 +51,11 @@ final class RecoveryModel: ObservableObject {
 
     init(sidecarURL: URL) {
         self.sidecarURL = sidecarURL
-        self.mainFileURL = PCMSidecar.mainOutputURL(for: sidecarURL)
+        let main = PCMSidecar.mainOutputURL(for: sidecarURL)
+        self.mainFileURL = main
+        let attrs = try? FileManager.default.attributesOfItem(atPath: main.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        self.hasValidMainFile = size > 8 * 1024
     }
 
     var fileName: String { mainFileURL.lastPathComponent }
@@ -72,6 +84,13 @@ final class RecoveryModel: ObservableObject {
     func deleteWithoutRecovering() {
         try? FileManager.default.removeItem(at: sidecarURL)
         try? FileManager.default.removeItem(at: mainFileURL)
+        onFinished?()
+    }
+
+    /// Drop the leftover sidecar without touching the main file. Only
+    /// presented in the prompt when `hasValidMainFile` is true.
+    func keepSavedRecording() {
+        try? FileManager.default.removeItem(at: sidecarURL)
         onFinished?()
     }
 
@@ -125,13 +144,37 @@ struct RecoveryView: View {
 
     // MARK: - Phases
 
+    @ViewBuilder
     private var promptContent: some View {
+        if model.hasValidMainFile {
+            savedRecordingPrompt
+        } else {
+            interruptedRecordingPrompt
+        }
+    }
+
+    private var interruptedRecordingPrompt: some View {
         VStack(spacing: 14) {
             icon("exclamationmark.triangle.fill")
             title("UNSAVED RECORDING")
             bodyText("A recording from a previous session was interrupted before it could be saved. DoublEnder can recover it as a WAV file.")
             fileNameText(model.fileName)
             HStack(spacing: 10) {
+                pillButton("RECOVER") { model.recover() }
+                pillButton("DELETE") { model.deleteWithoutRecovering() }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private var savedRecordingPrompt: some View {
+        VStack(spacing: 14) {
+            icon("checkmark.seal.fill")
+            title("SAVED RECORDING FOUND")
+            bodyText("A recovery file was left behind, but the saved recording at this location is intact. Keeping it is the safe choice — recover only if you have reason to think the saved file is bad.")
+            fileNameText(model.fileName)
+            HStack(spacing: 10) {
+                pillButton("KEEP SAVED") { model.keepSavedRecording() }
                 pillButton("RECOVER") { model.recover() }
                 pillButton("DELETE") { model.deleteWithoutRecovering() }
             }

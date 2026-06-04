@@ -177,9 +177,14 @@ struct FaceplateMeterRow: View {
                     let availW = size.width - inset * 2
                     let availH = size.height - inset * 2
                     let sw = (availW - CGFloat(n - 1) * segGap) / CGFloat(n)
+                    // 1 dB deadzone above the floor: real ambient noise dwells
+                    // just above dbMin after clamping, so without this the
+                    // leftmost segment stays lit at idle and the meter reads
+                    // as frozen rather than quiet.
+                    let aboveDeadzone = level > Self.dbMin + 1.0
                     for i in 0..<n {
                         let db  = Self.dbMin + Float(i) / Float(n) * (Self.dbMax - Self.dbMin)
-                        let lit = level >= db
+                        let lit = aboveDeadzone && level >= db
                         let base: Color
                         if      db < -18 { base = FaceplateDesign.meterSafe    }
                         else if db <  -6 { base = FaceplateDesign.meterWarning }
@@ -325,20 +330,15 @@ struct FaceplateSecondaryButton: View {
 // MARK: - Device picker popover
 
 struct FaceplateDevicePickerPopover: View {
-    let microphones:    [AVCaptureDevice]
-    let virtualDevices: [AVCaptureDevice]
-    let selectedID:     String
-    let onSelect:       (String) -> Void
+    let microphones: [AVCaptureDevice]
+    let selectedID:  String
+    let onSelect:    (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if !microphones.isEmpty {
                 sectionHeader("MICROPHONES", topPadding: 12)
-                ForEach(microphones, id: \.uniqueID) { row($0, dimmed: false) }
-            }
-            if !virtualDevices.isEmpty {
-                sectionHeader("VIRTUAL & AGGREGATE", topPadding: microphones.isEmpty ? 12 : 15)
-                ForEach(virtualDevices, id: \.uniqueID) { row($0, dimmed: true) }
+                ForEach(microphones, id: \.uniqueID) { row($0) }
             }
         }
         .padding(.bottom, 8)
@@ -358,12 +358,12 @@ struct FaceplateDevicePickerPopover: View {
             .padding(.bottom, 5)
     }
 
-    private func row(_ device: AVCaptureDevice, dimmed: Bool) -> some View {
+    private func row(_ device: AVCaptureDevice) -> some View {
         Button { onSelect(device.uniqueID) } label: {
             HStack {
                 Text(device.localizedName)
                     .font(.system(size: 14))
-                    .foregroundColor(FaceplateDesign.secondaryText.opacity(dimmed ? 0.45 : 1.0))
+                    .foregroundColor(FaceplateDesign.secondaryText)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()

@@ -277,13 +277,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // inaccessible (permission revoked, sandboxed), the user
             // should be able to diagnose it from the unified log.
             logger.error("Crash recovery scan failed: \(error.localizedDescription, privacy: .public)")
+            // S3: also surface to the user — silently skipping means a
+            // recording from a prior crash can sit on Desktop forever
+            // with no indication it's there to recover.
+            let alert = NSAlert()
+            alert.window.appearance = NSAppearance(named: .darkAqua)
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn't Check for Unsaved Recordings"
+            alert.informativeText = "DoublEnder couldn't access the Desktop to check for recordings from a previous session. To fix this, go to System Settings → Privacy & Security → Files and Folders, allow DoublEnder to access the Desktop, then relaunch."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
             return
         }
 
         let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
+        // 8 KB threshold: a valid finalized AAC recording (even a fraction
+        // of a second long) exceeds this; an empty or stub container does
+        // not. Guards against a header-only orphan sidecar (from a transient
+        // PCMSidecar.init FileHandle failure) destroying a saved m4a that
+        // happens to share its name.
+        let mainFileValidThreshold: Int64 = 8 * 1024
         for sidecar in sidecars where !PCMSidecar.hasRecoverableContent(at: sidecar) {
             try? fm.removeItem(at: sidecar)
-            try? fm.removeItem(at: PCMSidecar.mainOutputURL(for: sidecar))
+            let mainURL = PCMSidecar.mainOutputURL(for: sidecar)
+            let attrs = try? fm.attributesOfItem(atPath: mainURL.path)
+            let mainSize = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            if mainSize > mainFileValidThreshold {
+                logger.warning("Empty sidecar next to apparently valid main file \(mainURL.lastPathComponent, privacy: .public) (\(mainSize) bytes) — keeping main file")
+            } else {
+                try? fm.removeItem(at: mainURL)
+            }
         }
 
         let recoverable = sidecars.filter { PCMSidecar.hasRecoverableContent(at: $0) }

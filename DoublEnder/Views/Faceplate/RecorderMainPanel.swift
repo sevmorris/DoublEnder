@@ -43,8 +43,7 @@ struct RecorderMainPanel: View {
                     popovers.toggleInput(
                         buttonView: anchorView,
                         content: AnyView(FaceplateDevicePickerPopover(
-                            microphones: viewModel.inputDeviceGroups.microphones,
-                            virtualDevices: viewModel.inputDeviceGroups.virtual,
+                            microphones: viewModel.hardwareInputDevices,
                             selectedID: viewModel.selectedInputDeviceID,
                             onSelect: { id in
                                 viewModel.selectedInputDeviceID = id
