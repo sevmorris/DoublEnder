@@ -145,7 +145,7 @@ struct HelpView: View {
                     DoublEnder won't let you lose a recording by mistake.
                     """)
                     definition("Quitting mid-record", "Pressing ⌘Q while recording shows a confirmation. Choose Stop & Save to finalize the file, Quit Without Saving to discard it, or Cancel to keep going.")
-                    definition("Crash recovery", "If the app exits unexpectedly while a recording is in progress, the next launch offers to keep the orphaned file (revealed in Finder) or delete it.")
+                    definition("Crash recovery", "If the app exits unexpectedly while a recording is in progress, the next launch offers to recover the audio as a WAV file or delete it. If the original recording finalized cleanly before the crash, a Keep Saved option appears instead so the intact file is left untouched.")
                 }
 
                 dividerRow

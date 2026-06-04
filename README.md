@@ -26,7 +26,7 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 
 ## Features
 
-- **One-button recording** to AAC (M4A, 256 kbps) or WAV (24-bit PCM), mono at 48 kHz
+- **One-button recording** to AAC (M4A, 256 kbps at 48 kHz, mono) or WAV (24-bit PCM, mono at the input device's native sample rate)
 - **Settings popover** (gear icon) — override the filename prefix, attach notes (written as file description metadata), or switch output format
 - **Input selector** — pick any system audio input from the mic dropdown
 - **Level meter** — lights up when audio is coming in so you know the mic is working (decorative; no gain control in the app)
@@ -35,10 +35,10 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 - **Save confirmation** — when a recording finishes, a confirmation dialog shows the saved filename (always visible, even if notifications are off)
 - **Native notifications** — if enabled in System Settings, a banner also appears with a Reveal in Finder action
 - **Quit protection** — ⌘Q during a recording prompts to save or discard before terminating
-- **Crash recovery** — if the app exits unexpectedly mid-record, the next launch offers to keep or delete the orphaned file
+- **Crash recovery** — if the app exits unexpectedly mid-record, the next launch re-wraps the recovery sidecar into a playable WAV (or you can delete it)
 - **Update checker** — Check for Updates… in the app menu polls GitHub releases for new versions
 
-**Output:** `DoublEnder_<timestamp>.m4a` saved to your Desktop (or `.wav` if WAV is selected — 24-bit PCM, mono at 48 kHz). The filename prefix is overridable from the settings popover.
+**Output:** `DoublEnder_<timestamp>.m4a` saved to your Desktop (or `.wav` if WAV is selected — 24-bit PCM, mono at the input device's native sample rate). The filename prefix is overridable from the settings popover.
 
 ---
 
