@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Main recording panel
 
@@ -7,20 +8,9 @@ struct RecorderMainPanel: View {
     @ObservedObject var popovers: FaceplatePopoverManager
     @Binding var isStopping: Bool
 
-    /// Pre-recording name prompt state. Active only in builds where
-    /// `RecorderViewModel.requiresRecordingNameAtStart` is true (today: the
-    /// hacks-on-tap branded build). Both stay at their initial values in
-    /// every other build because the alert is never presented.
-    @State private var isPresentingNamePrompt = false
-    @State private var nameInput = ""
-
     private var isRecordingState: Bool {
         if case .recording = viewModel.state { return true }
         return false
-    }
-
-    private var sanitizedNameInput: String {
-        RecorderViewModel.sanitizedRecordingName(from: nameInput)
     }
 
     var body: some View {
@@ -33,7 +23,6 @@ struct RecorderMainPanel: View {
             Spacer(minLength: 10)
             FaceplateMeterRow(
                 level: viewModel.meterLevel,
-                isClipping: viewModel.isClipping,
                 inputActive: popovers.showingInput,
                 settingsActive: popovers.showingSettings,
                 inputDisabled: viewModel.isCurrentlyRecording,
@@ -167,23 +156,6 @@ struct RecorderMainPanel: View {
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .disabled(isStopping || (!isRecordingState && !viewModel.canStartRecording))
-        .alert("Name this recording", isPresented: $isPresentingNamePrompt) {
-            TextField("Your name", text: $nameInput)
-            Button("Start Recording") {
-                let stem = sanitizedNameInput
-                // Belt-and-braces: the button is also .disabled below, but
-                // the no-op guard means a stray keyboard activation can't
-                // start a recording with an empty/sanitized-to-empty name.
-                guard !stem.isEmpty else { return }
-                let captured = stem
-                nameInput = ""
-                viewModel.startRecording(nameOverride: captured)
-            }
-            .disabled(sanitizedNameInput.isEmpty)
-            Button("Cancel", role: .cancel) {
-                nameInput = ""
-            }
-        }
     }
 
     private func handleRecordTap() {
@@ -195,13 +167,64 @@ struct RecorderMainPanel: View {
         case .selectingMic, .ready:
             guard viewModel.canStartRecording else { return }
             if RecorderViewModel.requiresRecordingNameAtStart {
-                nameInput = ""
-                isPresentingNamePrompt = true
+                if let stem = runNamePromptModal() {
+                    viewModel.startRecording(nameOverride: stem)
+                }
             } else {
                 viewModel.startRecording()
             }
         default:
             break
         }
+    }
+
+    /// Compact NSAlert with a fixed-width accessory text field. Replaces the
+    /// prior SwiftUI `.alert` which inflated to the host window's width —
+    /// SwiftUI's macOS alert bridge sizes accessory views to their preferred
+    /// (unbounded) intrinsic width. NSAlert lets us pin the accessory at
+    /// 340pt so the total dialog lands around 380pt with the standard
+    /// alert margins. Run-modal pattern matches the USB-detect alert in
+    /// RecorderViewModel — the faceplate window is borderless and can't
+    /// route sheet button clicks.
+    ///
+    /// Returns the sanitized name on "Start Recording", or `nil` on Cancel
+    /// or sanitized-to-empty input.
+    @MainActor
+    private func runNamePromptModal() -> String? {
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .informational
+        alert.messageText = "Name this recording"
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        field.placeholderString = "Your name"
+        alert.accessoryView = field
+
+        let startButton = alert.addButton(withTitle: "Start Recording")
+        let cancelButton = alert.addButton(withTitle: "Cancel")
+        startButton.isEnabled = false
+        // Strip Return from Start while it's disabled — otherwise Cocoa
+        // visually transfers the default-button ring to Cancel, making
+        // Return dismiss with Cancel. Restored when the name is non-empty.
+        startButton.keyEquivalent = ""
+        cancelButton.keyEquivalent = "\u{1b}"
+
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSControl.textDidChangeNotification,
+            object: field, queue: .main
+        ) { _ in
+            let stem = RecorderViewModel.sanitizedRecordingName(from: field.stringValue)
+            let valid = !stem.isEmpty
+            startButton.isEnabled = valid
+            startButton.keyEquivalent = valid ? "\r" : ""
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        DispatchQueue.main.async { alert.window.makeFirstResponder(field) }
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        let stem = RecorderViewModel.sanitizedRecordingName(from: field.stringValue)
+        return stem.isEmpty ? nil : stem
     }
 }

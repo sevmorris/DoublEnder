@@ -67,8 +67,6 @@ class RecorderViewModel: ObservableObject {
     @Published var recordingTime: TimeInterval = 0
     /// Current input level in dBFS (peak-hold), forwarded from AudioEngine for the viewport meter.
     @Published var meterLevel: Float = LevelMeter.dbFloor
-    /// True when input has peaked at full scale this session/take.
-    @Published var isClipping: Bool = false
     /// True when buffers are actively being appended to the writer.
     /// Drives the on-screen write-flow indicator dot. Forwarded from
     /// AudioEngine.isWritingData.
@@ -162,6 +160,25 @@ class RecorderViewModel: ObservableObject {
         default: return false
         }
     }
+
+    #if GCS_ENABLED
+    /// Whether a successful upload should move the local recording to the
+    /// user's Trash. Branded builds opt in by setting
+    /// `BRAND_DELETE_LOCAL_AFTER_UPLOAD="true"` in brand.conf, which causes
+    /// release-cloud-branded.sh to inject `DELETE_LOCAL_AFTER_UPLOAD=YES`
+    /// into the Info.plist. Standard Cloud substitutes the unset build
+    /// setting to empty; public DoublEnder doesn't declare the key at all.
+    /// Both read as falsy here, so the trash code path stays inert for them.
+    static var deletesLocalAfterUpload: Bool {
+        guard let raw = Bundle.main.infoDictionary?["DeleteLocalAfterUpload"] as? String else {
+            return false
+        }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "yes", "true", "1": return true
+        default: return false
+        }
+    }
+    #endif
 
     /// Sanitize a user-entered string for use as the entire recording
     /// filename (extension excluded). Caller must check the result for
@@ -323,9 +340,6 @@ class RecorderViewModel: ObservableObject {
         audioEngine.$meterLevel
             .receive(on: DispatchQueue.main)
             .assign(to: &$meterLevel)
-        audioEngine.$isClipping
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$isClipping)
         audioEngine.$isWritingData
             .receive(on: DispatchQueue.main)
             .assign(to: &$isWritingData)
@@ -934,6 +948,19 @@ class RecorderViewModel: ObservableObject {
                     // the user clicks OK (notifications can't guarantee this).
                     UploadConfirmation.present(success: true,
                                                fileName: fileURL.lastPathComponent)
+                }
+                // Opt-in: branded builds with DELETE_LOCAL_AFTER_UPLOAD=YES
+                // move the just-uploaded file to the Trash. Runs *after*
+                // clearPendingUpload so a crash mid-move can't leave a
+                // pendingUploadPath pointing at a trashed file. Trash failure
+                // is non-fatal — upload already succeeded.
+                if Self.deletesLocalAfterUpload {
+                    do {
+                        var resultingURL: NSURL?
+                        try FileManager.default.trashItem(at: fileURL, resultingItemURL: &resultingURL)
+                    } catch {
+                        logger.error("Trash-after-upload failed: \(error.localizedDescription, privacy: .public)")
+                    }
                 }
                 return
             } catch {

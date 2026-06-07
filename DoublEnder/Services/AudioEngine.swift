@@ -44,9 +44,6 @@ class AudioEngine: NSObject, ObservableObject {
     /// smoothed on writerQueue and published to the UI. Display-only — never
     /// affects recording.
     @Published var meterLevel: Float = LevelMeter.dbFloor
-    /// Latches true when input peaks reach full scale; auto-clears after
-    /// `LevelMeter.clipIndicatorHoldDuration`. Display-only.
-    @Published var isClipping: Bool = false
     /// True when the PCM sidecar could not be opened for this recording —
     /// crash recovery is unavailable for the current take. (M4)
     @Published var sidecarUnavailable: Bool = false
@@ -182,8 +179,6 @@ class AudioEngine: NSObject, ObservableObject {
     )
     /// Exponential smoother for the live peak-hold meter; read/written only on writerQueue.
     private var smoothedPeakLevel: Float = LevelMeter.dbFloor
-    /// Scheduled task that clears `isClipping` after the hold duration.
-    private var clipClearWork: DispatchWorkItem?
     /// Scheduled "clear write indicator" task; cancelled and re-scheduled on
     /// every successful writer append so isWritingData only flips to false
     /// when buffers stop arriving for 150 ms.
@@ -367,10 +362,7 @@ class AudioEngine: NSObject, ObservableObject {
             self.audioOutput = nil
             self.writerQueue.sync { self.smoothedPeakLevel = LevelMeter.dbFloor }
             DispatchQueue.main.async {
-                self.clipClearWork?.cancel()
-                self.clipClearWork = nil
                 self.meterLevel = LevelMeter.dbFloor
-                self.isClipping = false
             }
 
             let target: AVCaptureDevice
@@ -854,9 +846,6 @@ class AudioEngine: NSObject, ObservableObject {
         }
 
         DispatchQueue.main.async {
-            self.clipClearWork?.cancel()
-            self.clipClearWork = nil
-            self.isClipping = false
             self.droppedFrameWarning = false
         }
 
@@ -1504,36 +1493,15 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async { self.lastError = nil }
     }
 
-    /// Peak-hold level and clip indicator from a CMSampleBuffer, published to the UI.
+    /// Peak-hold level from a CMSampleBuffer, published to the UI.
     private func updateMeterLevels(from sampleBuffer: CMSampleBuffer) {
         let peakLinear = peakLinear(from: sampleBuffer)
-        if LevelMeter.isClipping(peakLinear: peakLinear) {
-            indicateClipping()
-        }
         let instantDb = LevelMeter.clampedDisplayDB(fromLinear: peakLinear)
         let coef = instantDb > smoothedPeakLevel ? LevelMeter.peakAttack : LevelMeter.peakRelease
         smoothedPeakLevel += coef * (instantDb - smoothedPeakLevel)
         let level = smoothedPeakLevel
         DispatchQueue.main.async { [weak self] in
             self?.meterLevel = level
-        }
-    }
-
-    /// Light CLIP and schedule auto-clear; re-triggers extend the hold window.
-    private func indicateClipping() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.isClipping = true
-            self.clipClearWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                self?.isClipping = false
-                self?.clipClearWork = nil
-            }
-            self.clipClearWork = work
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + LevelMeter.clipIndicatorHoldDuration,
-                execute: work
-            )
         }
     }
 

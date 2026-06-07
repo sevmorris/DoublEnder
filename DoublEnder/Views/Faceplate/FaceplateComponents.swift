@@ -109,10 +109,9 @@ final class FaceplatePopoverManager: NSObject, ObservableObject, NSPopoverDelega
 
 // MARK: - Meter row
 
-/// Three independent controls: input button, level meter with CLIP, settings button.
+/// Three independent controls: input button, level meter, settings button.
 struct FaceplateMeterRow: View {
     let level: Float
-    let isClipping: Bool
     let inputActive: Bool
     let settingsActive: Bool
     var inputDisabled: Bool = false
@@ -131,9 +130,7 @@ struct FaceplateMeterRow: View {
         let containerH: CGFloat = 34
         let iconBoxW:   CGFloat = 34
         let gap:        CGFloat = 6
-        let clipW:      CGFloat = 34
         let meterW:     CGFloat = FaceplateDesign.vpContentWidth - (iconBoxW * 2) - (gap * 2)
-        let canvasW:    CGFloat = meterW - clipW
 
         HStack(alignment: .top, spacing: gap) {
             iconButton(
@@ -145,8 +142,7 @@ struct FaceplateMeterRow: View {
                 capture: { inputAnchor = $0 },
                 onTap: { if let av = inputAnchor { onInputTap(av) } }
             )
-            meterUnit(meterW: meterW, canvasW: canvasW, clipW: clipW,
-                      containerH: containerH, clipping: isClipping)
+            meterUnit(meterW: meterW, containerH: containerH)
             iconButton(
                 name: "settings_icon",
                 active: settingsActive,
@@ -163,46 +159,33 @@ struct FaceplateMeterRow: View {
     @ViewBuilder
     private func meterUnit(
         meterW: CGFloat,
-        canvasW: CGFloat,
-        clipW: CGFloat,
-        containerH: CGFloat,
-        clipping: Bool
+        containerH: CGFloat
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 0) {
-                Canvas { ctx, size in
-                    let n = Self.segCount
-                    let segGap: CGFloat = 1.5
-                    let inset:  CGFloat = 3
-                    let availW = size.width - inset * 2
-                    let availH = size.height - inset * 2
-                    let sw = (availW - CGFloat(n - 1) * segGap) / CGFloat(n)
-                    // 1 dB deadzone above the floor: real ambient noise dwells
-                    // just above dbMin after clamping, so without this the
-                    // leftmost segment stays lit at idle and the meter reads
-                    // as frozen rather than quiet.
-                    let aboveDeadzone = level > Self.dbMin + 1.0
-                    for i in 0..<n {
-                        let db  = Self.dbMin + Float(i) / Float(n) * (Self.dbMax - Self.dbMin)
-                        let lit = aboveDeadzone && level >= db
-                        let base: Color
-                        if      db < -18 { base = FaceplateDesign.meterSafe    }
-                        else if db <  -6 { base = FaceplateDesign.meterWarning }
-                        else             { base = FaceplateDesign.meterDanger   }
-                        let c = lit ? base : FaceplateDesign.meterInactive
-                        let x = inset + CGFloat(i) * (sw + segGap)
-                        let rect = CGRect(x: x, y: inset, width: max(sw, 1), height: availH)
-                        ctx.fill(RoundedRectangle(cornerRadius: 1).path(in: rect), with: .color(c))
-                    }
+            Canvas { ctx, size in
+                let n = Self.segCount
+                let segGap: CGFloat = 1.5
+                let inset:  CGFloat = 3
+                let availW = size.width - inset * 2
+                let availH = size.height - inset * 2
+                let sw = (availW - CGFloat(n - 1) * segGap) / CGFloat(n)
+                // 1 dB deadzone above the floor: real ambient noise dwells
+                // just above dbMin after clamping, so without this the
+                // leftmost segment stays lit at idle and the meter reads
+                // as frozen rather than quiet.
+                let aboveDeadzone = level > Self.dbMin + 1.0
+                for i in 0..<n {
+                    let db  = Self.dbMin + Float(i) / Float(n) * (Self.dbMax - Self.dbMin)
+                    let lit = aboveDeadzone && level >= db
+                    let base: Color
+                    if      db < -18 { base = FaceplateDesign.meterSafe    }
+                    else if db <  -6 { base = FaceplateDesign.meterWarning }
+                    else             { base = FaceplateDesign.meterDanger   }
+                    let c = lit ? base : FaceplateDesign.meterInactive
+                    let x = inset + CGFloat(i) * (sw + segGap)
+                    let rect = CGRect(x: x, y: inset, width: max(sw, 1), height: availH)
+                    ctx.fill(RoundedRectangle(cornerRadius: 1).path(in: rect), with: .color(c))
                 }
-                .frame(width: canvasW, height: containerH)
-
-                Text("CLIP")
-                    .font(.system(size: 7, weight: .bold))
-                    .tracking(0.4)
-                    .foregroundColor(clipping ? .white : FaceplateDesign.vpAmber.opacity(0.22))
-                    .frame(width: clipW, height: containerH)
-                    .background(clipping ? FaceplateDesign.meterClipRed : FaceplateDesign.vpSurface)
             }
             .frame(width: meterW, height: containerH)
             .background(FaceplateDesign.vpSurface)
@@ -217,7 +200,7 @@ struct FaceplateMeterRow: View {
                     Text(text)
                         .font(.system(size: 7, weight: .medium, design: .monospaced))
                         .foregroundColor(FaceplateDesign.vpAmber.opacity(0.55))
-                        .position(x: frac * canvasW, y: 5)
+                        .position(x: frac * meterW, y: 5)
                 }
             }
             .frame(width: meterW, height: 12)

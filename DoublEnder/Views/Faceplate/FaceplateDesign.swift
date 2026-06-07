@@ -36,7 +36,6 @@ enum FaceplateDesign {
     static let meterSafe     = Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)  // #F5A623
     static let meterWarning  = Color(red: 0xFF/255, green: 0x8C/255, blue: 0x00/255)  // #FF8C00
     static let meterDanger   = Color(red: 0xE0/255, green: 0x5C/255, blue: 0x1A/255)  // #E05C1A
-    static let meterClipRed  = Color(red: 0xCC/255, green: 0x00/255, blue: 0x00/255)  // #CC0000
     static let meterInactive = Color(red: 0x2A/255, green: 0x1A/255, blue: 0x00/255)  // #2A1A00
 
     /// Inner padding on all four sides of the viewport; content width derived from it.

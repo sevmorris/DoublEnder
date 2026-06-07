@@ -529,6 +529,7 @@ Version suffix conventions:
 - `INFOPLIST_KEY_CFBundleDisplayName` — e.g. `DoublEnder · Hacks on Tap`
 - `INFOPLIST_KEY_UpdateManifestURL` — brand-specific GCS JSON manifest URL
 - `REQUIRE_RECORDING_NAME_AT_START` — `YES` for brands that want a pre-recording name prompt
+- `DELETE_LOCAL_AFTER_UPLOAD` — `YES` for brands that want the local file moved to Trash after a successful Cloud upload
 
 The branded build coexists with the standard Cloud build on a client's Mac (distinct bundle ID, distinct Application Support directory, distinct Dock icon). Branded `Brands/<slug>/` directories are gitignored; they live on the build machine only and must be backed up separately.
 

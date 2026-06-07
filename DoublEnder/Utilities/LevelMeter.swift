@@ -4,9 +4,9 @@ import Accelerate
 /// Shared level-meter parameters for Local, Cloud, and branded builds.
 ///
 /// All flavours compile the same `DoublEnder/` core (`AudioEngine` publishes
-/// `meterLevel` and `isClipping`; `FaceplateMeterRow` renders them). Keep
-/// floor, ceiling, and smoothing constants here so the engine clamp and
-/// viewport scale never drift.
+/// `meterLevel`; `FaceplateMeterRow` renders it). Keep floor, ceiling, and
+/// smoothing constants here so the engine clamp and viewport scale never
+/// drift.
 ///
 /// ## Design intent: signal indicator, not a production meter
 ///
@@ -14,9 +14,9 @@ import Accelerate
 /// feeds it the mono-downmixed signal from `PCMSidecar.normalizedMonoFloatSamples`,
 /// so it reflects approximately the same content as the recorded file.
 /// It has no gain control and is not intended as a mix reference — the
-/// ballistics (instant attack, ~250 ms release) and the CLIP latch are tuned
-/// for a guest who needs to confirm their mic is working, not for a producer
-/// setting record levels.
+/// ballistics (instant attack, ~250 ms release) are tuned for a guest who
+/// needs to confirm their mic is working, not for a producer setting
+/// record levels.
 enum LevelMeter {
     static let dbFloor: Float = -36
     static let dbCeiling: Float = 0
@@ -25,11 +25,6 @@ enum LevelMeter {
     /// Peak-hold ballistics at ~15 ms buffers: instant rise, ~250 ms fall.
     static let peakAttack: Float = 1.0
     static let peakRelease: Float = 0.12
-
-    /// Linear full-scale threshold for the CLIP latch (~−0.09 dBFS).
-    static let clipThresholdLinear: Float = 0.99
-    /// How long the CLIP indicator stays lit after a peak at full scale.
-    static let clipIndicatorHoldDuration: TimeInterval = 3.0
 
     static let scaleLabels: [(Float, String)] = [
         (dbFloor, "-36"), (-24, "-24"), (-12, "-12"),
@@ -42,10 +37,6 @@ enum LevelMeter {
 
     static func clampedDisplayDB(fromLinear linear: Float) -> Float {
         max(dbFloor, min(dbCeiling, dbFS(fromLinear: linear)))
-    }
-
-    static func isClipping(peakLinear: Float) -> Bool {
-        peakLinear >= clipThresholdLinear
     }
 
     /// Peak linear level across normalized mono samples (max abs, not RMS).
