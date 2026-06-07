@@ -23,6 +23,8 @@ brew install --cask sevmorris/doublender/doublender
 
 `brew upgrade --cask doublender` tracks each new release automatically.
 
+---
+
 Pick your microphone, hit the button, get an AAC file on your Desktop. That's it.
 
 Designed for podcast guests who shouldn't need to know anything about audio. No setup, no account, no cloud. You send them the app; they record their side of the conversation and send you the file.
