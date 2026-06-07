@@ -177,6 +177,20 @@
 
     .hero-portability strong { color: var(--amber); }
 
+    .hero-portability pre {
+      margin: 8px 0 0;
+      padding: 8px 12px;
+      background: var(--mid);
+      border: 1px solid rgba(245, 166, 35, 0.22);
+      border-radius: 1px;
+      font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      color: var(--amber-lt);
+      line-height: 1.55;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
     /* ── Buttons ── */
 
     .btn {
@@ -457,7 +471,9 @@
       <p class="hero-meta">macOS 14+ &nbsp;·&nbsp; Apple Silicon &amp; Intel &nbsp;·&nbsp; Free</p>
       <p class="hero-meta"><a href="https://ko-fi.com/sevmo" target="_blank" rel="noopener">Support on Ko-fi ☕</a></p>
       <p class="hero-portability"><strong>No installer needed.</strong> DoublEnder is a self-contained app — just double-click it wherever it is: your Desktop, Downloads folder, an external drive, or anywhere else you like.</p>
-      <p class="hero-portability">Prefer Homebrew? <code>brew install --cask sevmorris/doublender/doublender</code> — the tap is bumped on every release, so <code>brew upgrade --cask doublender</code> tracks each new build.</p>
+      <p class="hero-portability"><strong>Prefer Homebrew?</strong> The tap is bumped on every release, so <code>brew upgrade --cask doublender</code> stays current.
+<pre>brew tap sevmorris/doublender
+brew install --cask doublender</pre></p>
     </section>
 
     <hr class="pinstripe">
