@@ -14,6 +14,8 @@
 set -euo pipefail
 
 REPO="sevmorris/DoublEnder"
+TAP_REPO="sevmorris/homebrew-doublender"
+TAP_CASK_PATH="Casks/doublender.rb"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 if [[ $# -ne 1 ]]; then
@@ -218,6 +220,41 @@ gh release create "$TAG" "$DMG" \
     --title "${APP_NAME} ${TAG}" \
     --notes "$RELEASE_NOTES"
 ok "Release published"
+
+# ── Bump Homebrew cask ────────────────────────────────────────────────────────
+step "Bumping Homebrew cask"
+DMG_SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
+[[ -n "$DMG_SHA256" ]] || fail "Could not compute SHA256 of $DMG"
+TAP_DIR=$(mktemp -d -t homebrew-doublender)
+# Use SSH origin so the push uses the same key as the main DoublEnder push
+# above — the gh CLI clone defaults to HTTPS which would prompt for creds.
+git clone --quiet "git@github.com:${TAP_REPO}.git" "$TAP_DIR"
+CASK_FILE="$TAP_DIR/$TAP_CASK_PATH"
+[[ -f "$CASK_FILE" ]] || fail "Tap repo missing $TAP_CASK_PATH"
+# Match the existing version/sha256 lines regardless of suffix or hex value.
+# Both lines are bare-quoted strings on dedicated lines; the regex deliberately
+# spans the whole line so a stale value can't survive the rewrite.
+sed -i '' "s|^  version \".*\"\$|  version \"${VERSION}\"|" "$CASK_FILE"
+sed -i '' "s|^  sha256 \".*\"\$|  sha256 \"${DMG_SHA256}\"|" "$CASK_FILE"
+# Verify both replacements landed — sed -i silently no-ops on a missed pattern.
+grep -q "^  version \"${VERSION}\"\$" "$CASK_FILE" \
+    || fail "Cask version rewrite failed"
+grep -q "^  sha256 \"${DMG_SHA256}\"\$" "$CASK_FILE" \
+    || fail "Cask sha256 rewrite failed"
+(
+    cd "$TAP_DIR"
+    if [[ -z "$(git status --porcelain)" ]]; then
+        # No-op if the cask was already at this version (e.g. re-run after
+        # a partial failure).
+        ok "Cask already at $VERSION"
+    else
+        git add "$TAP_CASK_PATH"
+        git commit --quiet -m "Bump doublender to ${VERSION}"
+        git push --quiet origin HEAD
+        ok "Cask bumped to ${VERSION} (sha256 ${DMG_SHA256:0:12}…)"
+    fi
+)
+rm -rf "$TAP_DIR"
 
 # ── Publish GCS permalink ─────────────────────────────────────────────────────
 step "Publishing GCS download permalink"
