@@ -1,6 +1,6 @@
 # DoublEnder — Theory of Operation
 
-**Version:** 1.7.3lr · Last updated: 2026-06-04
+**Version:** 1.7.4lr · Last updated: 2026-06-07
 
 ---
 
@@ -452,7 +452,7 @@ The resulting URL is valid for 15 minutes — enough for any take to upload, wit
 2. `setPendingUpload(path: fileURL.path)` — persisted to `UserDefaults` before the PUT starts, so a mid-upload quit or crash leaves the path available for next-launch retry.
 3. `Task { await self.performUpload() }` — off the main actor for the network call.
 4. `uploader.upload(fileURL:)` — `URLSession.upload(for:fromFile:)` PUT to the signed URL. Progress flows via `urlSession(_:task:didSendBodyData:...)` delegate → `uploader.progress` → `viewModel.uploadProgress` → `FaceplateUploadingView`.
-5. On 200–299: `clearPendingUpload()`, `state = .ready`, `UploadConfirmation.present(success: true)`.
+5. On 200–299: `clearPendingUpload()`, `state = .ready`, `UploadConfirmation.present(success: true)`. Branded builds with `DELETE_LOCAL_AFTER_UPLOAD=YES` (set via `BRAND_DELETE_LOCAL_AFTER_UPLOAD="true"` in `brand.conf`) then move the local file to the user's Trash via `FileManager.trashItem(at:)`. The trash step runs after `clearPendingUpload` so a crash mid-move can't leave the pending-upload path pointing at a missing file; a trash failure is logged via `OSLog` but never mutates `state` because the upload has already succeeded.
 6. On failure: exponential backoff [2s, 4s, 8s] between up to 3 retries, staying in `.uploading` throughout. After retries exhausted: `state = .uploadFailed(fileURL)`, `UploadConfirmation.present(success: false)`.
 
 The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from the bundle ID tail: `io.github.sevmorris.DoublEnderCloud` → `DoublEnderCloud`; `io.github.sevmorris.DoublEnderCloud.hacks-on-tap` → `DoublEnderCloud-hacks-on-tap`. The UUID prevents filename collisions — two takes with the same filename (possible when `requiresRecordingNameAtStart` is active and a guest records twice) get distinct object keys.
