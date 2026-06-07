@@ -6,14 +6,14 @@
   <br />
   <strong>Version:</strong> 1.7.4lr
   <br />
-  <a href="https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.7.4lr.dmg"><strong>Download Latest (DMG)</strong></a>
-  ·
   <a href="https://sevmorris.github.io/DoublEnder/">App Page</a>
   ·
   <a href="https://sevmorris.github.io/DoublEnder/manual/theory.html">Theory of Operation</a>
 </p>
 
 > **No installer needed.** DoublEnder is a self-contained app — just double-click it wherever it is: your Desktop, Downloads folder, an external drive, or anywhere else you like.
+
+**[Download Latest (DMG)](https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v1.7.4lr.dmg)**
 
 Prefer Homebrew? A tap is published alongside every release:
 
@@ -25,12 +25,12 @@ brew install --cask sevmorris/doublender/doublender
 
 Pick your microphone, hit the button, get an AAC file on your Desktop. That's it.
 
+Designed for podcast guests who shouldn't need to know anything about audio. No setup, no account, no cloud. You send them the app; they record their side of the conversation and send you the file.
+
 <p align="center">
   <img src="docs/images/doublender-idle.png" width="49%" alt="DoublEnder — idle" />
   <img src="docs/images/doublender-recording.png" width="49%" alt="DoublEnder — recording" />
 </p>
-
-Designed for podcast guests who shouldn't need to know anything about audio. No setup, no account, no cloud. You send them the app; they record their side of the conversation and send you the file.
 
 ---
 
