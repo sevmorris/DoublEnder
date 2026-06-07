@@ -15,6 +15,14 @@
 
 > **No installer needed.** DoublEnder is a self-contained app — just double-click it wherever it is: your Desktop, Downloads folder, an external drive, or anywhere else you like.
 
+Prefer Homebrew? A tap is published alongside every release:
+
+```sh
+brew install --cask sevmorris/doublender/doublender
+```
+
+`brew upgrade --cask doublender` tracks each new release automatically.
+
 Pick your microphone, hit the button, get an AAC file on your Desktop. That's it.
 
 <p align="center">

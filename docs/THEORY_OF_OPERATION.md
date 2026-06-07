@@ -516,10 +516,11 @@ Version suffix conventions:
 11. **Verify DMG:** mount, read version from enclosed app, unmount.
 12. **Tag and push:** `git tag vX.Y.Zlr`, push branch and tag.
 13. **GitHub release:** `gh release create` with the DMG as the release asset. Release notes are generated from commits since the previous tag, filtering out version-bump and build-bump commits.
-14. **GCS permalink:** `gsutil cp` to `gs://doublender-downloads/DoublEnder.dmg`, `setmeta -h "Cache-Control:no-cache"`. The permalink always resolves to the latest build; the UpdateChecker's Download button uses this rather than a version-pinned GitHub URL.
-15. **Cloud + branded releases:** if `project.cloud.yml` is present, run `scripts/release-cloud-from-local.sh`. This publishes DoublEnder Cloud and every configured brand at the same numeric version.
-16. **Prune old releases:** keep the 5 most recent GitHub releases; delete older tags and release assets.
-17. **Clean up:** remove temp build dirs, DMG.
+14. **Bump Homebrew cask:** `shasum -a 256` the just-notarized DMG, clone `sevmorris/homebrew-doublender` into a temp directory, rewrite the `version` and `sha256` lines in `Casks/doublender.rb`, verify both replacements landed (sed silently no-ops on a missed pattern), and push a `Bump doublender to <version>` commit. Runs after the GitHub release so the cask's URL points at a live asset before users can `brew upgrade`.
+15. **GCS permalink:** `gsutil cp` to `gs://doublender-downloads/DoublEnder.dmg`, `setmeta -h "Cache-Control:no-cache"`. The permalink always resolves to the latest build; the UpdateChecker's Download button uses this rather than a version-pinned GitHub URL.
+16. **Cloud + branded releases:** if `project.cloud.yml` is present, run `scripts/release-cloud-from-local.sh`. This publishes DoublEnder Cloud and every configured brand at the same numeric version.
+17. **Prune old releases:** keep the 5 most recent GitHub releases; delete older tags and release assets.
+18. **Clean up:** remove temp build dirs, DMG.
 
 ### Branded releases
 
