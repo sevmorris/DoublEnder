@@ -862,7 +862,7 @@
       <li>Verify DMG: mount, read version, unmount</li>
       <li>Tag and push: <code>git tag vX.Y.Zlr</code>, push branch and tag</li>
       <li>GitHub release: <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
-      <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-doublender</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to vX.Y.Zlr</code></li>
+      <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-tap</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to vX.Y.Zlr</code></li>
       <li>GCS permalink: <code>gsutil cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: no-cache</code></li>
       <li>Cloud + branded releases: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
       <li>Prune old releases: keep the 5 most recent GitHub releases; delete older tags and assets</li>

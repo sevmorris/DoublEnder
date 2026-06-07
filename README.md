@@ -18,7 +18,7 @@
 Prefer Homebrew? A tap is published alongside every release:
 
 ```sh
-brew install --cask sevmorris/doublender/doublender
+brew install --cask sevmorris/tap/doublender
 ```
 
 `brew upgrade --cask doublender` tracks each new release automatically.

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO="sevmorris/DoublEnder"
-TAP_REPO="sevmorris/homebrew-doublender"
+TAP_REPO="sevmorris/homebrew-tap"
 TAP_CASK_PATH="Casks/doublender.rb"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -225,7 +225,7 @@ ok "Release published"
 step "Bumping Homebrew cask"
 DMG_SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
 [[ -n "$DMG_SHA256" ]] || fail "Could not compute SHA256 of $DMG"
-TAP_DIR=$(mktemp -d -t homebrew-doublender)
+TAP_DIR=$(mktemp -d -t homebrew-tap)
 # Use SSH origin so the push uses the same key as the main DoublEnder push
 # above — the gh CLI clone defaults to HTTPS which would prompt for creds.
 git clone --quiet "git@github.com:${TAP_REPO}.git" "$TAP_DIR"
