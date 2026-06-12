@@ -461,11 +461,32 @@ final class PCMSidecar {
         let sampleRate = Double(
             bitPattern: header.subdata(in: 4..<12).withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
         )
+        // A torn header (power loss during the mid-take rate rewrite) can leave
+        // garbage in the rate field. wavHeader converts it with UInt32(_:),
+        // which traps on NaN, infinity, negative, and out-of-range values —
+        // reject those here as a bad header so the launch-time recovery scan
+        // shows the failure dialog instead of crash-looping the app.
+        guard sampleRate.isFinite, sampleRate > 0, sampleRate <= Double(UInt32.max) else {
+            throw RecoveryError.badHeader
+        }
         let channels = header.subdata(in: 12..<16).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+        // Same torn-header hazard as the rate field above: a corrupt channel
+        // count traps in wavHeader's UInt16 conversions and byteRate multiply.
+        guard channels >= 1, channels <= 64 else {
+            throw RecoveryError.badHeader
+        }
 
         let totalSize = (try FileManager.default.attributesOfItem(atPath: sidecarURL.path)[.size] as? NSNumber)?
             .int64Value ?? Int64(headerSize)
-        let dataSize = UInt32(max(0, totalSize - Int64(headerSize)))
+        // The WAV's RIFF chunk-size field stores 36 + dataSize in a UInt32, so
+        // any payload above UInt32.max − 36 (~4 GiB, ≈6 hours at 48 kHz mono
+        // Float32) cannot be represented and would trap on conversion. Reject
+        // it as a bad header; the sidecar stays on disk for manual recovery.
+        let payloadSize = totalSize - Int64(headerSize)
+        guard payloadSize >= 0, payloadSize <= Int64(UInt32.max) - 36 else {
+            throw RecoveryError.badHeader
+        }
+        let dataSize = UInt32(payloadSize)
 
         return ParsedHeader(
             headerSize: headerSize,
