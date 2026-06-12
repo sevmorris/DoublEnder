@@ -111,7 +111,7 @@ final class PCMSidecar {
     /// rate different from the provisional value chosen at record start.
     func updateSampleRateIfNeeded(_ sampleRate: Double) {
         guard abs(sampleRate - self.sampleRate) > 0.5 else { return }
-        ioQueue.async { [self] in
+        ioQueue.sync { [self] in
             self.sampleRate = sampleRate
             let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: 1)
             do {

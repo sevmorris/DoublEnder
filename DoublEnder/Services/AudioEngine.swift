@@ -942,6 +942,13 @@ class AudioEngine: NSObject, ObservableObject {
         recordingInputDeviceUID = currentInput?.device.uniqueID
         disconnectStopPending = false
         didDispatchDisconnect = false
+        // A markDataFlowing queued behind the previous take's stopRecording can
+        // re-arm the data-flow watchdog after stop cancelled it; cancel both
+        // here so a stale item can never fire into this take.
+        dataFlowWatchdog?.cancel()
+        dataFlowWatchdog = nil
+        interruptionWatchdog?.cancel()
+        interruptionWatchdog = nil
         sidecarFailedDuringRecording = false
         isRecording = true
     }
