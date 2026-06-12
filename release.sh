@@ -225,7 +225,9 @@ ok "Release published"
 step "Bumping Homebrew cask"
 DMG_SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
 [[ -n "$DMG_SHA256" ]] || fail "Could not compute SHA256 of $DMG"
-TAP_DIR=$(mktemp -d -t homebrew-tap)
+# Explicit template instead of -t: BSD and GNU mktemp disagree on -t semantics
+# (GNU requires XXXXXX in the template and aborts without it).
+TAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/homebrew-tap.XXXXXX")
 # Use SSH origin so the push uses the same key as the main DoublEnder push
 # above — the gh CLI clone defaults to HTTPS which would prompt for creds.
 git clone --quiet "git@github.com:${TAP_REPO}.git" "$TAP_DIR"
