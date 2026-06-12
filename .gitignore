@@ -40,3 +40,4 @@ doublender-*.json
 # publication. Lives in docs/manual/ so its relative links resolve when
 # opened locally, but is untracked so GitHub Pages never serves it.
 docs/manual/theory-annotated.html
+AUDIT.md
