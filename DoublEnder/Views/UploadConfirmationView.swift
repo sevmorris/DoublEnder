@@ -94,7 +94,7 @@ private struct ThemedConfirmationView: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(dlgIcon, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
     }
 }
 
@@ -263,7 +263,7 @@ struct PendingUploadView: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(dlgIcon, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
     }
 }
 

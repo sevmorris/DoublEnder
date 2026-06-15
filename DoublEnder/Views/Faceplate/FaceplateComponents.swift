@@ -232,7 +232,7 @@ struct FaceplateMeterRow: View {
                 .background(ViewAnchor { capture($0) })
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
         .disabled(disabled)
         .help(help)
     }
@@ -306,7 +306,7 @@ struct FaceplateSecondaryButton: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(FaceplateDesign.vpAmber, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
     }
 }
 
@@ -361,7 +361,7 @@ struct FaceplateDevicePickerPopover: View {
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
     }
 }
 

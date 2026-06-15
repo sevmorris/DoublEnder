@@ -262,7 +262,7 @@ struct RecoveryView: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(recIcon, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
     }
 }
 

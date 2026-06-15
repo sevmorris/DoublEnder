@@ -154,7 +154,7 @@ struct RecorderMainPanel: View {
             )
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .focusEffectDisabledIfAvailable()
         .disabled(isStopping || (!isRecordingState && !viewModel.canStartRecording))
     }
 

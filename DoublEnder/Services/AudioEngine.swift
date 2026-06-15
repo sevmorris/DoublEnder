@@ -542,11 +542,23 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     func refreshDevices() {
-        let session = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
-            position: .unspecified
-        )
+        // Enumerate every audio input device. macOS 14 introduced the
+        // .microphone / .external device-type discovery path; on macOS 12–13
+        // we fall back to the deprecated-but-functional
+        // AVCaptureDevice.devices(for:), which returns the same set of audio
+        // inputs (built-in mics, USB interfaces, aggregates, virtuals). Both
+        // paths feed the identical CADefaultDeviceAggregate filtering and
+        // transport-type classification below.
+        let discoveredDevices: [AVCaptureDevice]
+        if #available(macOS 14.0, *) {
+            discoveredDevices = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.microphone, .external],
+                mediaType: .audio,
+                position: .unspecified
+            ).devices
+        } else {
+            discoveredDevices = AVCaptureDevice.devices(for: .audio)
+        }
         // Filter out macOS's internal "CADefaultDeviceAggregate-*" devices.
         // These are wrapper aggregates CoreAudio auto-creates around the
         // current system default whenever AUHAL needs to bind via the
@@ -554,7 +566,7 @@ class AudioEngine: NSObject, ObservableObject {
         // "CADefaultDeviceAggregate-84517-1" that mean nothing to the user;
         // picking one is functionally a no-op (it re-points at whatever the
         // real default already is) but visually confusing in the picker.
-        let visibleDevices = session.devices.filter {
+        let visibleDevices = discoveredDevices.filter {
             !$0.localizedName.hasPrefix("CADefaultDeviceAggregate")
         }
         self.availableInputDevices = visibleDevices

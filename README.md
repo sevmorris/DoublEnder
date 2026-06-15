@@ -56,7 +56,7 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 
 ## Operational Specifications
 
-- **Environment:** macOS 14.0+ (Sonoma); Apple Silicon and Intel
+- **Environment:** macOS 13.0+ (Ventura); Apple Silicon and Intel
 - **Output Format:** AAC/M4A (256 kbps) or WAV (24-bit PCM), mono
 - **Dependencies:** None — fully self-contained
 
