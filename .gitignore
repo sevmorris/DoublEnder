@@ -26,7 +26,7 @@ DoublEnder/Services/RecordingUploadMetadata.swift
 DoublEnder/Views/CloudContentView.swift
 DoublEnderTests/RecordingUploadMetadataTests.swift
 release-cloud.sh
-release-cloud-branded.sh
+release-branded.sh
 scripts/
 
 # GCS service account key — never commit

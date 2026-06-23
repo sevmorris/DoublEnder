@@ -524,7 +524,7 @@ Version suffix conventions:
 
 ### Branded releases
 
-`release-cloud-branded.sh <slug>` reads `Brands/<slug>/brand.conf`, backs up the canonical faceplate PNG via an EXIT trap (guarantees restoration even if the script is interrupted), replaces it with the brand's faceplate, and runs `xcodebuild` with command-line overrides:
+`release-branded.sh <slug>` reads `Brands/<slug>/brand.conf`, backs up the canonical faceplate PNG via an EXIT trap (guarantees restoration even if the script is interrupted), replaces it with the brand's faceplate, and runs `xcodebuild` with command-line overrides:
 - `PRODUCT_BUNDLE_IDENTIFIER` — e.g. `io.github.sevmorris.DoublEnderCloud.hacks-on-tap`
 - `MARKETING_VERSION` — numeric version + brand suffix (e.g. `1.7.2ht`)
 - `INFOPLIST_KEY_CFBundleDisplayName` — e.g. `DoublEnder · Hacks on Tap`

@@ -134,7 +134,7 @@ class RecorderViewModel: ObservableObject {
     /// the bundle's `DefaultRecordingPrefix` Info.plist key so branded Cloud
     /// builds can ship with a per-client default (set via the
     /// `DEFAULT_RECORDING_PREFIX` xcodebuild override in
-    /// release-cloud-branded.sh). Falls back to "DoublEnder" for any build
+    /// release-branded.sh). Falls back to "DoublEnder" for any build
     /// that doesn't supply the key.
     static var defaultRecordingPrefix: String {
         guard let value = Bundle.main.infoDictionary?["DefaultRecordingPrefix"] as? String,
@@ -147,7 +147,7 @@ class RecorderViewModel: ObservableObject {
     /// Whether the record button should present a pre-recording name prompt
     /// before starting. Branded builds opt in by setting
     /// `BRAND_REQUIRE_RECORDING_NAME="true"` in brand.conf, which causes
-    /// release-cloud-branded.sh to inject `REQUIRE_RECORDING_NAME_AT_START=YES`
+    /// release-branded.sh to inject `REQUIRE_RECORDING_NAME_AT_START=YES`
     /// into the Info.plist. Standard Cloud substitutes the unset build setting
     /// to empty; public DoublEnder doesn't declare the key at all. Both read
     /// as falsy here, so the prompt code path stays inert for them.
@@ -165,7 +165,7 @@ class RecorderViewModel: ObservableObject {
     /// Whether a successful upload should move the local recording to the
     /// user's Trash. Branded builds opt in by setting
     /// `BRAND_DELETE_LOCAL_AFTER_UPLOAD="true"` in brand.conf, which causes
-    /// release-cloud-branded.sh to inject `DELETE_LOCAL_AFTER_UPLOAD=YES`
+    /// release-branded.sh to inject `DELETE_LOCAL_AFTER_UPLOAD=YES`
     /// into the Info.plist. Standard Cloud substitutes the unset build
     /// setting to empty; public DoublEnder doesn't declare the key at all.
     /// Both read as falsy here, so the trash code path stays inert for them.
