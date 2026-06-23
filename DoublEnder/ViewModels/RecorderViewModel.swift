@@ -610,11 +610,11 @@ class RecorderViewModel: ObservableObject {
             state = .recording
             #if GCS_ENABLED
             // Branded-only: ping the monitoring engineer that a guest just
-            // started recording. No-op unless the brand shipped Pushover
-            // credentials (PushoverService.isConfigured); fire-and-forget so it
-            // never delays the take. Include the guest's name when the brand's
-            // pre-recording prompt supplied one.
-            PushoverService.shared.notifyRecordingStarted(name: nameOverride)
+            // started recording. No-op unless the brand shipped an ntfy topic
+            // URL (NtfyService.topicURL); fire-and-forget so it never delays the
+            // take. Include the guest's name when the brand's pre-recording
+            // prompt supplied one.
+            NtfyService.shared.notifyRecordingStarted(name: nameOverride)
             #endif
             recordingTime = 0
             timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
