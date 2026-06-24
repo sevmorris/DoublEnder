@@ -39,7 +39,7 @@ All three share 100% of the Swift source in `DoublEnder/`. They differ only in w
 |---|---|---|---|
 | **DoublEnder Local** | `lr` | — | GitHub releases + GCS permalink |
 | **DoublEnder Cloud** | `cr` | GCS upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag) | GCS (private) |
-| **Branded** (e.g. Hacks on Tap) | e.g. `ht` | Per-client faceplate, bundle ID, optional pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), delete-local-after-upload (`DELETE_LOCAL_AFTER_UPLOAD`), ntfy notification on recording start (`NtfyTopicURL`) | GCS (private, per-brand path) |
+| **Branded** (e.g. Hacks on Tap) | e.g. `ht` | Per-client faceplate, bundle ID, optional pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), delete-local-after-upload (`DELETE_LOCAL_AFTER_UPLOAD`), ntfy notification on recording start (`NtfyTopicURL`), optional app/artifact rename (`BRAND_APP_NAME`) | GCS (private, per-brand path) |
 
 The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. Every `#if GCS_ENABLED` block in the shared source tree compiles to nothing in Local builds, so the service-account key and upload logic are never shipped in the public app.
 
@@ -537,6 +537,7 @@ Version suffix conventions:
 `release-branded.sh <slug>` reads `Brands/<slug>/brand.conf`, backs up the canonical faceplate PNG via an EXIT trap (guarantees restoration even if the script is interrupted), replaces it with the brand's faceplate, and runs `xcodebuild` with command-line overrides:
 - `PRODUCT_BUNDLE_IDENTIFIER` — e.g. `io.github.sevmorris.DoublEnderCloud.hacks-on-tap` (the `BRAND_BUNDLE_SUFFIX` from `brand.conf` is baked in here)
 - `MARKETING_VERSION` — numeric version + brand suffix (e.g. `1.7.2ht`)
+- `PRODUCT_NAME` — the built `.app` bundle name (and the distributed zip name); the brand's `BRAND_APP_NAME` when set, otherwise `DoublEnder Cloud`
 - `BUNDLE_DISPLAY_NAME` — e.g. `DoublEnder · Hacks on Tap` (substituted into `CFBundleDisplayName` via `Info.plist`)
 - `DEFAULT_RECORDING_PREFIX` — the brand's default Desktop filename prefix
 - `REQUIRE_RECORDING_NAME_AT_START` — `YES` (conditional) for brands that want a pre-recording name prompt
@@ -545,6 +546,8 @@ Version suffix conventions:
 - `BRAND_BADGE_X` / `BRAND_BADGE_Y` / `BRAND_BADGE_W` / `BRAND_BADGE_H` — (conditional) badge geometry, injected when `Brands/<slug>/brand_badge.png` is present
 
 `UPDATE_MANIFEST_URL` is deliberately **not** injected — branded builds suppress the update checker entirely (see §8, "UpdateChecker — Cloud vs. Local"), so there is no manifest to point at.
+
+The branded artifact is a notarized, stapled `.app` packaged in a zip (no DMG), uploaded to `gs://doublender-downloads/<BRAND_GCS_PATH>/`. When `BRAND_APP_NAME` is set the zip is named after it (e.g. `DoublEnderHT.zip`, both locally and as the GCS object); otherwise the local artifact is `DoublEnder-Cloud-<slug>.zip` and the GCS object is `DoublEnder-Cloud.zip`.
 
 The branded build coexists with the standard Cloud build on a client's Mac (distinct bundle ID, distinct Application Support directory, distinct Dock icon). Branded `Brands/<slug>/` directories are gitignored; they live on the build machine only and must be backed up separately.
 
