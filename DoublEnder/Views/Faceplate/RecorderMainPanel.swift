@@ -182,7 +182,7 @@ struct RecorderMainPanel: View {
     /// prior SwiftUI `.alert` which inflated to the host window's width —
     /// SwiftUI's macOS alert bridge sizes accessory views to their preferred
     /// (unbounded) intrinsic width. NSAlert lets us pin the accessory at
-    /// 340pt so the total dialog lands around 380pt with the standard
+    /// 240pt so the total dialog lands around 280pt with the standard
     /// alert margins. Run-modal pattern matches the USB-detect alert in
     /// RecorderViewModel — the faceplate window is borderless and can't
     /// route sheet button clicks.
@@ -194,9 +194,9 @@ struct RecorderMainPanel: View {
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .informational
-        alert.messageText = "Name this recording"
+        alert.messageText = "Who is recording?"
 
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.placeholderString = "Your name"
         alert.accessoryView = field
 
