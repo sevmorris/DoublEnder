@@ -471,7 +471,7 @@
         <tr>
           <td>Branded</td>
           <td>per-brand</td>
-          <td>Per-client faceplate, bundle ID, update channel, optional pre-recording name prompt</td>
+          <td>Per-client faceplate, bundle ID, optional pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), delete-local-after-upload (<code>DELETE_LOCAL_AFTER_UPLOAD</code>), ntfy notification on recording start (<code>NtfyTopicURL</code>)</td>
           <td>GCS (private, per-brand path)</td>
         </tr>
       </tbody>
@@ -811,7 +811,11 @@
 
     <h3>Update Checker: Cloud vs. Local</h3>
     <p><strong>Local:</strong> queries <code>https://api.github.com/repos/sevmorris/DoublEnder/releases/latest</code>. "Download" opens the GCS permalink (<code>doublender-downloads/DoublEnder.dmg</code>) rather than a version-pinned GitHub asset; the permalink always resolves to the current build.</p>
-    <p><strong>Cloud:</strong> queries the <code>UpdateManifestURL</code> from the bundle's <code>Info.plist</code>. The manifest is a small JSON <code>{ "version": "1.7.2cr", "url": "https://…" }</code> written by <code>release-cloud.sh</code> on every release. For branded builds, <code>UpdateManifestURL</code> is set at build time per brand, so each client has its own independent update channel.</p>
+    <p><strong>Cloud:</strong> queries the <code>UpdateManifestURL</code> from the bundle's <code>Info.plist</code>. The manifest is a small JSON <code>{ "version": "1.7.2cr", "url": "https://…" }</code> written by <code>release-cloud.sh</code> on every release.</p>
+    <p><strong>Branded:</strong> the update checker is suppressed entirely. <code>UpdateChecker.isBrandedBundleID</code> flags any bundle ID matching the <code>io.github.sevmorris.DoublEnderCloud.</code> prefix (the standard Cloud ID plus a brand suffix); for those builds <code>checkForUpdates()</code> returns early and the "Check for Updates…" menu item is hidden. No <code>UPDATE_MANIFEST_URL</code> is injected and no manifest is published — branded builds are deployed manually to a fixed audience, so there is no public update channel.</p>
+
+    <h3>Recording-Start Notification (ntfy, branded)</h3>
+    <p>Branded builds can notify the engineer who monitors sessions when a guest starts recording. <code>NtfyService</code> (<code>Services/NtfyService.swift</code>, wrapped in <code>#if GCS_ENABLED</code>) fires a fire-and-forget POST to a configured <a href="https://ntfy.sh">ntfy</a> topic from <code>RecorderViewModel.startRecording</code> at the <code>.recording</code> transition. The topic URL comes from the <code>NtfyTopicURL</code> Info.plist key, injected from <code>BRAND_NTFY_TOPIC_URL</code> in <code>brand.conf</code> via the <code>NTFY_TOPIC_URL</code> build setting; when absent or empty (standard Cloud, and every Local build via the compile gate) the call is a silent no-op. The POST sends <code>Content-Type: text/plain</code> with the brand display name in the <code>Title</code> header; the body is <code>"&lt;name&gt; started recording"</code> when the name prompt supplied a guest name, otherwise <code>"Recording started"</code>. Failures are logged and swallowed.</p>
   </section>
 
   <!-- Lifecycle & Release -->
