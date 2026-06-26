@@ -63,6 +63,24 @@ final class NtfyService {
         send(body: body, title: Self.displayName)
     }
 
+    /// Notify the monitoring engineer that a guest stopped recording — the
+    /// complement of `notifyRecordingStarted(name:)`. `name` is the same
+    /// `nameOverride` value passed at start; when present and non-empty the body
+    /// reads "<name> stopped recording", otherwise "Recording stopped".
+    ///
+    /// No-op unless a topic URL is configured for this build. Fire-and-forget —
+    /// it never blocks or fails finalization.
+    func notifyRecordingStopped(name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body: String
+        if let trimmed, !trimmed.isEmpty {
+            body = "\(trimmed) stopped recording"
+        } else {
+            body = "Recording stopped"
+        }
+        send(body: body, title: Self.displayName)
+    }
+
     /// App display name (CFBundleDisplayName) for use as the notification title,
     /// or "DoublEnder" as a fallback.
     private static var displayName: String {

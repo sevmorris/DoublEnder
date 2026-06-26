@@ -302,6 +302,14 @@ class RecorderViewModel: ObservableObject {
     private var isFinalizingRecording = false
     private(set) var recordedFileURL: URL?
 
+    #if GCS_ENABLED
+    /// The `nameOverride` passed to the in-flight `startRecording` call, retained
+    /// so the branded recording-stopped ntfy notification can name the same guest
+    /// the recording-started one did. Reassigned on every start (to nil when no
+    /// name was supplied), so it never carries a stale value into a later stop.
+    private var currentRecordingName: String?
+    #endif
+
     var availableInputDevices: [AVCaptureDevice] {
         audioEngine.availableInputDevices
     }
@@ -615,6 +623,8 @@ class RecorderViewModel: ObservableObject {
             // take. Include the guest's name when the brand's pre-recording
             // prompt supplied one.
             NtfyService.shared.notifyRecordingStarted(name: nameOverride)
+            // Retain for the complementary recording-stopped notification.
+            currentRecordingName = nameOverride
             #endif
             recordingTime = 0
             timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
@@ -682,6 +692,13 @@ class RecorderViewModel: ObservableObject {
                 // of whether an upload follows.
                 Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
                 #if GCS_ENABLED
+                // Branded-only: ping the monitoring engineer that the guest
+                // stopped recording — the complement of the start notification.
+                // Fired here, with the file finalized but state still .recording,
+                // before the .uploading transition below. Same guest name as the
+                // start notification; fire-and-forget so it never delays the
+                // hand-off to the uploader.
+                NtfyService.shared.notifyRecordingStopped(name: self.currentRecordingName)
                 // The file is finalized on disk. Hand off to the uploader and
                 // let the .uploading state drive the progress UI. The stop
                 // button unblocks immediately via the completion call below.
