@@ -145,12 +145,11 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// Whether the record button should present a pre-recording name prompt
-    /// before starting. Branded builds opt in by setting
-    /// `BRAND_REQUIRE_RECORDING_NAME="true"` in brand.conf, which causes
-    /// release-branded.sh to inject `REQUIRE_RECORDING_NAME_AT_START=YES`
-    /// into the Info.plist. Standard Cloud substitutes the unset build setting
-    /// to empty; public DoublEnder doesn't declare the key at all. Both read
-    /// as falsy here, so the prompt code path stays inert for them.
+    /// before starting. Standard Cloud defaults `REQUIRE_RECORDING_NAME_AT_START`
+    /// to YES in project.cloud.yml; branded builds pin it explicitly (YES or NO)
+    /// via release-branded.sh based on `BRAND_REQUIRE_RECORDING_NAME` in
+    /// brand.conf. Public DoublEnder doesn't declare the Info.plist key at all,
+    /// so it reads as falsy here and the prompt code path stays inert.
     static var requiresRecordingNameAtStart: Bool {
         guard let raw = Bundle.main.infoDictionary?["RequireRecordingNameAtStart"] as? String else {
             return false
