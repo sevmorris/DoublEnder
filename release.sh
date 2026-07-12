@@ -5,8 +5,8 @@
 #   e.g. ./release.sh 1.6.30lr
 #
 # When the private Cloud overlay (project.cloud.yml) is present, also publishes
-# DoublEnder Cloud and every configured branded client at the matching numeric
-# version so in-app updaters prompt across all flavours.
+# DoublEnder Cloud at the matching numeric version so in-app updaters prompt
+# across both flavours.
 #
 # Requires: xcodebuild, xcodegen, hdiutil, gh (GitHub CLI), git, xcrun
 # Cloud step also requires: gcloud (see scripts/release-cloud-from-local.sh)
@@ -271,12 +271,12 @@ gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
 gsutil setmeta -h "Cache-Control:no-cache" gs://doublender-downloads/DoublEnder.dmg
 ok "GCS permalink updated → DoublEnder.dmg (no-cache)"
 
-# ── Cloud + branded releases ──────────────────────────────────────────────────
+# ── Cloud release ─────────────────────────────────────────────────────────────
 if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
     LOCAL_BUILD=$(awk -F'"' '/CURRENT_PROJECT_VERSION:/ {print $2; exit}' "$PROJECT_DIR/project.yml")
     "$PROJECT_DIR/scripts/release-cloud-from-local.sh" "$VERSION" "$LOCAL_BUILD"
 else
-    step "Skipping Cloud/branded releases"
+    step "Skipping Cloud release"
     ok "No project.cloud.yml — restore private overlay to publish Cloud with Local releases"
 fi
 
