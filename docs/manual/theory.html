@@ -444,8 +444,8 @@
 
   <!-- Product variants -->
   <section>
-    <h3>The Three Variants</h3>
-    <p>All three share 100% of the Swift source in <code>DoublEnder/</code>. They differ only in what is compiled in and what assets or credentials are bundled.</p>
+    <h3>The Two Variants</h3>
+    <p>Both share 100% of the Swift source in <code>DoublEnder/</code>. They differ only in what is compiled in and what assets or credentials are bundled.</p>
     <table class="compare-table">
       <thead>
         <tr>
@@ -465,14 +465,8 @@
         <tr>
           <td>DoublEnder Cloud</td>
           <td><code>cr</code></td>
-          <td>GCS upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView)</td>
+          <td>GCS upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>)</td>
           <td>GCS (private)</td>
-        </tr>
-        <tr>
-          <td>Branded</td>
-          <td>per-brand</td>
-          <td>Per-client faceplate, bundle ID, optional pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), delete-local-after-upload (<code>DELETE_LOCAL_AFTER_UPLOAD</code>), ntfy notification on recording start (<code>NtfyTopicURL</code>), optional app/artifact rename (<code>BRAND_APP_NAME</code>)</td>
-          <td>GCS (private, per-brand path)</td>
         </tr>
       </tbody>
     </table>
@@ -784,7 +778,7 @@
   <section id="cloud">
     <h2>Cloud Variant: What's Added</h2>
 
-    <p>The <code>GCS_ENABLED</code> compilation condition gates all Cloud-only code. <code>Uploader.swift</code>, <code>CloudConnectivity.swift</code>, <code>CloudContentView.swift</code>, upload-related <code>RecorderViewModel</code> branches, and the Cloud <code>UpdateChecker</code> path all compile out in Local and unbranded builds.</p>
+    <p>The <code>GCS_ENABLED</code> compilation condition gates all Cloud-only code. <code>Uploader.swift</code>, <code>CloudConnectivity.swift</code>, <code>CloudContentView.swift</code>, upload-related <code>RecorderViewModel</code> branches, and the Cloud <code>UpdateChecker</code> path all compile out in Local builds.</p>
 
     <h3>GCS Authentication: V4 Signed URL, Entirely On-Device</h3>
     <p>DoublEnder Cloud has no backend server. Authentication uses GCS V4 signed URLs generated entirely on the client from a bundled GCP service-account JSON key:</p>
@@ -800,8 +794,8 @@
 
     <h3>Upload Flow</h3>
     <p><code>stopRecording</code> completion (<code>.success(.some(url))</code>) triggers: <code>state = .uploading</code> → <code>setPendingUpload(path:)</code> persisted to <code>UserDefaults</code> before the PUT starts (survives a mid-upload quit) → <code>performUpload()</code> off the main actor → <code>URLSession.upload(for:fromFile:)</code> PUT to the signed URL → progress via <code>urlSession(_:task:didSendBodyData:...)</code> delegate.</p>
-    <p>On HTTP 200–299: <code>clearPendingUpload()</code>, <code>state = .ready</code>, <code>UploadConfirmation.present(success: true)</code>. Branded builds with <code>DELETE_LOCAL_AFTER_UPLOAD=YES</code> then move the local file to the user's Trash via <code>FileManager.trashItem(at:)</code>; the trash step runs after <code>clearPendingUpload</code> so a crash mid-move can't leave the pending-upload path pointing at a missing file, and a trash failure is logged but never mutates state. On failure: exponential backoff [2s, 4s, 8s] across up to 3 retries, staying in <code>.uploading</code> throughout. After retries exhausted: <code>state = .uploadFailed(fileURL)</code>.</p>
-    <p>The GCS object key is <code>{prefix}/{uuid}/{filename}</code>. The prefix is derived from the bundle ID tail (<code>DoublEnderCloud</code> or <code>DoublEnderCloud-{slug}</code>). The UUID prevents filename collisions when a guest records twice with the same name.</p>
+    <p>On HTTP 200–299: <code>clearPendingUpload()</code>, <code>state = .ready</code>, <code>UploadConfirmation.present(success: true)</code>. The local file always stays on the Desktop — the cloud object is a copy, not a move. On failure: exponential backoff [2s, 4s, 8s] across up to 3 retries, staying in <code>.uploading</code> throughout. After retries exhausted: <code>state = .uploadFailed(fileURL)</code>.</p>
+    <p>The GCS object key is <code>{prefix}/{uuid}/{filename}</code>. The prefix is derived from the bundle ID tail (<code>DoublEnderCloud</code>). The UUID prevents filename collisions when a guest records twice with the same name.</p>
 
     <h3>Pending-Upload Recovery</h3>
     <p><code>runPendingUploadCheckIfNeeded</code> (in <code>applicationDidFinishLaunching</code>) reads <code>pendingUploadPath</code> from <code>UserDefaults</code>. If the file still exists on disk, <code>PendingUploadPrompt.present</code> shows a modal offering Upload or Skip. If the file is gone (user deleted it between sessions), the path is cleared silently.</p>
@@ -812,10 +806,6 @@
     <h3>Update Checker: Cloud vs. Local</h3>
     <p><strong>Local:</strong> queries <code>https://api.github.com/repos/sevmorris/DoublEnder/releases/latest</code>. "Download" opens the GCS permalink (<code>doublender-downloads/DoublEnder.dmg</code>) rather than a version-pinned GitHub asset; the permalink always resolves to the current build.</p>
     <p><strong>Cloud:</strong> queries the <code>UpdateManifestURL</code> from the bundle's <code>Info.plist</code>. The manifest is a small JSON <code>{ "version": "1.7.2cr", "url": "https://…" }</code> written by <code>release-cloud.sh</code> on every release.</p>
-    <p><strong>Branded:</strong> the update checker is suppressed entirely. <code>UpdateChecker.isBrandedBundleID</code> flags any bundle ID matching the <code>io.github.sevmorris.DoublEnderCloud.</code> prefix (the standard Cloud ID plus a brand suffix); for those builds <code>checkForUpdates()</code> returns early and the "Check for Updates…" menu item is hidden. No <code>UPDATE_MANIFEST_URL</code> is injected and no manifest is published — branded builds are deployed manually to a fixed audience, so there is no public update channel.</p>
-
-    <h3>Recording-Start Notification (ntfy, branded)</h3>
-    <p>Branded builds can notify the engineer who monitors sessions when a guest starts recording. <code>NtfyService</code> (<code>Services/NtfyService.swift</code>, wrapped in <code>#if GCS_ENABLED</code>) fires a fire-and-forget POST to a configured <a href="https://ntfy.sh">ntfy</a> topic from <code>RecorderViewModel.startRecording</code> at the <code>.recording</code> transition. The topic URL comes from the <code>NtfyTopicURL</code> Info.plist key, injected from <code>BRAND_NTFY_TOPIC_URL</code> in <code>brand.conf</code> via the <code>NTFY_TOPIC_URL</code> build setting; when absent or empty (standard Cloud, and every Local build via the compile gate) the call is a silent no-op. The POST sends <code>Content-Type: text/plain</code> with the brand display name in the <code>Title</code> header; the body is <code>"&lt;name&gt; started recording"</code> when the name prompt supplied a guest name, otherwise <code>"Recording started"</code>. Failures are logged and swallowed.</p>
   </section>
 
   <!-- Lifecycle & Release -->
@@ -846,7 +836,6 @@
         <tr><td><code>CURRENT_PROJECT_VERSION</code></td><td><code>16</code></td><td>Build number; <code>CFBundleVersion</code></td></tr>
         <tr><td>Suffix <code>lr</code></td><td><code>1.7.2lr</code></td><td>Local release</td></tr>
         <tr><td>Suffix <code>cr</code></td><td><code>1.7.2cr</code></td><td>Cloud release</td></tr>
-        <tr><td>Suffix (per-brand)</td><td><code>1.7.2xx</code></td><td>Branded release; suffix defined in brand.conf</td></tr>
       </tbody>
     </table>
     <p><code>VersionFormatting.numericVersion</code> strips the suffix for version comparisons: <code>"1.7.2lr"</code> → <code>"1.7.2"</code>. <code>splitSuffix</code> splits <code>"1.7.2lr"</code> → <code>("1.7.2", "lr")</code> for the on-screen version overlay, where the suffix is shown in uppercase.</p>
@@ -868,7 +857,7 @@
       <li>GitHub release: <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
       <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-tap</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to vX.Y.Zlr</code></li>
       <li>GCS permalink: <code>gsutil cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: no-cache</code></li>
-      <li>Cloud + branded releases: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
+      <li>Cloud release: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
       <li>Prune old releases: keep the 5 most recent GitHub releases; delete older tags and assets</li>
     </ol>
   </section>
