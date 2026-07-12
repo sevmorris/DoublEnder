@@ -25,12 +25,8 @@ struct DoublEnderApp: App {
         .windowResizability(.contentSize)   // fixed-size: content frame enforces 504×430
         .commands {
             CommandGroup(after: .appInfo) {
-                // Branded builds have no update channel — omit the menu item so
-                // guests never see an inert "Check for Updates…".
-                if !updateChecksDisabled {
-                    Button("Check for Updates…") {
-                        Task { await checkForUpdates() }
-                    }
+                Button("Check for Updates…") {
+                    Task { await checkForUpdates() }
                 }
             }
 

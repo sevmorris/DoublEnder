@@ -131,11 +131,9 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// Default filename prefix used when `filenameBase` is empty. Read from
-    /// the bundle's `DefaultRecordingPrefix` Info.plist key so branded Cloud
-    /// builds can ship with a per-client default (set via the
-    /// `DEFAULT_RECORDING_PREFIX` xcodebuild override in
-    /// release-branded.sh). Falls back to "DoublEnder" for any build
-    /// that doesn't supply the key.
+    /// the bundle's `DefaultRecordingPrefix` Info.plist key (set per target
+    /// via the `DEFAULT_RECORDING_PREFIX` build setting). Falls back to
+    /// "DoublEnder" for any build that doesn't supply the key.
     static var defaultRecordingPrefix: String {
         guard let value = Bundle.main.infoDictionary?["DefaultRecordingPrefix"] as? String,
               !value.isEmpty else {
@@ -145,11 +143,10 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// Whether the record button should present a pre-recording name prompt
-    /// before starting. Standard Cloud defaults `REQUIRE_RECORDING_NAME_AT_START`
-    /// to YES in project.cloud.yml; branded builds pin it explicitly (YES or NO)
-    /// via release-branded.sh based on `BRAND_REQUIRE_RECORDING_NAME` in
-    /// brand.conf. Public DoublEnder doesn't declare the Info.plist key at all,
-    /// so it reads as falsy here and the prompt code path stays inert.
+    /// before starting. Cloud sets `REQUIRE_RECORDING_NAME_AT_START` to YES
+    /// in project.cloud.yml. Public DoublEnder doesn't declare the Info.plist
+    /// key at all, so it reads as falsy here and the prompt code path stays
+    /// inert.
     static var requiresRecordingNameAtStart: Bool {
         guard let raw = Bundle.main.infoDictionary?["RequireRecordingNameAtStart"] as? String else {
             return false
@@ -159,25 +156,6 @@ class RecorderViewModel: ObservableObject {
         default: return false
         }
     }
-
-    #if GCS_ENABLED
-    /// Whether a successful upload should move the local recording to the
-    /// user's Trash. Branded builds opt in by setting
-    /// `BRAND_DELETE_LOCAL_AFTER_UPLOAD="true"` in brand.conf, which causes
-    /// release-branded.sh to inject `DELETE_LOCAL_AFTER_UPLOAD=YES`
-    /// into the Info.plist. Standard Cloud substitutes the unset build
-    /// setting to empty; public DoublEnder doesn't declare the key at all.
-    /// Both read as falsy here, so the trash code path stays inert for them.
-    static var deletesLocalAfterUpload: Bool {
-        guard let raw = Bundle.main.infoDictionary?["DeleteLocalAfterUpload"] as? String else {
-            return false
-        }
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "yes", "true", "1": return true
-        default: return false
-        }
-    }
-    #endif
 
     /// Sanitize a user-entered string for use as the entire recording
     /// filename (extension excluded). Caller must check the result for
@@ -586,9 +564,9 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// `nameOverride`, when non-nil and non-empty after sanitization, is
-    /// used as the entire filename (no timestamp). Branded builds with the
-    /// pre-recording name prompt pass the user's input here; standard
-    /// callers omit the argument and fall through to the timestamp scheme.
+    /// used as the entire filename (no timestamp). Cloud builds with the
+    /// pre-recording name prompt pass the user's input here; other callers
+    /// omit the argument and fall through to the timestamp scheme.
     func startRecording(nameOverride: String? = nil) {
         if let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
@@ -841,7 +819,7 @@ class RecorderViewModel: ObservableObject {
         let ext = outputFormat.fileExtension
         let dir = Self.recordingsDirectory
 
-        // Branded name-prompt path: the user-entered name *is* the filename.
+        // Name-prompt path: the user-entered name *is* the filename.
         // No timestamp. Collisions get _2, _3, … so a guest recorded twice
         // doesn't clobber the first take.
         if let override = nameOverride,
@@ -947,19 +925,6 @@ class RecorderViewModel: ObservableObject {
                     // the user clicks OK (notifications can't guarantee this).
                     UploadConfirmation.present(success: true,
                                                fileName: fileURL.lastPathComponent)
-                }
-                // Opt-in: branded builds with DELETE_LOCAL_AFTER_UPLOAD=YES
-                // move the just-uploaded file to the Trash. Runs *after*
-                // clearPendingUpload so a crash mid-move can't leave a
-                // pendingUploadPath pointing at a trashed file. Trash failure
-                // is non-fatal — upload already succeeded.
-                if Self.deletesLocalAfterUpload {
-                    do {
-                        var resultingURL: NSURL?
-                        try FileManager.default.trashItem(at: fileURL, resultingItemURL: &resultingURL)
-                    } catch {
-                        logger.error("Trash-after-upload failed: \(error.localizedDescription, privacy: .public)")
-                    }
                 }
                 return
             } catch {

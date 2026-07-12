@@ -1,24 +1,5 @@
 import AppKit
 
-/// Standard Cloud bundle ID. Branded builds extend it with a brand suffix
-/// (e.g. "io.github.sevmorris.DoublEnderCloud.hacks-on-tap"); public DoublEnder
-/// is "io.github.sevmorris.DoublEnder" and never matches.
-private let standardCloudBundleID = "io.github.sevmorris.DoublEnderCloud"
-
-/// True when `id` is a *branded* Cloud bundle ID. A pure function of the bundle
-/// ID so it can be unit-tested without a real bundle. The trailing dot excludes
-/// the exact standard Cloud ID and the "...DoublEnderCloudTests" id.
-func isBrandedBundleID(_ id: String) -> Bool {
-    id.hasPrefix(standardCloudBundleID + ".")
-}
-
-/// Branded builds are deployed manually to a fixed audience and have no update
-/// channel — suppress the update check entirely so guests never see an update
-/// prompt. Standard Cloud and public DoublEnder keep checking.
-var updateChecksDisabled: Bool {
-    isBrandedBundleID(Bundle.main.bundleIdentifier ?? "")
-}
-
 actor UpdateChecker {
 
     /// The running app's marketing version string, read once per check.
@@ -108,10 +89,8 @@ actor UpdateChecker {
     /// release-cloud.sh writes cloud-latest.json on every release.
     ///
     /// The manifest URL is read from the bundle's `UpdateManifestURL` Info.plist
-    /// key so branded Cloud builds can point at their own update channel without
-    /// any Swift code changes (set per-brand via `INFOPLIST_KEY_UpdateManifestURL`
-    /// on the xcodebuild command line). Falls back to the standard Cloud manifest
-    /// for legacy builds that pre-date the key.
+    /// key (set via `UPDATE_MANIFEST_URL` in project.cloud.yml). Falls back to
+    /// the standard Cloud manifest for legacy builds that pre-date the key.
     private func checkCloud() async -> Result {
         let defaultManifestURL = "https://storage.googleapis.com/doublender-downloads/cloud-latest.json"
         let urlString = (Bundle.main.infoDictionary?["UpdateManifestURL"] as? String).flatMap {
@@ -166,9 +145,6 @@ private func makeLightAlert() -> NSAlert {
 
 @MainActor
 func checkForUpdates(silent: Bool = false) async {
-    // Branded builds have no update channel — never check or prompt.
-    guard !updateChecksDisabled else { return }
-
     let result = await UpdateChecker().check()
 
     switch result {

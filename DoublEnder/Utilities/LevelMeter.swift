@@ -1,9 +1,9 @@
 import Foundation
 import Accelerate
 
-/// Shared level-meter parameters for Local, Cloud, and branded builds.
+/// Shared level-meter parameters for Local and Cloud builds.
 ///
-/// All flavours compile the same `DoublEnder/` core (`AudioEngine` publishes
+/// Both flavours compile the same `DoublEnder/` core (`AudioEngine` publishes
 /// `meterLevel`; `FaceplateMeterRow` renders it). Keep floor, ceiling, and
 /// smoothing constants here so the engine clamp and viewport scale never
 /// drift.
