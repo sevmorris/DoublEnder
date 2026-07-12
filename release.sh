@@ -262,14 +262,14 @@ rm -rf "$TAP_DIR"
 step "Publishing GCS download permalink"
 gsutil cp "$DMG" gs://doublender-downloads/DoublEnder.dmg
 gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
-# Force browsers/CDNs to revalidate on every fetch. Without this, GCS's
-# default Cache-Control: public, max-age=3600 means a user who downloaded
-# the previous build within the last hour keeps getting it from cache even
-# after we've uploaded a new one — which silently sabotages the in-app
-# updater's "Download" button. release-cloud-lib.sh sets the same header
-# on the Cloud manifest for the same reason.
-gsutil setmeta -h "Cache-Control:no-cache" gs://doublender-downloads/DoublEnder.dmg
-ok "GCS permalink updated → DoublEnder.dmg (no-cache)"
+# Short TTL (60s) instead of no-cache — mirrors release-cloud-lib.sh. The
+# short TTL keeps a freshly published build from being shadowed by a cached
+# prior one for GCS's default 1 hour, while staying CACHEABLE: "no-cache"
+# pushes the object off Google's fast media-serving path and anonymous
+# downloads crawl at ~150 KB/s (~130x slower; the DMG looks hung). Verified
+# empirically 2026-07-10 by A/B on the same object.
+gsutil setmeta -h "Cache-Control:public, max-age=60" gs://doublender-downloads/DoublEnder.dmg
+ok "GCS permalink updated → DoublEnder.dmg (max-age=60)"
 
 # ── Cloud release ─────────────────────────────────────────────────────────────
 if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
