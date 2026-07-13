@@ -196,6 +196,25 @@ class AudioEngine: NSObject, ObservableObject {
     /// on every `markDataFlowing` call; cancelled in every recording-stop /
     /// cancel / teardown path alongside `interruptionWatchdog`.
     private var dataFlowWatchdog: DispatchWorkItem?
+    /// Watchdog fired when the FIRST sample buffer never arrives after record
+    /// start (FR-001). The data-flow watchdog above is armed only from
+    /// `markDataFlowing` — i.e. only after at least one successful append — so
+    /// a device that enumerates and reports connected but never delivers a
+    /// single buffer (wedged driver, hub power starvation present at start)
+    /// previously "recorded" silently forever. Armed once in `startRecording`;
+    /// cancelled by the first `markDataFlowing` and by every recording-stop /
+    /// cancel / teardown path. Deliberately NOT cancelled on
+    /// `captureSessionInterruptionEnded` — if the restarted session still
+    /// delivers nothing, this remains the only guard, and a healthy restart
+    /// cancels it via `markDataFlowing` within milliseconds anyway.
+    private var firstBufferWatchdog: DispatchWorkItem?
+    /// 5 s: the capture session is already running and feeding the level meter
+    /// before RECORD is even tappable (`canStartRecording` requires the rebuild
+    /// to have completed), so a healthy first buffer lands ~10–20 ms after
+    /// `isRecording` flips. The slowest observed cold-USB bring-up is >1 s but
+    /// well under 5; this matches the interruption watchdog's hard-failure
+    /// patience.
+    private static let firstBufferTimeoutSeconds: TimeInterval = 5
     /// Latch preventing duplicate `onDisconnectedDuringRecording` dispatches
     /// when the interruption watchdog, data-flow watchdog, and writer
     /// tear-down race close together. The VM would otherwise see a stacked
@@ -516,6 +535,12 @@ class AudioEngine: NSObject, ObservableObject {
             interruptionWatchdog?.cancel()
             interruptionWatchdog = nil
             sessionInterrupted = false
+        }
+        // First successful append — the first-buffer deadline (FR-001) is
+        // satisfied for this take.
+        if firstBufferWatchdog != nil {
+            firstBufferWatchdog?.cancel()
+            firstBufferWatchdog = nil
         }
         // Re-arm the data-flow watchdog on every successful buffer. If the
         // driver silently stops delivering (USB hub starvation, firmware
@@ -955,14 +980,37 @@ class AudioEngine: NSObject, ObservableObject {
         disconnectStopPending = false
         didDispatchDisconnect = false
         // A markDataFlowing queued behind the previous take's stopRecording can
-        // re-arm the data-flow watchdog after stop cancelled it; cancel both
-        // here so a stale item can never fire into this take.
+        // re-arm the data-flow watchdog after stop cancelled it; cancel all
+        // three here so a stale item can never fire into this take.
         dataFlowWatchdog?.cancel()
         dataFlowWatchdog = nil
         interruptionWatchdog?.cancel()
         interruptionWatchdog = nil
+        firstBufferWatchdog?.cancel()
+        firstBufferWatchdog = nil
         sidecarFailedDuringRecording = false
         isRecording = true
+
+        // FR-001: arm the first-buffer deadline. The data-flow watchdog is
+        // armed only from markDataFlowing — i.e. only once a buffer has
+        // already appended — so a device that never delivers buffer one
+        // previously "recorded" silence forever with no failure surface.
+        // Fires through the same disconnect latch chain as the other two
+        // watchdogs; cancelled by the first successful append and by every
+        // stop / cancel / teardown path.
+        let fbWatchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording, !self.disconnectStopPending,
+                  !self.didAppendAtLeastOneSample else { return }
+            logger.warning("First-buffer watchdog fired — no audio buffer within \(Int(Self.firstBufferTimeoutSeconds), privacy: .public) s of record start")
+            self.firstBufferWatchdog = nil
+            self.disconnectStopPending = true
+            self.handleRecordingCaptureFailure(reason: "The microphone delivered no audio")
+        }
+        firstBufferWatchdog = fbWatchdog
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.firstBufferTimeoutSeconds,
+            execute: fbWatchdog
+        )
     }
 
     /// True while a take is in progress — used by RecorderViewModel.reset()
@@ -980,6 +1028,8 @@ class AudioEngine: NSObject, ObservableObject {
         interruptionWatchdog = nil
         dataFlowWatchdog?.cancel()
         dataFlowWatchdog = nil
+        firstBufferWatchdog?.cancel()
+        firstBufferWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
@@ -1021,6 +1071,8 @@ class AudioEngine: NSObject, ObservableObject {
         interruptionWatchdog = nil
         dataFlowWatchdog?.cancel()
         dataFlowWatchdog = nil
+        firstBufferWatchdog?.cancel()
+        firstBufferWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.sidecarUnavailable = false
@@ -1067,6 +1119,8 @@ class AudioEngine: NSObject, ObservableObject {
         interruptionWatchdog = nil
         dataFlowWatchdog?.cancel()
         dataFlowWatchdog = nil
+        firstBufferWatchdog?.cancel()
+        firstBufferWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.sidecarUnavailable = false
@@ -1144,6 +1198,8 @@ class AudioEngine: NSObject, ObservableObject {
         interruptionWatchdog = nil
         dataFlowWatchdog?.cancel()
         dataFlowWatchdog = nil
+        firstBufferWatchdog?.cancel()
+        firstBufferWatchdog = nil
         DispatchQueue.main.async {
             self.sessionInterrupted = false
             self.writeIndicatorClearWork?.cancel()
@@ -1471,6 +1527,8 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
                 self.interruptionWatchdog = nil
                 self.dataFlowWatchdog?.cancel()
                 self.dataFlowWatchdog = nil
+                self.firstBufferWatchdog?.cancel()
+                self.firstBufferWatchdog = nil
                 self.sessionInterrupted = false
                 self.droppedFrameWarning = false
                 self.writeIndicatorClearWork?.cancel()
@@ -1499,6 +1557,8 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             self.interruptionWatchdog = nil
             self.dataFlowWatchdog?.cancel()
             self.dataFlowWatchdog = nil
+            self.firstBufferWatchdog?.cancel()
+            self.firstBufferWatchdog = nil
             self.sessionInterrupted = false
             self.droppedFrameWarning = false
             self.writeIndicatorClearWork?.cancel()
