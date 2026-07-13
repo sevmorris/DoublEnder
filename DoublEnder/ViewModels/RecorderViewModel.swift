@@ -895,6 +895,41 @@ class RecorderViewModel: ObservableObject {
         Task { await performUpload() }
     }
 
+    /// Category + HTTP status distilled from an upload failure, for diagnostics
+    /// logging (FR-004). Deliberately excludes the GCS response body (which can
+    /// echo the object path / service-account email) and never touches the
+    /// signed URL or key material — only a fixed category label and the numeric
+    /// status reach the log.
+    private static func uploadErrorSummary(_ error: Error) -> (label: String, status: Int?) {
+        if let ue = error as? Uploader.UploaderError {
+            switch ue {
+            case .server(let status, _): return ("server", status)
+            case .missingKeyFile:        return ("missingKeyFile", nil)
+            case .malformedKeyFile:      return ("malformedKeyFile", nil)
+            case .invalidPrivateKey:     return ("invalidPrivateKey", nil)
+            case .signingFailed:         return ("signingFailed", nil)
+            }
+        }
+        if let urlError = error as? URLError {
+            return ("network:\(urlError.code.rawValue)", nil)
+        }
+        if error is CancellationError {
+            return ("cancelled", nil)
+        }
+        return ("other", nil)
+    }
+
+    /// True when a failed upload's HTTP status is in the request-validity
+    /// failure class where a badly-skewed client clock is a plausible cause.
+    /// Confirmed against the GCS XML API status reference: a clock that fell
+    /// behind yields 400 (`ExpiredToken`); a clock that ran ahead yields 403
+    /// (`RequestTimeTooSkewed`) — and 403 also covers `SignatureDoesNotMatch`.
+    /// 5xx and network errors are excluded so the clock hint never fires when
+    /// the clock is fine.
+    private static func statusSuggestsClockSkew(_ status: Int?) -> Bool {
+        status == 400 || status == 403
+    }
+
     /// Upload the saved local file, retrying with exponential backoff
     /// (2s, 4s, 8s) before surfacing failure. The recording is already
     /// safe on disk; only the upload is being retried. The pending-upload
@@ -915,6 +950,7 @@ class RecorderViewModel: ObservableObject {
                 self.uploadProgress = 0
                 self.state = .uploading
             }
+            let attemptStart = Date()
             do {
                 try await uploader.upload(fileURL: fileURL)
                 self.clearPendingUpload()
@@ -928,10 +964,22 @@ class RecorderViewModel: ObservableObject {
                 }
                 return
             } catch {
+                // Diagnostics (FR-004): upload failures were previously dropped
+                // silently, leaving remote diagnosis with nothing to read. Log a
+                // sanitized summary — HTTP status, error category, attempt number,
+                // backoff, elapsed — and never the signed URL, key material,
+                // response body, or any file path / guest name.
+                let summary = Self.uploadErrorSummary(error)
+                let statusText = summary.status.map(String.init) ?? "—"
+                let elapsedText = String(format: "%.1fs", Date().timeIntervalSince(attemptStart))
                 guard attempt < backoffSeconds.count else {
                     // Retries exhausted — surface a distinct, reassuring
                     // failure state. The pending path stays persisted so a
                     // quit-then-relaunch can still offer to finish it.
+                    logger.error("Upload failed after \(attempt + 1, privacy: .public) attempt(s): \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Recording kept on Desktop; pending upload persisted for next launch.")
+                    if Self.statusSuggestsClockSkew(summary.status) {
+                        logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
+                    }
                     await MainActor.run {
                         self.state = .uploadFailed(fileURL)
                         UploadConfirmation.present(success: false,
@@ -940,6 +988,7 @@ class RecorderViewModel: ObservableObject {
                     return
                 }
                 let delay = backoffSeconds[attempt]
+                logger.warning("Upload attempt \(attempt + 1, privacy: .public) failed: \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Retrying in \(delay, privacy: .public)s.")
                 attempt += 1
                 // Stay in .uploading across the backoff so the UI shows a
                 // retry in progress rather than a flash of failure.
