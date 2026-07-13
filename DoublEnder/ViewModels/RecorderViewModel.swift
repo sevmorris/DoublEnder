@@ -196,6 +196,16 @@ class RecorderViewModel: ObservableObject {
         return false
     }
 
+    #if GCS_ENABLED
+    /// True while a finished take's upload is in flight. Read by the
+    /// AppDelegate quit intercept (FR-002) so a guest quitting "because
+    /// we're done" can't silently kill an upload they don't know is running.
+    var isCurrentlyUploading: Bool {
+        if case .uploading = state { return true }
+        return false
+    }
+    #endif
+
     /// True when tapping RECORD will reliably produce a recording.
     /// Gates the RECORD button — STOP during an active recording is
     /// always allowed regardless, so the view should only consult this

@@ -120,13 +120,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Quit intercept: if recording, surface the save/discard/cancel choice
-    /// before allowing termination.
+    /// before allowing termination. On Cloud builds, an in-flight upload gets
+    /// its own keep-uploading/quit-anyway intercept (FR-002) — the states are
+    /// mutually exclusive, so at most one alert presents.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard RecorderViewModel.shared.isCurrentlyRecording else {
-            return .terminateNow
+        if RecorderViewModel.shared.isCurrentlyRecording {
+            presentRecordingInProgressAlert()
+            return .terminateLater
         }
-        presentRecordingInProgressAlert()
-        return .terminateLater
+        #if GCS_ENABLED
+        if RecorderViewModel.shared.isCurrentlyUploading {
+            presentUploadInProgressAlert()
+            return .terminateLater
+        }
+        #endif
+        return .terminateNow
     }
 
     /// ⌘W on the borderless window routes through here. We re-route to
@@ -259,6 +267,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.reply(toApplicationShouldTerminate: false)
         }
     }
+
+    #if GCS_ENABLED
+    /// Quit intercept for an in-flight upload (FR-002). Two choices, both
+    /// resolving termination immediately — there is deliberately NO
+    /// "wait for the upload to finish" path, so a stalled upload can never
+    /// hang quit. The recording is already safe on the Desktop, and the
+    /// pending-upload path was persisted before the PUT began, so quitting
+    /// only defers the upload to the next-launch prompt.
+    private func presentUploadInProgressAlert() {
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .warning
+        alert.messageText = "Upload in progress"
+        alert.informativeText = "Your recording is saved on the Desktop, but it hasn't finished uploading. If you quit now, DoublEnder will offer to finish the upload the next time it opens."
+        alert.addButton(withTitle: "Keep Uploading")   // .alertFirstButtonReturn (default: Return keeps the upload alive)
+        alert.addButton(withTitle: "Quit Anyway")      // .alertSecondButtonReturn
+
+        let response = alert.runModal()
+        NSApp.reply(toApplicationShouldTerminate: response != .alertFirstButtonReturn)
+    }
+    #endif
 
     // MARK: - Crash recovery
 
