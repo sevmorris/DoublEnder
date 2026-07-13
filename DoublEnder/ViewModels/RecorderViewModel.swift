@@ -353,6 +353,20 @@ class RecorderViewModel: ObservableObject {
             .store(in: &cancellables)
         #if GCS_ENABLED
         uploader.$progress.receive(on: DispatchQueue.main).assign(to: &$uploadProgress)
+        // Drive the dashboard heartbeat's reported state off the VM state so
+        // every exit from .recording (stop, upload, error, disconnect,
+        // first-buffer failure) flips it to "idle" — no per-transition hook to
+        // keep in sync. Inert until the first recordingStarted().
+        $state
+            .receive(on: DispatchQueue.main)
+            .sink { newState in
+                if case .recording = newState {
+                    SessionHeartbeat.shared.recordingStateChanged(isRecording: true)
+                } else {
+                    SessionHeartbeat.shared.recordingStateChanged(isRecording: false)
+                }
+            }
+            .store(in: &cancellables)
         #endif
 
         audioEngine.$lastError
@@ -595,6 +609,12 @@ class RecorderViewModel: ObservableObject {
 
             recordedFileURL = fileURL
             state = .recording
+            #if GCS_ENABLED
+            // Start/refresh the dashboard heartbeat for this take. Fire-and-
+            // forget; a dead dashboard never affects capture. The $state sink
+            // (see init) flips it to "idle" on every exit from .recording.
+            SessionHeartbeat.shared.recordingStarted(guestName: nameOverride)
+            #endif
             recordingTime = 0
             timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
                 self?.recordingTime += 1

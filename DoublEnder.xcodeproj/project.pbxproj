@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		03D43A8193DEA5E27FE3E0A1 /* DSEG7Classic-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 06752EA9DBBABCB91FEF26D3 /* DSEG7Classic-Regular.ttf */; };
 		041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */; };
+		0C4BD68B4A3F8388A4F873AF /* SessionHeartbeat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F681091F6D4AD00C951A0C /* SessionHeartbeat.swift */; };
 		0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */; };
 		0FBC87E4BA9DEEA32AF58343 /* RecorderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */; };
 		11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */; };
@@ -61,6 +62,7 @@
 		87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceplateDesign.swift; sourceTree = "<group>"; };
 		8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderViewModelTests.swift; sourceTree = "<group>"; };
 		9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionFormatting.swift; sourceTree = "<group>"; };
+		93F681091F6D4AD00C951A0C /* SessionHeartbeat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHeartbeat.swift; sourceTree = "<group>"; };
 		9AC710282351ED2B87482FED /* UploadConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadConfirmationView.swift; sourceTree = "<group>"; };
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
@@ -112,6 +114,7 @@
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
 				1B8331841FA32B270066E651 /* NotificationService.swift */,
 				1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */,
+				93F681091F6D4AD00C951A0C /* SessionHeartbeat.swift */,
 				F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */,
 			);
 			path = Services;
@@ -300,6 +303,7 @@
 				DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */,
 				0FBC87E4BA9DEEA32AF58343 /* RecorderViewModel.swift in Sources */,
 				BB66D98FB9F2F69F8A4F7672 /* RecoveryView.swift in Sources */,
+				0C4BD68B4A3F8388A4F873AF /* SessionHeartbeat.swift in Sources */,
 				DE683368203B1791D5E8D132 /* UpdateChecker.swift in Sources */,
 				CB83A44567673D6FB4273023 /* UploadConfirmationView.swift in Sources */,
 				98D7CBA7118AD909811A08D7 /* VersionFormatting.swift in Sources */,
