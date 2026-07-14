@@ -18,6 +18,7 @@
 		3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */; };
 		4585C6FF58BB9EF30977AA76 /* View+Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D49F00ABC34260F57521983 /* View+Compat.swift */; };
 		4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
+		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
 		9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
@@ -34,6 +35,7 @@
 		DF7E5277F967AA00454980E9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */; };
 		E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8331841FA32B270066E651 /* NotificationService.swift */; };
 		EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F427670EB2DAF640994599 /* AudioEngine.swift */; };
+		FB3C04C5129AA1C6A4751208 /* CRC32C.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC852F7502C76B7E658A7DA2 /* CRC32C.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,12 +69,14 @@
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C757981FB56F560204E52311 /* CRC32CTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32CTests.swift; sourceTree = "<group>"; };
 		CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
 		DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeter.swift; sourceTree = "<group>"; };
 		E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeterTests.swift; sourceTree = "<group>"; };
 		EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
 		EC47A7DBFE3560714B1EABA7 /* DoublEnder.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DoublEnder.entitlements; sourceTree = "<group>"; };
+		EC852F7502C76B7E658A7DA2 /* CRC32C.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32C.swift; sourceTree = "<group>"; };
 		ED51B67AFF43A5CA03791B8C /* DoublEnderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoublEnderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderViewModel.swift; sourceTree = "<group>"; };
 		F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
@@ -136,6 +140,7 @@
 			isa = PBXGroup;
 			children = (
 				CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */,
+				C757981FB56F560204E52311 /* CRC32CTests.swift */,
 				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
 				8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */,
@@ -172,6 +177,7 @@
 		D9D0BB287C9E8CA0163ED3EF /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				EC852F7502C76B7E658A7DA2 /* CRC32C.swift */,
 				4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */,
 				DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */,
 				9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */,
@@ -290,6 +296,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */,
+				FB3C04C5129AA1C6A4751208 /* CRC32C.swift in Sources */,
 				7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */,
 				0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */,
 				2060C7480B61F1F8CB1634C5 /* DoublEnderApp.swift in Sources */,
@@ -316,6 +323,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */,
+				6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */,
 				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
 				D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */,
