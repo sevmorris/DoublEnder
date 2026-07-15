@@ -42,12 +42,24 @@ final class SessionHeartbeat {
 	/// Beat every 30 s. The Worker's stale window is 90 s, so this holds a live
 	/// session across two missed beats before it could read as Stale.
 	private static let intervalSeconds: TimeInterval = 30
+	/// After a recording stops, keep beating "idle" for this long, then go fully
+	/// silent. A left-open idle app must not beat forever: the Workers KV free
+	/// tier is ~1,000 puts/day and unbounded 30 s idle beats blow it ~3× from one
+	/// instance. 5 min covers the window in which a producer distinguishes a
+	/// clean stop (Recording→Idle) from a crash (Recording→Stale); past it,
+	/// "open but idle" and "closed" are indistinguishable anyway, so the Worker's
+	/// TTL cleanup takes over (last beat → Stale +90 s → cleared +180 s).
+	private static let idleWindowSeconds: TimeInterval = 300
 
 	// Mutated only on the main thread (all entry points are main-thread VM calls).
 	private var guestName = ""
 	private var reportedState = "idle"
 	private var timer: Timer?
 	private var active = false
+	/// When the current idle window ends — set on stop, cleared on record. Once
+	/// a timer tick finds us idle past this, the timer stops itself. `timer ==
+	/// nil` is the "silent" sentinel the re-arm path checks.
+	private var idleDeadline: Date?
 
 	// MARK: - Config (Info.plist, Cloud-injected; empty → inert)
 
@@ -78,8 +90,10 @@ final class SessionHeartbeat {
 		guard Self.isConfigured else { return }
 		self.guestName = (guestName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 		reportedState = "recording"
-		if !active {
-			active = true
+		idleDeadline = nil
+		active = true
+		// Arm on first use, or RE-ARM if a prior idle window went silent.
+		if timer == nil {
 			startTimer()
 		}
 		sendBeat()
@@ -94,6 +108,16 @@ final class SessionHeartbeat {
 		let next = isRecording ? "recording" : "idle"
 		guard next != reportedState else { return }
 		reportedState = next
+		if next == "recording" {
+			idleDeadline = nil
+			// Re-arm if a prior idle window silenced the timer. (In practice the
+			// synchronous recordingStarted() above already re-armed; this covers
+			// any path that reaches "recording" through the state sink alone.)
+			if timer == nil { startTimer() }
+		} else {
+			// Start the bounded idle window; the timer self-stops at the deadline.
+			idleDeadline = Date().addingTimeInterval(Self.idleWindowSeconds)
+		}
 		sendBeat() // reflect the transition immediately, don't wait for the timer
 	}
 
@@ -102,11 +126,27 @@ final class SessionHeartbeat {
 	private func startTimer() {
 		timer?.invalidate()
 		let t = Timer.scheduledTimer(withTimeInterval: Self.intervalSeconds, repeats: true) { [weak self] _ in
-			self?.sendBeat()
+			self?.timerFired()
 		}
 		// Keep beating while modal run loops (name prompt, alerts) are active.
 		RunLoop.main.add(t, forMode: .common)
 		timer = t
+	}
+
+	/// Timer tick: send the current beat, unless the idle window has elapsed — in
+	/// which case go fully silent (no final "offline" beat; the Worker's TTL
+	/// clears the session). A later recording re-arms via recordingStarted.
+	private func timerFired() {
+		if reportedState == "idle", let deadline = idleDeadline, Date() >= deadline {
+			stopTimer()
+			return
+		}
+		sendBeat()
+	}
+
+	private func stopTimer() {
+		timer?.invalidate()
+		timer = nil
 	}
 
 	/// POST the current {sessionId, guestName, state} to the ingest endpoint.
