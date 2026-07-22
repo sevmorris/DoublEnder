@@ -223,7 +223,9 @@ init()
                                                     │                     └─ retries exhausted → .uploadFailed(URL)
                                                     │
                                                     └─ .success(.none)   — no samples written
-                                                          └─ .ready (or .error if disconnect was pending)
+                                                          ├─ .error — typical: the first-buffer watchdog (§5)
+                                                          │           fired and left a disconnect reason
+                                                          └─ .ready — user stopped within the 5 s watchdog window
 ```
 
 ### Abnormal paths
@@ -238,6 +240,9 @@ If the main file writer was in an error state at disconnect time, `stopRecording
 
 **Data-flow stall (driver silently stops delivering):**
 The data-flow watchdog fires after 3 seconds with no successful `append`. This catches USB hub starvation, driver firmware hangs, and Bluetooth profile transitions that don't generate an `AVCaptureSessionWasInterrupted` notification. The path is identical to the interruption watchdog: `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording` → VM stop.
+
+**No first buffer after record start:**
+The first-buffer watchdog fires 5 seconds after record start if not a single buffer has been appended (see §5, Watchdog 4). The route is identical to the other watchdogs — `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording` → VM stop — but because nothing was written, the stop completes as `.success(.none)` and the VM surfaces `.error` with "The microphone delivered no audio. No audio was captured — try again with the built-in microphone." This is the *typical* way a no-samples take ends; a silent `.ready` exit happens only when the user taps STOP inside the 5-second window.
 
 **1-second input health poll:**
 `checkRecordingInputHealth()` is called from `inputWatchTimer` every second. It checks `device.isConnected` and the device's presence in `availableInputDevices`. This is a belt-and-suspenders catch for USB unplugs that CoreAudio's listener reports slowly. It uses `disconnectStopPending` to prevent double-firing with the listener path.
@@ -263,7 +268,7 @@ If `AVAssetWriterInput.isReadyForMoreMediaData` returns false for 3 consecutive 
 
 The design philosophy is closer to a hardware field recorder than a consumer screen recorder. A hardware Zoom H6 does not stop recording because the headphone was unplugged; it writes continuously to SD card and keeps going. DoublEnder applies the same principle: no recording is lost to a recoverable failure, and no failure is silent.
 
-### The three watchdogs
+### The four watchdogs
 
 #### Watchdog 1: Interruption watchdog (5 seconds)
 
@@ -289,6 +294,16 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **Mechanism:** `inputWatchTimer` fires every second. `AudioEngine.checkRecordingInputHealth()` reads `currentInput?.device.isConnected` and checks whether the device UID still appears in `availableInputDevices`. Either failure triggers `triggerRecordingInputDisconnect`, which sets `disconnectStopPending` and routes through `handleRecordingCaptureFailure`.
 
+#### Watchdog 4: First-buffer watchdog (5 seconds, armed at record start)
+
+**What it covers:** A device that enumerates, reports connected, and starts a session — but never delivers a single buffer (wedged driver, USB hub power starvation already present at record start). The data-flow watchdog cannot catch this: it is armed only from `markDataFlowing`, i.e. only after at least one successful append. Before this watchdog existed (added in 1.8.1), such a take "recorded" silence indefinitely with no failure surface.
+
+**Mechanism:** Armed once in `startRecording` with a 5-second deadline (`firstBufferTimeoutSeconds`). If it fires with no sample appended, it sets `disconnectStopPending` and routes through `handleRecordingCaptureFailure` with reason "The microphone delivered no audio" — the same latch chain as the other watchdogs. Five seconds matches the interruption watchdog's hard-failure patience: the capture session is already running and feeding the level meter before RECORD is even tappable, so a healthy first buffer lands ~10–20 ms after `isRecording` flips; the slowest observed cold-USB bring-up is over 1 s but well under 5.
+
+**Cancellation points:** the first successful append in `markDataFlowing`, and every recording-stop / cancel / teardown path (`stopRecording`, `cancelRecording`, `abandonStaleRecordingState`, `clearStaleRecordingSessionIfNeeded`, both `tearDownWriterLocked` branches).
+
+**Deliberately NOT cancelled on `captureSessionInterruptionEnded`:** if an interruption ends but the restarted session still delivers nothing, this watchdog is the only remaining guard — and a genuinely healthy restart cancels it via `markDataFlowing` within milliseconds anyway. Do not "fix" this by adding that cancellation point.
+
 ### The drop threshold (3 drops → take failure)
 
 `AVAssetWriterInput.isReadyForMoreMediaData` returning false is a backpressure signal — the writer's internal ring buffer is momentarily full. A single false is normal on startup or during a brief encoder stall. Three consecutive false values (≈30 ms at a 48 kHz, 10 ms buffer) means sustained loss — audio is being dropped, the take is already compromised, and failing sooner triggers sidecar recovery before more audio is lost.
@@ -301,7 +316,7 @@ A separate counter (`consecutiveWriteErrors`) tracks failed `input.append()` cal
 
 Three separate latches prevent duplicate teardowns when several failure paths converge:
 
-1. **`disconnectStopPending` (AudioEngine):** Set by `triggerRecordingInputDisconnect`, `tearDownWriterLocked` (when the engine decides to stop), and `captureSessionRuntimeError`. Guards `triggerRecordingInputDisconnect` and `handleRecordingCaptureFailure` — once set, neither fires again for the current take.
+1. **`disconnectStopPending` (AudioEngine):** Set by `triggerRecordingInputDisconnect`, `tearDownWriterLocked` (when the engine decides to stop), `captureSessionRuntimeError`, and the first-buffer watchdog. Guards `triggerRecordingInputDisconnect` and `handleRecordingCaptureFailure` — once set, neither fires again for the current take.
 
 2. **`didDispatchDisconnect` (AudioEngine):** Set in `dispatchDisconnectIfNeeded`. Because multiple paths can all arrive at `handleRecordingCaptureFailure → dispatchDisconnectIfNeeded` (interruption watchdog, data-flow watchdog, runtime error, health poll), this latch guarantees `onDisconnectedDuringRecording` fires exactly once per take. Reset in `startRecording` for the next take.
 
@@ -322,6 +337,13 @@ On a normal successful stop, `sidecar.discard()` deletes the `.pcmrec` file — 
 - **Stop & Save:** Calls `vm.stopRecording { NSApp.reply(toApplicationShouldTerminate: true) }`. The app stays alive until `finishWriting` completes, then terminates normally.
 - **Quit Without Saving:** Calls `vm.abortRecording { NSApp.reply(toApplicationShouldTerminate: true) }`. `AudioEngine.cancelRecording` calls `writer.cancelWriting()` (which deletes the partial output file) and `sidecar.discard()`.
 - **Cancel:** Calls `NSApp.reply(toApplicationShouldTerminate: false)`. Recording resumes.
+
+**Uploading (Cloud):** `applicationShouldTerminate` also returns `.terminateLater` when `isCurrentlyUploading` is true — recording and uploading are mutually exclusive states, so at most one intercept presents. `presentUploadInProgressAlert` offers exactly two choices:
+
+- **Keep Uploading** (default — pressing Return keeps the upload alive): replies `false`; the upload continues.
+- **Quit Anyway:** termination proceeds immediately.
+
+There is deliberately **no** "wait for the upload to finish" option, so a stalled upload can never hang quit. The recording is already safe on the Desktop, and the pending-upload record was persisted before initiation — quitting only defers the upload to the next-launch prompt, which resumes from the committed offset (§8).
 
 ### Disk space fail-closed
 

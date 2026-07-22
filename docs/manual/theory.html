@@ -646,7 +646,7 @@
         <div class="chain-arrow">→</div>
         <div class="chain-node emphasis">.success(.some(url))<br><span style="font-size:0.75rem;font-weight:400;">Local: .ready + RecordingSavedConfirmation<br>Cloud: .uploading → performUpload()</span></div>
         <div class="chain-arrow">→</div>
-        <div class="chain-node optional">.success(.none)<br><span style="font-size:0.75rem;font-weight:400;">no samples written → .ready</span></div>
+        <div class="chain-node optional">.success(.none)<br><span style="font-size:0.75rem;font-weight:400;">no samples written → .error with the watchdog's<br>reason (typical) · .ready only if stopped within 5 s</span></div>
       </div>
     </div>
 
@@ -657,6 +657,8 @@
     <p><strong>Session interruption (another app takes the mic):</strong> The interruption watchdog arms for 5 seconds. <code>sessionInterrupted = true</code> is published and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers within 5 seconds, the watchdog is cancelled and the take continues. If not, the watchdog fires <code>handleRecordingCaptureFailure</code> and the take is stopped and saved.</p>
 
     <p><strong>Data-flow stall (driver silently stops delivering):</strong> The data-flow watchdog fires after 3 seconds with no successful append. This catches USB hub starvation, driver firmware hangs, and Bluetooth profile transitions that don't generate an <code>AVCaptureSessionWasInterrupted</code> notification.</p>
+
+    <p><strong>No first buffer after record start:</strong> The first-buffer watchdog fires 5 seconds after record start if not a single buffer has been appended (see Watchdog 4). The route is identical to the other watchdogs, but because nothing was written the stop completes as <code>.success(.none)</code> and the VM surfaces <code>.error</code>: "The microphone delivered no audio. No audio was captured — try again with the built-in microphone." This is the typical way a no-samples take ends; a silent <code>.ready</code> exit happens only when the user taps STOP inside the 5-second window.</p>
 
     <p><strong>Sustained backpressure (writer can't keep up):</strong> If <code>AVAssetWriterInput.isReadyForMoreMediaData</code> returns false for 3 consecutive buffers (≈30 ms of dropped audio), <code>tearDownWriterLocked</code> is called. If the writer has already received at least one sample, writer refs are left intact for <code>stopRecording</code> to finalize, producing a partial-but-valid file.</p>
 
@@ -686,6 +688,11 @@
     <p><strong>What it covers:</strong> CoreAudio's device-list listener can lag behind a physical USB unplug by 100–500 ms. <code>AVCaptureDevice.isConnected</code> flips to false much sooner.</p>
     <p><strong>Mechanism:</strong> <code>inputWatchTimer</code> fires every second. <code>AudioEngine.checkRecordingInputHealth()</code> reads <code>currentInput?.device.isConnected</code> and checks whether the device UID still appears in <code>availableInputDevices</code>. Either failure triggers <code>triggerRecordingInputDisconnect</code>.</p>
 
+    <h3>Watchdog 4: First-Buffer (5 seconds, armed at record start)</h3>
+    <p><strong>What it covers:</strong> A device that enumerates, reports connected, and starts a session — but never delivers a single buffer (wedged driver, USB hub power starvation already present at record start). The data-flow watchdog cannot catch this: it is armed only from <code>markDataFlowing</code>, i.e. only after at least one successful append. Before this watchdog existed (added in 1.8.1), such a take "recorded" silence indefinitely with no failure surface.</p>
+    <p><strong>Mechanism:</strong> Armed once in <code>startRecording</code> with a 5-second deadline. If it fires with no sample appended, it sets <code>disconnectStopPending</code> and routes through <code>handleRecordingCaptureFailure</code> with reason "The microphone delivered no audio" — the same latch chain as the other watchdogs. Five seconds matches the interruption watchdog's hard-failure patience: the session is already feeding the level meter before RECORD is tappable, so a healthy first buffer lands within tens of milliseconds. Cancelled by the first successful append in <code>markDataFlowing</code> and by every recording-stop / cancel / teardown path.</p>
+    <p><strong>Deliberately not cancelled on <code>captureSessionInterruptionEnded</code>:</strong> if an interruption ends but the restarted session still delivers nothing, this watchdog is the only remaining guard — and a genuinely healthy restart cancels it via <code>markDataFlowing</code> within milliseconds anyway. Do not "fix" this by adding that cancellation point.</p>
+
     <h3>Drop Threshold: 3 Consecutive Drops</h3>
     <p><code>AVAssetWriterInput.isReadyForMoreMediaData</code> returning false is a backpressure signal: the writer's ring buffer is momentarily full. A single false is normal. Three consecutive false values (≈30 ms at a 48 kHz, 10 ms buffer) means sustained loss: audio is being dropped, the take is already compromised, and failing sooner triggers sidecar recovery before more audio is lost. On the first drop, <code>droppedFrameWarning = true</code> is published and the UI shows "Dropped frames — check disk."</p>
 
@@ -694,7 +701,7 @@
       <summary><span class="callout-cat">Under the Hood</span> Three latches preventing duplicate teardowns</summary>
       <p>When the interruption watchdog, data-flow watchdog, runtime error, and health poll all arrive at roughly the same moment, three latches ensure exactly one teardown path fires and exactly one user-facing stop occurs:</p>
       <ol>
-        <li><strong><code>disconnectStopPending</code> (AudioEngine):</strong> Set by <code>triggerRecordingInputDisconnect</code> and <code>tearDownWriterLocked</code>. Guards both methods against re-entrancy; once set, neither fires again for the current take.</li>
+        <li><strong><code>disconnectStopPending</code> (AudioEngine):</strong> Set by <code>triggerRecordingInputDisconnect</code>, <code>tearDownWriterLocked</code>, <code>captureSessionRuntimeError</code>, and the first-buffer watchdog. Guards <code>triggerRecordingInputDisconnect</code> and <code>handleRecordingCaptureFailure</code> against re-entrancy; once set, neither fires again for the current take.</li>
         <li><strong><code>didDispatchDisconnect</code> (AudioEngine):</strong> Set in <code>dispatchDisconnectIfNeeded</code>. Multiple paths arrive at <code>handleRecordingCaptureFailure → dispatchDisconnectIfNeeded</code>; this latch guarantees <code>onDisconnectedDuringRecording</code> fires exactly once per take. Reset in <code>startRecording</code>.</li>
         <li><strong><code>isFinalizingRecording</code> (RecorderViewModel):</strong> Set at the top of <code>stopRecording</code>, cleared in the engine completion block. When AudioEngine has already cleared its writer refs (the first caller won), a second <code>stopRecording</code> gets <code>RecordingError.noActiveRecording</code> back. With this flag true, the VM swallows it as a no-op instead of surfacing a spurious "failed to finalize" error.</li>
       </ol>
@@ -707,6 +714,7 @@
 
     <h3>Quit Protection</h3>
     <p><code>applicationShouldTerminate</code> returns <code>.terminateLater</code> when <code>isCurrentlyRecording</code> is true. The alert offers three paths: <strong>Stop &amp; Save</strong> (calls <code>vm.stopRecording</code>, stays alive until <code>finishWriting</code> completes, then terminates), <strong>Quit Without Saving</strong> (<code>vm.abortRecording</code> → <code>cancelWriting()</code> + <code>sidecar.discard()</code>), and <strong>Cancel</strong> (<code>NSApp.reply(toApplicationShouldTerminate: false)</code>).</p>
+    <p><strong>Uploading (Cloud):</strong> <code>applicationShouldTerminate</code> also returns <code>.terminateLater</code> when <code>isCurrentlyUploading</code> is true — recording and uploading are mutually exclusive, so at most one intercept presents. The alert offers exactly two choices: <strong>Keep Uploading</strong> (default — pressing Return keeps the upload alive) and <strong>Quit Anyway</strong> (termination proceeds immediately). There is deliberately <em>no</em> "wait for the upload to finish" option, so a stalled upload can never hang quit. The recording is already safe on the Desktop, and the pending-upload record was persisted before initiation — quitting only defers the upload to the next-launch prompt, which resumes from the committed offset (see <a href="#cloud">Cloud Variant</a>).</p>
 
     <h3>Disk Space Fail-Closed</h3>
     <p>At record start: if <code>DiskSpaceChecker.recordingBlockedReason</code> returns non-nil, state goes to <code>.error(reason)</code> and recording does not start. Thresholds: 50 MB for AAC, 200 MB for WAV. If <code>volumeAvailableCapacityForImportantUsage</code> cannot be queried, the function returns a blocking message rather than allowing recording; a recording cannot start on a volume the app cannot measure.</p>
