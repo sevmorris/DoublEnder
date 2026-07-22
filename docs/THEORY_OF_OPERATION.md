@@ -1,6 +1,6 @@
 # DoublEnder — Theory of Operation
 
-**Version:** 1.7.7lr · Last updated: 2026-07-12
+**Version:** 2.0.1lr · Last updated: 2026-05-20
 
 ---
 
@@ -512,7 +512,7 @@ The model is **pull-based staleness**: the app only ever beats its current state
 
 **Local:** Queries `https://api.github.com/repos/sevmorris/DoublEnder/releases/latest`. Compares `tag_name` (stripped of suffix and pre-release markers) against the installed version. "Download" opens the GCS permalink (`doublender-downloads/DoublEnder.dmg`) rather than a version-pinned GitHub asset — the permalink always resolves to the current build.
 
-**Cloud:** Queries the `UpdateManifestURL` from the bundle's `Info.plist`. The manifest is a small JSON `{ "version": "1.7.2cr", "url": "https://…" }` written by `release-cloud.sh` on every release.
+**Cloud:** Queries the `UpdateManifestURL` from the bundle's `Info.plist`. The manifest is a small JSON `{ "version": "X.Y.Zcr", "url": "https://…" }` written by the Cloud release pipeline (`release-cloud.sh`) on every release.
 
 ---
 
@@ -527,15 +527,15 @@ Before any Cloud build, `release_cloud_merged_spec` runs a Ruby one-liner that m
 ### Version and build number conventions
 
 ```
-MARKETING_VERSION: "1.7.2lr"     ← user-visible; in CFBundleShortVersionString
-CURRENT_PROJECT_VERSION: "16"    ← build number; in CFBundleVersion
+MARKETING_VERSION: "X.Y.Zlr"     ← user-visible; in CFBundleShortVersionString
+CURRENT_PROJECT_VERSION: "N"     ← build number; in CFBundleVersion
 ```
 
 Version suffix conventions:
 - `lr` — Local release
 - `cr` — Cloud release
 
-`VersionFormatting.numericVersion` strips the suffix for version comparisons: `"1.7.2lr"` → `"1.7.2"`. `splitSuffix` splits `"1.7.2lr"` → `("1.7.2", "lr")` for the on-screen version overlay, where the suffix is displayed in uppercase.
+`VersionFormatting.numericVersion` strips the suffix for version comparisons: `"X.Y.Zlr"` → `"X.Y.Z"`. `splitSuffix` splits `"X.Y.Zlr"` → `("X.Y.Z", "lr")` for the on-screen version overlay, where the suffix is displayed in uppercase.
 
 ### `release.sh` pipeline
 
@@ -553,10 +553,11 @@ Version suffix conventions:
 12. **Tag and push:** `git tag vX.Y.Zlr`, push branch and tag.
 13. **GitHub release:** `gh release create` with the DMG as the release asset. Release notes are generated from commits since the previous tag, filtering out version-bump and build-bump commits.
 14. **Bump Homebrew cask:** `shasum -a 256` the just-notarized DMG, clone `sevmorris/homebrew-tap` into a temp directory, rewrite the `version` and `sha256` lines in `Casks/doublender.rb`, verify both replacements landed (sed silently no-ops on a missed pattern), and push a `Bump doublender to <version>` commit. Runs after the GitHub release so the cask's URL points at a live asset before users can `brew upgrade`.
-15. **GCS permalink:** `gsutil cp` to `gs://doublender-downloads/DoublEnder.dmg`, `setmeta -h "Cache-Control:no-cache"`. The permalink always resolves to the latest build; the UpdateChecker's Download button uses this rather than a version-pinned GitHub URL.
+15. **GCS permalink:** `gcloud storage cp` to `gs://doublender-downloads/DoublEnder.dmg` with `Cache-Control: public, max-age=60`, then re-assert public-read. The permalink always resolves to the latest build; the UpdateChecker's Download button uses this rather than a version-pinned GitHub URL. (Distinct from the Cloud *update manifest* `cloud-latest.json`, which is uploaded with `Cache-Control: no-cache` — update checks must read fresh; the 60-second cap on the DMG merely keeps a just-published build from being masked by an older cached copy.)
 16. **Cloud release:** if `project.cloud.yml` is present, run `scripts/release-cloud-from-local.sh`. This publishes DoublEnder Cloud at the same numeric version.
 17. **Prune old releases:** keep the 5 most recent GitHub releases; delete older tags and release assets.
-18. **Clean up:** remove temp build dirs, DMG.
+18. **Prune old Pages deployments:** mark all but the newest `github-pages` deployment inactive and delete them via the GitHub API, so the docs site's deployment list doesn't grow unboundedly.
+19. **Clean up:** remove temp build dirs, DMG.
 
 ---
 

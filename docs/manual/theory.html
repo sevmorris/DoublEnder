@@ -831,7 +831,7 @@
 
     <h3>Update Checker: Cloud vs. Local</h3>
     <p><strong>Local:</strong> queries <code>https://api.github.com/repos/sevmorris/DoublEnder/releases/latest</code>. "Download" opens the GCS permalink (<code>doublender-downloads/DoublEnder.dmg</code>) rather than a version-pinned GitHub asset; the permalink always resolves to the current build.</p>
-    <p><strong>Cloud:</strong> queries the <code>UpdateManifestURL</code> from the bundle's <code>Info.plist</code>. The manifest is a small JSON <code>{ "version": "1.7.2cr", "url": "https://…" }</code> written by <code>release-cloud.sh</code> on every release.</p>
+    <p><strong>Cloud:</strong> queries the <code>UpdateManifestURL</code> from the bundle's <code>Info.plist</code>. The manifest is a small JSON <code>{ "version": "X.Y.Zcr", "url": "https://…" }</code> written by the Cloud release pipeline (<code>release-cloud.sh</code>) on every release.</p>
   </section>
 
   <!-- Lifecycle & Release -->
@@ -858,13 +858,13 @@
         <tr><th>Key</th><th>Example</th><th>Meaning</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>MARKETING_VERSION</code></td><td><code>1.7.2lr</code></td><td>User-visible; <code>CFBundleShortVersionString</code></td></tr>
-        <tr><td><code>CURRENT_PROJECT_VERSION</code></td><td><code>16</code></td><td>Build number; <code>CFBundleVersion</code></td></tr>
-        <tr><td>Suffix <code>lr</code></td><td><code>1.7.2lr</code></td><td>Local release</td></tr>
-        <tr><td>Suffix <code>cr</code></td><td><code>1.7.2cr</code></td><td>Cloud release</td></tr>
+        <tr><td><code>MARKETING_VERSION</code></td><td><code>X.Y.Zlr</code></td><td>User-visible; <code>CFBundleShortVersionString</code></td></tr>
+        <tr><td><code>CURRENT_PROJECT_VERSION</code></td><td><code>N</code></td><td>Build number; <code>CFBundleVersion</code></td></tr>
+        <tr><td>Suffix <code>lr</code></td><td><code>X.Y.Zlr</code></td><td>Local release</td></tr>
+        <tr><td>Suffix <code>cr</code></td><td><code>X.Y.Zcr</code></td><td>Cloud release</td></tr>
       </tbody>
     </table>
-    <p><code>VersionFormatting.numericVersion</code> strips the suffix for version comparisons: <code>"1.7.2lr"</code> → <code>"1.7.2"</code>. <code>splitSuffix</code> splits <code>"1.7.2lr"</code> → <code>("1.7.2", "lr")</code> for the on-screen version overlay, where the suffix is shown in uppercase.</p>
+    <p><code>VersionFormatting.numericVersion</code> strips the suffix for version comparisons: <code>"X.Y.Zlr"</code> → <code>"X.Y.Z"</code>. <code>splitSuffix</code> splits <code>"X.Y.Zlr"</code> → <code>("X.Y.Z", "lr")</code> for the on-screen version overlay, where the suffix is shown in uppercase.</p>
 
     <h3>release.sh Pipeline</h3>
     <ol>
@@ -882,9 +882,10 @@
       <li>Tag and push: <code>git tag vX.Y.Zlr</code>, push branch and tag</li>
       <li>GitHub release: <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
       <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-tap</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to vX.Y.Zlr</code></li>
-      <li>GCS permalink: <code>gsutil cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: no-cache</code></li>
+      <li>GCS permalink: <code>gcloud storage cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: public, max-age=60</code>. (Distinct from the Cloud <em>update manifest</em> <code>cloud-latest.json</code>, which is uploaded with <code>Cache-Control: no-cache</code> — update checks must read fresh; the 60-second cap on the DMG merely keeps a just-published build from being masked by an older cached copy.)</li>
       <li>Cloud release: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
       <li>Prune old releases: keep the 5 most recent GitHub releases; delete older tags and assets</li>
+      <li>Prune old Pages deployments: mark all but the newest <code>github-pages</code> deployment inactive and delete them via the GitHub API</li>
     </ol>
   </section>
 
