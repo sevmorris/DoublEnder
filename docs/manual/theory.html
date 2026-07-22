@@ -728,13 +728,13 @@
     <p><code>AudioEngine.refreshDevices()</code> calls <code>AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio)</code> and filters the result to remove <code>CADefaultDeviceAggregate-*</code> entries. These are macOS-internal aggregates CoreAudio auto-creates around the current system default for AUHAL compatibility; picking one is a no-op and confusing to the user.</p>
     <p>Hardware vs. virtual classification uses CoreAudio <code>kAudioDevicePropertyTransportType</code>. Devices with transport <code>kAudioDeviceTransportTypeAggregate</code> or <code>kAudioDeviceTransportTypeVirtual</code> are classified as <code>.virtual</code>; everything else is <code>.microphone</code>. The <code>hardwareInputDevices()</code> filter exposes only <code>.microphone</code> devices to the picker, so BlackHole, Loopback, and similar routing devices never appear in the UI.</p>
 
-    <h3>Four Refresh Triggers</h3>
+    <h3>Refresh Triggers</h3>
     <ol>
       <li><strong>CoreAudio listener</strong> (<code>kAudioHardwarePropertyDevices</code>, dispatched to main): fires the moment any device is added or removed from the system device list.</li>
       <li><strong><code>NSApplication.didBecomeActiveNotification</code>:</strong> devices plugged while DoublEnder was backgrounded are picked up when the app comes front.</li>
       <li><strong><code>NSWorkspace.didWakeNotification</code>:</strong> catches devices that reconnected during sleep.</li>
-      <li><strong><code>rebuildSession</code> completion</strong> (implicit, via engine config changes).</li>
     </ol>
+    <p>The two notification triggers share <code>handleRefreshTrigger</code>, which skips the refresh while a take is in progress — a device change mid-recording is the disconnect machinery's concern, not the picker's. RecorderViewModel additionally calls <code>refreshDevices()</code> directly at permission grant and in <code>switchToFallbackInputAfterLoss</code>. In practice the CoreAudio listener is fast enough that the notifications are rarely the first to fire.</p>
 
     <h3>Hot-Plug Offer</h3>
     <p>On each <code>refreshDevices</code>, new UIDs that are USB devices trigger <code>onNewUSBDeviceDetected</code> — but only while no take is in progress (<code>AudioEngine</code> skips the callback when <code>isRecording</code>; <code>RecorderViewModel.presentUSBSwitchPrompt</code> also bails on <code>isCurrentlyRecording</code>). RecorderViewModel presents an <code>NSAlert</code> app-modal offering to switch. <code>knownInputDeviceUIDs</code> is updated <em>before</em> firing the callback, so any re-entrant <code>refreshDevices</code> call arriving during the modal's <code>runModal()</code> loop sees the new UID as already known and does not stack a duplicate prompt. The first <code>refreshDevices</code> after init seeds <code>knownInputDeviceUIDs</code> silently; launch-time device population is not a "new arrival."</p>

@@ -363,13 +363,12 @@ Hardware vs. virtual classification uses CoreAudio `kAudioDevicePropertyTranspor
 
 ### Refresh triggers
 
-`refreshDevices()` is called from four sources:
+`refreshDevices()` has three engine-side triggers:
 1. **CoreAudio listener** (`kAudioHardwarePropertyDevices`, dispatched to main): fires the moment any device is added or removed from the system device list.
 2. **`NSApplication.didBecomeActiveNotification`**: devices plugged while DoublEnder was backgrounded are picked up when the app comes front.
 3. **`NSWorkspace.didWakeNotification`**: catches devices that reconnected during sleep.
-4. **`rebuildSession` completion** (implicit, via engine config changes).
 
-The listener and the notifications are belt-and-suspenders — in practice the CoreAudio listener is fast enough that the notifications are rarely the first to fire.
+The two notification triggers share `handleRefreshTrigger`, which skips the refresh while a take is in progress — a device change mid-recording is the disconnect machinery's concern (§5), not the picker's. RecorderViewModel additionally calls `refreshDevices()` directly at permission grant and in `switchToFallbackInputAfterLoss`. The listener and the notifications are belt-and-suspenders — in practice the CoreAudio listener is fast enough that the notifications are rarely the first to fire.
 
 ### Hot-plug offer
 
