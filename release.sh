@@ -260,15 +260,16 @@ rm -rf "$TAP_DIR"
 
 # ── Publish GCS permalink ─────────────────────────────────────────────────────
 step "Publishing GCS download permalink"
-gsutil cp "$DMG" gs://doublender-downloads/DoublEnder.dmg
-gsutil acl ch -u AllUsers:R gs://doublender-downloads/DoublEnder.dmg
 # Short TTL (60s) instead of no-cache — mirrors release-cloud-lib.sh. The
 # short TTL keeps a freshly published build from being shadowed by a cached
 # prior one for GCS's default 1 hour, while staying CACHEABLE: "no-cache"
 # pushes the object off Google's fast media-serving path and anonymous
 # downloads crawl at ~150 KB/s (~130x slower; the DMG looks hung). Verified
 # empirically 2026-07-10 by A/B on the same object.
-gsutil setmeta -h "Cache-Control:public, max-age=60" gs://doublender-downloads/DoublEnder.dmg
+gcloud storage cp "$DMG" gs://doublender-downloads/DoublEnder.dmg \
+    --cache-control="public, max-age=60"
+gcloud storage objects update gs://doublender-downloads/DoublEnder.dmg \
+    --add-acl-grant=entity=AllUsers,role=READER
 ok "GCS permalink updated → DoublEnder.dmg (max-age=60)"
 
 # ── Cloud release ─────────────────────────────────────────────────────────────
