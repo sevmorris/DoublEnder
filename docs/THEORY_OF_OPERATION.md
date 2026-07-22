@@ -38,7 +38,7 @@ Both share 100% of the Swift source in `DoublEnder/`. They differ only in what's
 | Variant | Version suffix | Key addition | Distribution |
 |---|---|---|---|
 | **DoublEnder Local** | `lr` | — | GitHub releases + GCS permalink |
-| **DoublEnder Cloud** | `cr` | GCS upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`) | GCS (private) |
+| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`) | GCS (private) |
 
 The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. Every `#if GCS_ENABLED` block in the shared source tree compiles to nothing in Local builds, so the service-account key and upload logic are never shipped in the public app.
 
@@ -456,30 +456,36 @@ The `GCS_ENABLED` compilation condition gates all Cloud-only code. Everything in
 
 DoublEnder Cloud has no backend server. Authentication uses GCS V4 signed URLs generated entirely on the client from a bundled GCP service-account JSON key. The approach:
 
-1. Load `doublender-10af32ff2d11.json` from the app bundle (via `Bundle.main.url(forResource:)`).
+1. Load the bundled service-account key (JSON) from the app bundle (via `Bundle.main.url(forResource:)`).
 2. Parse `private_key` (PEM-encoded PKCS#8 RSA key) and `client_email`.
-3. Build a canonical GCS PUT request string according to the V4 signing protocol.
+3. Build a canonical request string for the resumable-initiation POST according to the V4 signing protocol. The signed headers are `host;x-goog-hash;x-goog-resumable` — `x-goog-*` extension headers must be signed for GCS to accept the start request and remember the checksum for finalize-time validation.
 4. SHA-256 hash it with CryptoKit.
 5. Sign the hash with RSASSA-PKCS1-v1_5 via `SecKeyCreateSignature` (Security.framework, because CryptoKit has no RSA). The PKCS#8 outer `PrivateKeyInfo` wrapper is stripped via a minimal DER walk to extract the bare PKCS#1 `RSAPrivateKey` that `SecKeyCreateWithData` expects.
 6. Hex-encode the signature and append to the canonical query string.
 
-The resulting URL is valid for 15 minutes — enough for any take to upload, with no long-lived credential exposed. The URL is single-use. No OAuth token, no refresh cycle, no backend round-trip.
+The signed URL is valid for 15 minutes — but it gates **only the initiation POST**. GCS answers that POST with a **session URI** which is itself the upload capability: every subsequent chunk PUT goes to it unsigned, and it stays valid for about a week. That split is the load-bearing fact of the design: a multi-gigabyte take on a slow connection can far outlive the 15-minute signing window, because the signature only has to survive the instant of initiation. No OAuth token, no refresh cycle, no backend round-trip.
 
 ### Upload flow
 
-`RecorderViewModel.stopRecording` completion (`.success(.some(url))`) triggers:
-1. `state = .uploading`, `uploadProgress = 0`
-2. `setPendingUpload(path: fileURL.path)` — persisted to `UserDefaults` before the PUT starts, so a mid-upload quit or crash leaves the path available for next-launch retry.
-3. `Task { await self.performUpload() }` — off the main actor for the network call.
-4. `uploader.upload(fileURL:)` — `URLSession.upload(for:fromFile:)` PUT to the signed URL. Progress flows via `urlSession(_:task:didSendBodyData:...)` delegate → `uploader.progress` → `viewModel.uploadProgress` → `FaceplateUploadingView`.
-5. On 200–299: `clearPendingUpload()`, `state = .ready`, `UploadConfirmation.present(success: true)`. The local file always stays on the Desktop — the cloud object is a copy, not a move.
-6. On failure: exponential backoff [2s, 4s, 8s] between up to 3 retries, staying in `.uploading` throughout. After retries exhausted: `state = .uploadFailed(fileURL)`, `UploadConfirmation.present(success: false)`.
+`RecorderViewModel.stopRecording` completion (`.success(.some(url))`) sets `state = .uploading` and hands off to `performUpload()`, which drives a **two-phase resumable upload** (replacing the pre-2.0 single-shot PUT):
+
+**Phase 1 — initiate (`Uploader.beginUpload`):** compute the file's CRC32C, then POST to the V4-signed initiation URL with `x-goog-resumable: start` and `x-goog-hash: crc32c=…`. GCS answers `201` with a `Location` header — the session URI that carries the rest of the transfer.
+
+**Phase 2 — transfer (`Uploader.continueUpload`):** first query what GCS has already committed (`Content-Range: bytes */TOTAL` → `308` + `Range: bytes=0-N`; GCS is the source of truth for persisted bytes, so a resume re-queries rather than trusting a local counter), then stream the remaining bytes to the session URI in 16 MiB chunks with `Content-Range: bytes start-end/total`. Intermediate chunks return `308` with the committed offset; the final chunk returns `200/201` and finalizes the object. Progress is computed as chunk-base offset plus bytes sent from the `urlSession(_:task:didSendBodyData:...)` delegate, so `uploadProgress` stays monotonic across chunk boundaries and resumes.
+
+**Integrity (strategy A + B):** the CRC32C sent at initiation makes GCS refuse a corrupt finalize server-side — a `400 CrcMismatch`/`BadDigest` response surfaces as a non-retryable integrity failure, independent of any client-side bug. The finalize response's `x-goog-hash` is *also* compared client-side against the locally computed CRC32C. Either failure keeps the local file and never counts as success.
+
+**The pending record:** before initiation, `{path}` is persisted to `UserDefaults` so a crash before init still restarts the upload next launch. The moment initiation succeeds, the record is upgraded to `{path, sessionURI, crc32c}` — from then on any retry, relaunch, or quit-and-reopen **resumes from GCS's committed offset instead of restarting**. A legacy bare-path value written by a pre-2.0 build decodes as "no session" and restarts.
+
+**Failure handling:** transient failures retry with exponential backoff [2s, 4s, 8s], staying in `.uploading` throughout — and each retry resumes, not restarts. Deterministic failures (integrity mismatch, missing/malformed credential, signing failure) are non-retryable and fail immediately without burning retries. After retries are exhausted: `state = .uploadFailed(fileURL)`, `UploadConfirmation.present(success: false)`. On success: `clearPendingUpload()`, `state = .ready`, `UploadConfirmation.present(success: true)`. The local file always stays on the Desktop — the cloud object is a copy, not a move.
+
+**Upload diagnostics (FR-004):** failures are logged as sanitized summaries only — a fixed category label, the numeric HTTP status, the attempt number, and elapsed time. The signed URL, session URI, key material, response body, file path, and guest name are never logged. A 400/403 failure additionally logs a clock-skew hint (a Mac clock off by more than ~15 minutes breaks V4 signatures). This discipline is an invariant: any logging added to the upload path must preserve it.
 
 The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from the bundle ID tail: `io.github.sevmorris.DoublEnderCloud` → `DoublEnderCloud`. The UUID prevents filename collisions — two takes with the same filename (possible when `requiresRecordingNameAtStart` is active and a guest records twice) get distinct object keys.
 
 ### Pending-upload recovery
 
-`runPendingUploadCheckIfNeeded` (in `applicationDidFinishLaunching`) reads `pendingUploadPath` from `UserDefaults`. If the file still exists on disk, `PendingUploadPrompt.present` shows a modal offering Upload or Skip. Upload → `vm.resumePendingUpload(fileURL:)` → `performUpload()`. Skip → `clearPendingUpload()`. If the file is gone (user deleted it between sessions), the path is cleared silently.
+`runPendingUploadCheckIfNeeded` (in `applicationDidFinishLaunching`) reads the pending-upload record from `UserDefaults`. If the file still exists on disk, `PendingUploadPrompt.present` shows a modal offering Upload or Skip. Upload → `vm.resumePendingUpload(fileURL:)` → `performUpload()` — when the record carries a session URI, this resumes from GCS's committed offset rather than restarting. Skip → `clearPendingUpload()`. If the file is gone (user deleted it between sessions), the record is cleared silently.
 
 ### CloudConnectivity and the blue LED
 
@@ -489,6 +495,18 @@ The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from t
 - `networkSatisfied`: tracked live by `NWPathMonitor`. Updates arrive within ~1 s of a path change (Wi-Fi drop, VPN flip, airplane mode). The monitor runs on a `.utility` background queue; updates hop to the main actor via `Task { @MainActor }` for the `@Published` mutation.
 
 `CloudContentView` renders the blue LED from `connectivity.isReady`. `ContentView` (Local) has no blue LED — the LED images are not present and `CloudConnectivity` is not imported.
+
+### Session heartbeat (dashboard)
+
+`SessionHeartbeat` (singleton, compiled only into Cloud builds) lets a producer watch live sessions on a dashboard as Recording / Idle / Stale. While a take is in progress it POSTs `{sessionId, guestName, state}` to a Cloudflare Worker `/ingest` endpoint every 30 seconds; `sessionId` is a per-launch UUID, so each running Cloud instance is one dashboard row.
+
+The model is **pull-based staleness**: the app only ever beats its current state; the Worker derives "Stale" from the *absence* of beats and TTL-expires dead sessions. A crash therefore needs no "I died" message — the beats simply stop, and the dashboard reads Recording → Stale. A clean stop beats "idle" explicitly, reading Recording → Idle. That distinction — did the guest's app stop cleanly or die mid-take — is the whole point of the dashboard.
+
+**Idle cap (2.0.1):** after a recording stops, idle beats continue for a bounded 5-minute window, then the timer stops itself and the app goes fully silent (no final "offline" beat; the Worker's TTL clears the row). The window preserves the clean-stop vs. crash signal for as long as it is meaningful — past it, "open but idle" and "closed" are indistinguishable anyway. The bound exists because the Workers KV free tier is ~1,000 writes/day and an unbounded 30-second idle beat from one left-open instance is ~3× that. A new recording re-arms the timer.
+
+**Wiring:** `startRecording` calls `SessionHeartbeat.shared.recordingStarted(guestName:)`; every subsequent transition flows from a `$state` Combine sink, so any exit from `.recording` (stop, upload, error, disconnect, first-buffer failure) flips the beat to "idle" with no per-transition hook to keep in sync. Inert until the first `recordingStarted`, so the app doesn't beat while idle at launch.
+
+**Auth and configuration:** each POST carries a Cloudflare Access service token (`CF-Access-Client-Id` / `CF-Access-Client-Secret`), validated by Access at the edge. The ingest URL and both token halves come from three Info.plist keys (`IngestURL`, `IngestClientId`, `IngestClientSecret`) injected at build time from a gitignored env file by the Cloud release pipeline — never literals in source. If any is absent or empty (dev builds without the injection, and — via the compile gate — every Local build), the heartbeat is fully inert. Sends are detached fire-and-forget URLSession tasks; a dead dashboard produces one log line and never blocks or delays recording. Logging follows the FR-004 discipline: HTTP status or error category only — never the secret, the URL, or the guest name.
 
 ### UpdateChecker — Cloud vs. Local
 
