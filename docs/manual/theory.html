@@ -592,7 +592,7 @@
         <tr><td>16</td><td>4 bytes</td><td>Payload format code (UInt32, little-endian; <code>1</code> = Float32)</td></tr>
       </tbody>
     </table>
-    <p>DEP1 (<code>"DEP1"</code>, 16-byte) omits the format code field. The recovery parser handles both for backward compatibility with sidecars written by pre-1.6 builds. The sidecar flushes to disk via <code>FileHandle.synchronize()</code> every 512 KB of payload; at 48 kHz Float32 mono (192 KB/min) that's approximately every 2.6 minutes.</p>
+    <p>DEP1 (<code>"DEP1"</code>, 16-byte) omits the format code field. The recovery parser handles both for backward compatibility with sidecars written by pre-1.6 builds. The sidecar flushes to disk via <code>FileHandle.synchronize()</code> every 512 KB of payload; at 48 kHz Float32 mono (192 KB/s) that's approximately every 2.7 seconds (~1.4 s at 96 kHz).</p>
 
     <h3>PCM Normalization: Four Formats</h3>
     <p><code>PCMSidecar.normalizedMonoFloatSamples(from:)</code> reads the buffer's <code>AudioStreamBasicDescription</code> and dispatches to one of four helpers. The same function drives the level meter, so the UI always reflects the same averaged-mono signal that ends up in the sidecar.</p>
@@ -883,7 +883,7 @@
         </tr>
         <tr>
           <td>Mono output</td>
-          <td>Podcast production almost universally uses mono guest stems. Stereo doubles the file size for no benefit; podcast editors sum to mono anyway. Multi-channel input is averaged to mono per frame before encoding.</td>
+          <td>Podcast production almost universally uses mono guest stems. Stereo doubles the file size for no benefit; podcast editors sum to mono anyway. Interleaved multi-channel input is averaged to mono per frame before encoding; non-interleaved (planar) input takes channel 0 only in the sidecar/meter normalization path — planar delivery is rare via <code>AVCaptureAudioDataOutput</code>.</td>
         </tr>
         <tr>
           <td>AAC as default</td>

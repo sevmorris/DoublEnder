@@ -171,7 +171,7 @@ The DEP2 sidecar header format (20 bytes):
 
 DEP1 (16-byte, `"DEP1"`) omits the format code field. The parser handles both for backward compatibility with sidecars written by pre-1.6 builds.
 
-The sidecar flushes to disk via `FileHandle.synchronize()` every 512 KB of payload. At 48 kHz Float32 mono (192 KB/min) this is approximately every 2.6 minutes; at 96 kHz it's every 1.3 minutes. A power loss loses at most one sync interval rather than the entire session.
+The sidecar flushes to disk via `FileHandle.synchronize()` every 512 KB of payload. At 48 kHz Float32 mono (192 KB/s) this is approximately every 2.7 seconds; at 96 kHz it's roughly every 1.4 seconds. A power loss loses at most one sync interval rather than the entire session.
 
 ### Sidecar PCM normalization (Float32, Int16, Int24, Int32)
 
@@ -535,7 +535,7 @@ The filename prefix is overridable from the settings popover (`filenameBase`), p
 
 ### Mono output
 
-All output is mono. Multi-channel input is averaged to mono per frame before encoding. The rationale: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
+All output is mono. Interleaved multi-channel input is averaged to mono per frame before encoding; non-interleaved (planar) input takes channel 0 only in the sidecar/meter normalization path (see §3) — planar delivery is rare via `AVCaptureAudioDataOutput`. The rationale: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
 
 ### AAC as default format
 
