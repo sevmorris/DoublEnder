@@ -1,6 +1,6 @@
 # DoublEnder — Theory of Operation
 
-**Version:** 2.0.1lr · Last updated: 2026-05-20
+**Version:** 2.1.2lr · Last updated: 2026-08-11
 
 ---
 
@@ -38,7 +38,7 @@ Both share 100% of the Swift source in `DoublEnder/`. They differ only in what's
 | Variant | Version suffix | Key addition | Distribution |
 |---|---|---|---|
 | **DoublEnder Local** | `lr` | — | GitHub releases + GCS permalink |
-| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`) | GCS (private) |
+| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), and a runtime switch that turns all of the above off for a session (§8) | GCS (private) |
 
 The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. Every `#if GCS_ENABLED` block in the shared source tree compiles to nothing in Local builds, so the service-account key and upload logic are never shipped in the public app.
 
@@ -452,6 +452,27 @@ When `hasValidMainFile = true` (sidecar orphaned next to a valid main file):
 
 The `GCS_ENABLED` compilation condition gates all Cloud-only code. Everything in this section is compiled out of Local builds.
 
+### The local-only switch (runtime)
+
+Two independent gates govern the cloud features, and conflating them is a mistake with real consequences:
+
+| Gate | Kind | What it controls |
+|---|---|---|
+| `GCS_ENABLED` | Compile-time | Whether cloud code and credentials exist in the binary at all. This is the security boundary. |
+| `cloudUploadEnabled` | Runtime | Whether a Cloud build *uses* its cloud features this session. Purely behavioural. |
+
+`RecorderViewModel.cloudUploadEnabled` is a single master switch, exposed in the settings popover, that turns off every cloud-side behaviour at once: the GCS upload, the session heartbeat, the pre-recording name prompt, and the launch-time pending-upload prompt. With it off, the Cloud build takes the same code path as Local — the take still records and saves to the Desktop with the same confirmation, it simply never leaves the machine. This exists so one install can serve both purposes instead of a user keeping two apps side by side.
+
+**It is not a security boundary.** The bundled service-account key and ingest token ship in the Cloud build regardless of the setting. A Cloud build stays client-only and must never be distributed publicly no matter how the switch is set; only `GCS_ENABLED` keeps credentials out of an app.
+
+**Always on at launch.** The setting is deliberately session-scoped and never persisted — every launch starts with cloud on, so disabling is a conscious act repeated each session. The failure it guards against is specific: a guest who switched uploading off once, and had that silently persist, would leave the producer with no file *and* no dashboard row, with nothing on screen to explain why. Uploading is the safe default, so the burden belongs on turning it off rather than on remembering to turn it back on. `eraseSessionDefaults()` also removes the key persisted by 2.1.0, so a stored "off" from that build is cleared and never honoured.
+
+**Two visible indicators**, because a silently disabled upload is exactly the failure mode a producer cannot see:
+- The cloud LED stays dark. On its own this is ambiguous — dark also means "unreachable" — so it is paired with:
+- A `LOCAL` marker beside the version in the viewport's metadata strip, present for the whole session.
+
+**Interaction with in-flight work.** The toggle is disabled while recording or uploading, so a mode change can never strand a take mid-flight. Turning it off calls `SessionHeartbeat.deactivate()` so the dashboard sees the instance go quiet (row ages to Stale, then TTL-clears) rather than keep receiving "idle", and clears a stranded `.uploadFailed` state. A persisted pending-upload record is deliberately **preserved**, not discarded: the launch prompt simply stays silent while cloud is off, and turning it back on still offers to finish that upload, resuming from the committed offset.
+
 ### GCS authentication — V4 signed URL, entirely on-device
 
 DoublEnder Cloud has no backend server. Authentication uses GCS V4 signed URLs generated entirely on the client from a bundled GCP service-account JSON key. The approach:
@@ -467,7 +488,7 @@ The signed URL is valid for 15 minutes — but it gates **only the initiation PO
 
 ### Upload flow
 
-`RecorderViewModel.stopRecording` completion (`.success(.some(url))`) sets `state = .uploading` and hands off to `performUpload()`, which drives a **two-phase resumable upload** (replacing the pre-2.0 single-shot PUT):
+`RecorderViewModel.stopRecording` completion (`.success(.some(url))`) sets `state = .uploading` and hands off to `performUpload()`, which drives a **two-phase resumable upload** (replacing the pre-2.0 single-shot PUT). When the local-only switch is off, this branch is skipped entirely and the completion takes the Local path instead — saved, confirmed, never uploaded:
 
 **Phase 1 — initiate (`Uploader.beginUpload`):** compute the file's CRC32C, then POST to the V4-signed initiation URL with `x-goog-resumable: start` and `x-goog-hash: crc32c=…`. GCS answers `201` with a `Location` header — the session URI that carries the rest of the transfer.
 
@@ -485,7 +506,7 @@ The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from t
 
 ### Pending-upload recovery
 
-`runPendingUploadCheckIfNeeded` (in `applicationDidFinishLaunching`) reads the pending-upload record from `UserDefaults`. If the file still exists on disk, `PendingUploadPrompt.present` shows a modal offering Upload or Skip. Upload → `vm.resumePendingUpload(fileURL:)` → `performUpload()` — when the record carries a session URI, this resumes from GCS's committed offset rather than restarting. Skip → `clearPendingUpload()`. If the file is gone (user deleted it between sessions), the record is cleared silently.
+`runPendingUploadCheckIfNeeded` (in `applicationDidFinishLaunching`) reads the pending-upload record from `UserDefaults`. In local-only mode it returns immediately without prompting, leaving the record intact. If the file still exists on disk, `PendingUploadPrompt.present` shows a modal offering Upload or Skip. Upload → `vm.resumePendingUpload(fileURL:)` → `performUpload()` — when the record carries a session URI, this resumes from GCS's committed offset rather than restarting. Skip → `clearPendingUpload()`. If the file is gone (user deleted it between sessions), the record is cleared silently.
 
 ### CloudConnectivity and the blue LED
 
@@ -494,7 +515,7 @@ The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from t
 - `credentialsOK`: checked once at init by parsing the service-account JSON for `private_key` and `client_email`. A bundle stripped of the key file (corrupted build) shows `isReady = false` forever.
 - `networkSatisfied`: tracked live by `NWPathMonitor`. Updates arrive within ~1 s of a path change (Wi-Fi drop, VPN flip, airplane mode). The monitor runs on a `.utility` background queue; updates hop to the main actor via `Task { @MainActor }` for the `@Published` mutation.
 
-`CloudContentView` renders the blue LED from `connectivity.isReady`. `ContentView` (Local) has no blue LED — the LED images are not present and `CloudConnectivity` is not imported.
+`CloudContentView` lights the blue LED only when the local-only switch is on *and* `connectivity.isReady` — see the switch's two indicators above. `ContentView` (Local) has no blue LED — the LED images are not present and `CloudConnectivity` is not imported.
 
 ### Session heartbeat (dashboard)
 
@@ -504,7 +525,7 @@ The model is **pull-based staleness**: the app only ever beats its current state
 
 **Idle cap (2.0.1):** after a recording stops, idle beats continue for a bounded 5-minute window, then the timer stops itself and the app goes fully silent (no final "offline" beat; the Worker's TTL clears the row). The window preserves the clean-stop vs. crash signal for as long as it is meaningful — past it, "open but idle" and "closed" are indistinguishable anyway. The bound exists because the Workers KV free tier is ~1,000 writes/day and an unbounded 30-second idle beat from one left-open instance is ~3× that. A new recording re-arms the timer.
 
-**Wiring:** `startRecording` calls `SessionHeartbeat.shared.recordingStarted(guestName:)`; every subsequent transition flows from a `$state` Combine sink, so any exit from `.recording` (stop, upload, error, disconnect, first-buffer failure) flips the beat to "idle" with no per-transition hook to keep in sync. Inert until the first `recordingStarted`, so the app doesn't beat while idle at launch.
+**Wiring:** `startRecording` calls `SessionHeartbeat.shared.recordingStarted(guestName:)`; every subsequent transition flows from a `$state` Combine sink, so any exit from `.recording` (stop, upload, error, disconnect, first-buffer failure) flips the beat to "idle" with no per-transition hook to keep in sync. Inert until the first `recordingStarted`, so the app doesn't beat while idle at launch — which is also how local-only mode silences it: the call is skipped, so the heartbeat simply never activates.
 
 **Auth and configuration:** each POST carries a Cloudflare Access service token (`CF-Access-Client-Id` / `CF-Access-Client-Secret`), validated by Access at the edge. The ingest URL and both token halves come from three Info.plist keys injected at build time from a gitignored env file by the Cloud release pipeline — never literals in source. If any is absent or empty (dev builds without the injection, and — via the compile gate — every Local build), the heartbeat is fully inert. Sends are detached fire-and-forget URLSession tasks; a dead dashboard produces one log line and never blocks or delays recording. Logging follows the FR-004 discipline: HTTP status or error category only — never the secret, the URL, or the guest name.
 

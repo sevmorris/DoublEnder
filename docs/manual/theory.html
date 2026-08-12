@@ -423,6 +423,7 @@
 
   <a class="section-head" href="#">Cloud &amp; Release</a>
   <a href="#cloud">Cloud Variant</a>
+  <a class="sub" href="#local-only">Local-Only Switch</a>
   <a class="sub" href="#heartbeat">Session Heartbeat</a>
   <a href="#lifecycle">Lifecycle &amp; Release</a>
 
@@ -466,7 +467,7 @@
         <tr>
           <td>DoublEnder Cloud</td>
           <td><code>cr</code></td>
-          <td>GCS resumable upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), session heartbeat (SessionHeartbeat), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>)</td>
+          <td>GCS resumable upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), session heartbeat (SessionHeartbeat), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), and a runtime switch that turns all of the above off for a session</td>
           <td>GCS (private)</td>
         </tr>
       </tbody>
@@ -789,6 +790,30 @@
 
     <p>The <code>GCS_ENABLED</code> compilation condition gates all Cloud-only code. <code>Uploader.swift</code>, <code>CloudConnectivity.swift</code>, <code>CloudContentView.swift</code>, <code>SessionHeartbeat.swift</code>, upload-related <code>RecorderViewModel</code> branches, and the Cloud <code>UpdateChecker</code> path all compile out in Local builds.</p>
 
+    <h3 id="local-only">The Local-Only Switch (Runtime)</h3>
+    <p>Two independent gates govern the cloud features, and conflating them is a mistake with real consequences:</p>
+    <table class="compare-table">
+      <thead>
+        <tr><th>Gate</th><th>Kind</th><th>What it controls</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>GCS_ENABLED</code></td><td>Compile-time</td><td>Whether cloud code and credentials exist in the binary at all. This is the security boundary.</td></tr>
+        <tr><td><code>cloudUploadEnabled</code></td><td>Runtime</td><td>Whether a Cloud build <em>uses</em> its cloud features this session. Purely behavioural.</td></tr>
+      </tbody>
+    </table>
+    <p><code>RecorderViewModel.cloudUploadEnabled</code> is a single master switch, exposed in the settings popover, that turns off every cloud-side behaviour at once: the GCS upload, the session heartbeat, the pre-recording name prompt, and the launch-time pending-upload prompt. With it off, the Cloud build takes the same code path as Local — the take still records and saves to the Desktop with the same confirmation, it simply never leaves the machine. This exists so one install can serve both purposes instead of a user keeping two apps side by side.</p>
+
+    <div class="callout callout-warn">
+      <strong>Not a security boundary</strong>
+      The bundled service-account key and ingest token ship in the Cloud build regardless of this setting. A Cloud build stays client-only and must never be distributed publicly no matter how the switch is set; only <code>GCS_ENABLED</code> keeps credentials out of an app.
+    </div>
+
+    <p><strong>Always on at launch.</strong> The setting is deliberately session-scoped and never persisted — every launch starts with cloud on, so disabling is a conscious act repeated each session. The failure it guards against is specific: a guest who switched uploading off once, and had that silently persist, would leave the producer with no file <em>and</em> no dashboard row, with nothing on screen to explain why. Uploading is the safe default, so the burden belongs on turning it off rather than on remembering to turn it back on. <code>eraseSessionDefaults()</code> also removes the key persisted by 2.1.0, so a stored "off" from that build is cleared and never honoured.</p>
+
+    <p><strong>Two visible indicators</strong>, because a silently disabled upload is exactly the failure mode a producer cannot see: the cloud LED stays dark (ambiguous on its own — dark also means "unreachable"), paired with a <code>LOCAL</code> marker beside the version in the viewport's metadata strip, present for the whole session.</p>
+
+    <p><strong>Interaction with in-flight work.</strong> The toggle is disabled while recording or uploading, so a mode change can never strand a take mid-flight. Turning it off calls <code>SessionHeartbeat.deactivate()</code> so the dashboard sees the instance go quiet (row ages to Stale, then TTL-clears) rather than keep receiving "idle", and clears a stranded <code>.uploadFailed</code> state. A persisted pending-upload record is deliberately <em>preserved</em>, not discarded: the launch prompt stays silent while cloud is off, and turning it back on still offers to finish that upload, resuming from the committed offset.</p>
+
     <h3>GCS Authentication: V4 Signed URL, Entirely On-Device</h3>
     <p>DoublEnder Cloud has no backend server. Authentication uses GCS V4 signed URLs generated entirely on the client from a bundled GCP service-account JSON key:</p>
     <ol>
@@ -802,7 +827,7 @@
     <p>The signed URL is valid for 15 minutes — but it gates <strong>only the initiation POST</strong>. GCS answers that POST with a <strong>session URI</strong> which is itself the upload capability: every subsequent chunk PUT goes to it unsigned, and it stays valid for about a week. That split is the load-bearing fact of the design: a multi-gigabyte take on a slow connection can far outlive the 15-minute signing window, because the signature only has to survive the instant of initiation. No OAuth token, no refresh cycle, no backend round-trip.</p>
 
     <h3>Upload Flow</h3>
-    <p><code>stopRecording</code> completion (<code>.success(.some(url))</code>) sets <code>state = .uploading</code> and hands off to <code>performUpload()</code>, which drives a <strong>two-phase resumable upload</strong> (replacing the pre-2.0 single-shot PUT):</p>
+    <p><code>stopRecording</code> completion (<code>.success(.some(url))</code>) sets <code>state = .uploading</code> and hands off to <code>performUpload()</code>, which drives a <strong>two-phase resumable upload</strong> (replacing the pre-2.0 single-shot PUT). When the local-only switch is off, this branch is skipped entirely and the completion takes the Local path instead — saved, confirmed, never uploaded:</p>
     <p><strong>Phase 1 — initiate (<code>Uploader.beginUpload</code>):</strong> compute the file's CRC32C, then POST to the V4-signed initiation URL with <code>x-goog-resumable: start</code> and <code>x-goog-hash: crc32c=…</code>. GCS answers <code>201</code> with a <code>Location</code> header — the session URI that carries the rest of the transfer.</p>
     <p><strong>Phase 2 — transfer (<code>Uploader.continueUpload</code>):</strong> first query what GCS has already committed (<code>Content-Range: bytes */TOTAL</code> → <code>308</code> + <code>Range: bytes=0-N</code>; GCS is the source of truth for persisted bytes, so a resume re-queries rather than trusting a local counter), then stream the remaining bytes to the session URI in 16 MiB chunks with <code>Content-Range: bytes start-end/total</code>. Intermediate chunks return <code>308</code> with the committed offset; the final chunk returns <code>200/201</code> and finalizes the object. Progress is computed as chunk-base offset plus bytes sent from the URLSession task delegate, so the bar stays monotonic across chunk boundaries and resumes.</p>
     <p><strong>Integrity (strategy A + B):</strong> the CRC32C sent at initiation makes GCS refuse a corrupt finalize server-side — a <code>400 CrcMismatch</code>/<code>BadDigest</code> response surfaces as a non-retryable integrity failure, independent of any client-side bug. The finalize response's <code>x-goog-hash</code> is <em>also</em> compared client-side against the locally computed CRC32C. Either failure keeps the local file and never counts as success.</p>
@@ -817,16 +842,16 @@
     <p>The GCS object key is <code>{prefix}/{uuid}/{filename}</code>. The prefix is derived from the bundle ID tail (<code>DoublEnderCloud</code>). The UUID prevents filename collisions when a guest records twice with the same name.</p>
 
     <h3>Pending-Upload Recovery</h3>
-    <p><code>runPendingUploadCheckIfNeeded</code> (in <code>applicationDidFinishLaunching</code>) reads the pending-upload record from <code>UserDefaults</code>. If the file still exists on disk, <code>PendingUploadPrompt.present</code> shows a modal offering Upload or Skip. Upload — when the record carries a session URI — resumes from GCS's committed offset rather than restarting. If the file is gone (user deleted it between sessions), the record is cleared silently.</p>
+    <p><code>runPendingUploadCheckIfNeeded</code> (in <code>applicationDidFinishLaunching</code>) reads the pending-upload record from <code>UserDefaults</code>. In local-only mode it returns immediately without prompting, leaving the record intact. If the file still exists on disk, <code>PendingUploadPrompt.present</code> shows a modal offering Upload or Skip. Upload — when the record carries a session URI — resumes from GCS's committed offset rather than restarting. If the file is gone (user deleted it between sessions), the record is cleared silently.</p>
 
     <h3>CloudConnectivity and the Blue LED</h3>
-    <p><code>CloudConnectivity</code> (singleton, <code>@MainActor</code>) publishes a single <code>isReady</code> flag: <code>credentialsOK &amp;&amp; networkSatisfied</code>. <code>credentialsOK</code> is checked once at init by parsing the service-account JSON. <code>networkSatisfied</code> is tracked live by <code>NWPathMonitor</code>, updating within ~1 second of any path change. The blue LED in <code>CloudContentView</code> reflects <code>connectivity.isReady</code>, solid on/off, not flashing (contrast with the red recording LED, which flashes at 0.75 s).</p>
+    <p><code>CloudConnectivity</code> (singleton, <code>@MainActor</code>) publishes a single <code>isReady</code> flag: <code>credentialsOK &amp;&amp; networkSatisfied</code>. <code>credentialsOK</code> is checked once at init by parsing the service-account JSON. <code>networkSatisfied</code> is tracked live by <code>NWPathMonitor</code>, updating within ~1 second of any path change. The blue LED in <code>CloudContentView</code> lights only when the local-only switch is on <em>and</em> <code>connectivity.isReady</code> — solid on/off, not flashing (contrast with the red recording LED, which flashes at 0.75 s).</p>
 
     <h3 id="heartbeat">Session Heartbeat (Dashboard)</h3>
     <p><code>SessionHeartbeat</code> (singleton, compiled only into Cloud builds) lets a producer watch live sessions on a dashboard as Recording / Idle / Stale. While a take is in progress it POSTs <code>{sessionId, guestName, state}</code> to a Cloudflare Worker <code>/ingest</code> endpoint every 30 seconds; <code>sessionId</code> is a per-launch UUID, so each running Cloud instance is one dashboard row.</p>
     <p>The model is <strong>pull-based staleness</strong>: the app only ever beats its current state; the Worker derives "Stale" from the <em>absence</em> of beats and TTL-expires dead sessions. A crash therefore needs no "I died" message — the beats simply stop, and the dashboard reads Recording → Stale. A clean stop beats "idle" explicitly, reading Recording → Idle. That distinction — did the guest's app stop cleanly or die mid-take — is the whole point of the dashboard.</p>
     <p><strong>Idle cap (2.0.1):</strong> after a recording stops, idle beats continue for a bounded 5-minute window, then the timer stops itself and the app goes fully silent (no final "offline" beat; the Worker's TTL clears the row). The window preserves the clean-stop vs. crash signal for as long as it is meaningful — past it, "open but idle" and "closed" are indistinguishable anyway. The bound exists because the Workers KV free tier is ~1,000 writes/day and an unbounded 30-second idle beat from one left-open instance is ~3× that. A new recording re-arms the timer.</p>
-    <p><strong>Wiring:</strong> <code>startRecording</code> calls <code>SessionHeartbeat.shared.recordingStarted(guestName:)</code>; every subsequent transition flows from a <code>$state</code> Combine sink, so any exit from <code>.recording</code> (stop, upload, error, disconnect, first-buffer failure) flips the beat to "idle" with no per-transition hook to keep in sync. Inert until the first <code>recordingStarted</code>, so the app doesn't beat while idle at launch.</p>
+    <p><strong>Wiring:</strong> <code>startRecording</code> calls <code>SessionHeartbeat.shared.recordingStarted(guestName:)</code>; every subsequent transition flows from a <code>$state</code> Combine sink, so any exit from <code>.recording</code> (stop, upload, error, disconnect, first-buffer failure) flips the beat to "idle" with no per-transition hook to keep in sync. Inert until the first <code>recordingStarted</code>, so the app doesn't beat while idle at launch — which is also how local-only mode silences it: the call is skipped, so the heartbeat never activates.</p>
     <p><strong>Auth and configuration:</strong> each POST carries a Cloudflare Access service token (<code>CF-Access-Client-Id</code> / <code>CF-Access-Client-Secret</code>), validated by Access at the edge. The ingest URL and both token halves come from three Info.plist keys injected at build time from a gitignored env file by the Cloud release pipeline — never literals in source. If any is absent or empty (dev builds without the injection, and — via the compile gate — every Local build), the heartbeat is fully inert. Sends are detached fire-and-forget URLSession tasks; a dead dashboard produces one log line and never blocks or delays recording. Logging follows the FR-004 discipline: HTTP status or error category only — never the secret, the URL, or the guest name.</p>
 
     <h3>Update Checker: Cloud vs. Local</h3>
