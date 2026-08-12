@@ -147,13 +147,30 @@ struct RecorderMainPanel: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isRecordingState ? FaceplateDesign.stopFill : FaceplateDesign.recordIdleFill)
-                Text(isRecordingState ? "STOP" : "RECORD")
-                    .font(FaceplateDesign.panelFont(size: 41))
+                // Both labels share one size so the type doesn't jump when the
+                // button toggles. "PRESS TO RECORD" is the longer string and
+                // sets the ceiling: it needs ~384pt at the old 41pt inside a
+                // 295pt button, and 27pt is the largest size that fits.
+                //
+                // Two stacked lines were measured and are WORSE, not better —
+                // the 72pt button height constrains stacked text (25pt max)
+                // harder than the width constrains a single line (27pt).
+                // Bigger type here means a taller button, not more lines.
+                //
+                // lineLimit + minimumScaleFactor guard the font fallback: a Mac
+                // without Eurostile resolves panelFont to system-bold, which
+                // renders these strings ~8% wider and would otherwise wrap or
+                // clip on a guest's machine.
+                Text(isRecordingState ? "PRESS TO STOP" : "PRESS TO RECORD")
+                    .font(FaceplateDesign.panelFont(size: 27))
                     .tracking(3)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                     .foregroundColor(isRecordingState ? .white : FaceplateDesign.recordAccent)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .multilineTextAlignment(.center)
-                    .offset(y: 6)
+                    // Cap-only text sits optically high; nudge to compensate.
+                    .offset(y: 4)
             }
             .frame(width: FaceplateDesign.vpContentWidth, height: 72)
             .background(FaceplateDesign.vpSurface)
