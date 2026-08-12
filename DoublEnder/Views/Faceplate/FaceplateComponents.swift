@@ -443,6 +443,26 @@ struct FaceplateSettingsPopover: View {
                     .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            #if GCS_ENABLED
+            VStack(alignment: .leading, spacing: 5) {
+                fieldLabel("CLOUD")
+                Toggle("Upload recordings to the cloud", isOn: $viewModel.cloudUploadEnabled)
+                    .toggleStyle(.switch)
+                    .font(.system(size: 12))
+                    .foregroundColor(FaceplateDesign.secondaryText)
+                    .tint(FaceplateDesign.recordAccent)
+                    // Changing modes mid-take or mid-transfer would strand the
+                    // in-flight take; the take must land first.
+                    .disabled(viewModel.isCurrentlyRecording || viewModel.isCurrentlyUploading)
+                Text(viewModel.cloudUploadEnabled
+                     ? "Recordings upload automatically and the session appears on the producer's dashboard."
+                     : "Local only — recordings save to the Desktop and are never uploaded. Nothing appears on the dashboard.")
+                    .font(.system(size: 11))
+                    .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            #endif
         }
         .padding(20)
         .frame(width: 325)

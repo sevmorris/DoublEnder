@@ -354,6 +354,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// stale/missing entries are cleared silently.
     private func runPendingUploadCheckIfNeeded() {
         let vm = RecorderViewModel.shared
+        // Local-only mode: stay silent, but deliberately leave the pending
+        // record intact so turning cloud back on still offers to finish it.
+        guard vm.cloudUploadEnabled else { return }
         guard let path = vm.persistedPendingUploadPath else { return }
 
         guard FileManager.default.fileExists(atPath: path) else {

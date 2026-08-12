@@ -61,6 +61,9 @@ class RecorderViewModel: ObservableObject {
     /// Path of a recording whose upload is pending or has failed. Survives
     /// quit so the next launch can offer to finish it.
     private static let pendingUploadKey = "pendingUploadURL"
+    /// User's cloud on/off preference. Persisted (unlike the session-scoped
+    /// filename) because it's a mode, not a per-take detail.
+    private static let cloudEnabledKey = "cloudUploadEnabled"
     #endif
 
     @Published var state: AppState = .selectingMic
@@ -157,6 +160,19 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
+    /// Whether the pre-recording name prompt should appear. Cloud builds drop
+    /// it when cloud features are off: the prompt exists so the producer can
+    /// identify the uploaded object, so with no upload it has no purpose and
+    /// local-only mode matches DoublEnder Local exactly (timestamped names,
+    /// with the Settings prefix still available).
+    var shouldPromptForRecordingName: Bool {
+        #if GCS_ENABLED
+        return Self.requiresRecordingNameAtStart && cloudUploadEnabled
+        #else
+        return Self.requiresRecordingNameAtStart
+        #endif
+    }
+
     /// Sanitize a user-entered string for use as the entire recording
     /// filename (extension excluded). Caller must check the result for
     /// emptiness — sanitization can produce "" from inputs like "/ / /"
@@ -190,6 +206,34 @@ class RecorderViewModel: ObservableObject {
     @Published var outputFormat: OutputFormat = .aac {
         didSet { UserDefaults.standard.set(outputFormat.rawValue, forKey: Self.outputFormatKey) }
     }
+
+    #if GCS_ENABLED
+    /// Master switch for every cloud-side feature: GCS upload, the session
+    /// heartbeat, the pre-recording name prompt, and the launch-time
+    /// pending-upload prompt. Off makes this build behave like DoublEnder
+    /// Local — the take still records and saves to the Desktop exactly as
+    /// before, it simply never leaves the machine.
+    ///
+    /// This is a *behaviour* switch, NOT a security boundary. The bundled
+    /// service-account key and ingest token ship in this build regardless of
+    /// the setting, so a Cloud build stays client-only and must never be
+    /// distributed publicly. Only the compile-time `GCS_ENABLED` condition
+    /// keeps credentials out of an app.
+    @Published var cloudUploadEnabled: Bool = true {
+        didSet {
+            guard cloudUploadEnabled != oldValue else { return }
+            UserDefaults.standard.set(cloudUploadEnabled, forKey: Self.cloudEnabledKey)
+            guard !cloudUploadEnabled else { return }
+            // Go quiet immediately — a producer watching the dashboard should
+            // see this instance stop beating rather than keep reporting idle.
+            SessionHeartbeat.shared.deactivate()
+            // Never strand the user in a cloud-only terminal state. The file
+            // is already safe on the Desktop and the pending-upload record is
+            // deliberately preserved for whenever cloud is switched back on.
+            if case .uploadFailed = state { state = .ready }
+        }
+    }
+    #endif
 
     var isCurrentlyRecording: Bool {
         if case .recording = state { return true }
@@ -386,6 +430,13 @@ class RecorderViewModel: ObservableObject {
             .store(in: &cancellables)
 
         // Restore persisted settings.
+        #if GCS_ENABLED
+        // Absent key → cloud on, so existing installs keep uploading after an
+        // update rather than silently going local-only.
+        if UserDefaults.standard.object(forKey: Self.cloudEnabledKey) != nil {
+            cloudUploadEnabled = UserDefaults.standard.bool(forKey: Self.cloudEnabledKey)
+        }
+        #endif
         filenameBase = UserDefaults.standard.string(forKey: Self.filenameBaseKey) ?? ""
         if let raw = UserDefaults.standard.string(forKey: Self.outputFormatKey),
            let format = OutputFormat(rawValue: raw) {
@@ -613,7 +664,11 @@ class RecorderViewModel: ObservableObject {
             // Start/refresh the dashboard heartbeat for this take. Fire-and-
             // forget; a dead dashboard never affects capture. The $state sink
             // (see init) flips it to "idle" on every exit from .recording.
-            SessionHeartbeat.shared.recordingStarted(guestName: nameOverride)
+            // Skipped entirely in local-only mode — the heartbeat stays inert
+            // because it only ever activates from recordingStarted().
+            if cloudUploadEnabled {
+                SessionHeartbeat.shared.recordingStarted(guestName: nameOverride)
+            }
             #endif
             recordingTime = 0
             timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
@@ -681,6 +736,17 @@ class RecorderViewModel: ObservableObject {
                 // of whether an upload follows.
                 Task { await NotificationService.shared.postRecordingSaved(fileURL: url) }
                 #if GCS_ENABLED
+                guard self.cloudUploadEnabled else {
+                    // Local-only mode: identical to the non-GCS path below —
+                    // the take is saved and confirmed, and nothing is uploaded.
+                    self.recordingTime = 0
+                    self.recordedFileURL = nil
+                    self.state = .ready
+                    RecordingSavedConfirmation.present(fileName: url.lastPathComponent)
+                    self.pendingDisconnectReason = nil
+                    completion?()
+                    return
+                }
                 // The file is finalized on disk. Hand off to the uploader and
                 // let the .uploading state drive the progress UI. The stop
                 // button unblocks immediately via the completion call below.
@@ -738,7 +804,13 @@ class RecorderViewModel: ObservableObject {
             try? FileManager.default.removeItem(at: sidecarURL)
             try? FileManager.default.removeItem(at: mainOutput)
             Task { await NotificationService.shared.postRecordingSaved(fileURL: recovered) }
-            #if !GCS_ENABLED
+            #if GCS_ENABLED
+            // Local-only mode mirrors the Local build's confirmation; with
+            // cloud on, the upload flow owns the user-facing confirmation.
+            if !cloudUploadEnabled {
+                RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent)
+            }
+            #else
             RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent)
             #endif
             return true
@@ -929,6 +1001,7 @@ class RecorderViewModel: ObservableObject {
     /// Manual retry from the upload-failed error view. The local file is
     /// untouched — re-attempt only the upload, no new recording.
     func retryUpload() {
+        guard cloudUploadEnabled else { return }
         guard recordedFileURL != nil else {
             state = .error("No recording found to upload")
             return
@@ -940,6 +1013,7 @@ class RecorderViewModel: ObservableObject {
 
     /// Resume an upload the previous session left pending (launch prompt).
     func resumePendingUpload(fileURL: URL) {
+        guard cloudUploadEnabled else { return }
         recordedFileURL = fileURL
         uploadProgress = 0
         state = .uploading

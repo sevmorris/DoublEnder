@@ -79,10 +79,23 @@ struct RecorderMainPanel: View {
     private var versionInScreen: some View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         let (numeric, suffix) = FaceplateDesign.splitVersionSuffix(version)
-        return Text("v\(numeric)\(suffix.uppercased())")
-            .font(FaceplateDesign.metadataFont)
-            .foregroundColor(FaceplateDesign.secondaryAmber)
-            .lineLimit(1)
+        return HStack(spacing: 5) {
+            Text("v\(numeric)\(suffix.uppercased())")
+                .foregroundColor(FaceplateDesign.secondaryAmber)
+            #if GCS_ENABLED
+            // Persistent marker for local-only mode. The cloud LED alone is
+            // ambiguous (dark also means "unreachable"), and a silently
+            // disabled upload is exactly the failure a producer can't see.
+            if !viewModel.cloudUploadEnabled {
+                Text("LOCAL")
+                    .foregroundColor(FaceplateDesign.activeAmber)
+                    .help("Cloud upload is off — this recording stays on this Mac")
+            }
+            #endif
+        }
+        .font(FaceplateDesign.metadataFont)
+        .lineLimit(1)
+        .fixedSize()
     }
 
     private var writeIndicator: some View {
@@ -166,7 +179,7 @@ struct RecorderMainPanel: View {
             viewModel.stopRecording { isStopping = false }
         case .selectingMic, .ready:
             guard viewModel.canStartRecording else { return }
-            if RecorderViewModel.requiresRecordingNameAtStart {
+            if viewModel.shouldPromptForRecordingName {
                 if let stem = runNamePromptModal() {
                     viewModel.startRecording(nameOverride: stem)
                 }

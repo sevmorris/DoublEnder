@@ -121,6 +121,18 @@ final class SessionHeartbeat {
 		sendBeat() // reflect the transition immediately, don't wait for the timer
 	}
 
+	/// Stop beating and return to the pre-`recordingStarted` inert state. Used
+	/// when the user turns cloud features off mid-session: the dashboard should
+	/// see this instance go silent (row ages to Stale, then TTL-clears) rather
+	/// than keep receiving "idle" from an app that is no longer participating.
+	/// A later `recordingStarted` re-arms cleanly.
+	func deactivate() {
+		active = false
+		reportedState = "idle"
+		idleDeadline = nil
+		stopTimer()
+	}
+
 	// MARK: - Internals
 
 	private func startTimer() {
