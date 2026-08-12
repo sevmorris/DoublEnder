@@ -61,9 +61,10 @@ class RecorderViewModel: ObservableObject {
     /// Path of a recording whose upload is pending or has failed. Survives
     /// quit so the next launch can offer to finish it.
     private static let pendingUploadKey = "pendingUploadURL"
-    /// User's cloud on/off preference. Persisted (unlike the session-scoped
-    /// filename) because it's a mode, not a per-take detail.
-    private static let cloudEnabledKey = "cloudUploadEnabled"
+    /// Legacy key: 2.1.0 persisted the cloud on/off preference here. Cloud is
+    /// now always on at launch and the switch is session-scoped, so this key is
+    /// never read — only removed, to clear it from installs that set it.
+    private static let legacyCloudEnabledKey = "cloudUploadEnabled"
     #endif
 
     @Published var state: AppState = .selectingMic
@@ -214,6 +215,13 @@ class RecorderViewModel: ObservableObject {
     /// Local — the take still records and saves to the Desktop exactly as
     /// before, it simply never leaves the machine.
     ///
+    /// Deliberately session-scoped and NEVER persisted: every launch starts
+    /// with cloud ON, so disabling is a conscious act repeated each session.
+    /// A guest who switches it off once must not have that silently carry into
+    /// a later session — the producer would get no file and no dashboard, with
+    /// nothing to explain why. Uploading is the safe default; the burden falls
+    /// on turning it off, not on remembering to turn it back on.
+    ///
     /// This is a *behaviour* switch, NOT a security boundary. The bundled
     /// service-account key and ingest token ship in this build regardless of
     /// the setting, so a Cloud build stays client-only and must never be
@@ -222,7 +230,6 @@ class RecorderViewModel: ObservableObject {
     @Published var cloudUploadEnabled: Bool = true {
         didSet {
             guard cloudUploadEnabled != oldValue else { return }
-            UserDefaults.standard.set(cloudUploadEnabled, forKey: Self.cloudEnabledKey)
             guard !cloudUploadEnabled else { return }
             // Go quiet immediately — a producer watching the dashboard should
             // see this instance stop beating rather than keep reporting idle.
@@ -429,14 +436,8 @@ class RecorderViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Restore persisted settings.
-        #if GCS_ENABLED
-        // Absent key → cloud on, so existing installs keep uploading after an
-        // update rather than silently going local-only.
-        if UserDefaults.standard.object(forKey: Self.cloudEnabledKey) != nil {
-            cloudUploadEnabled = UserDefaults.standard.bool(forKey: Self.cloudEnabledKey)
-        }
-        #endif
+        // Restore persisted settings. `cloudUploadEnabled` is deliberately
+        // absent here — it is session-scoped and always starts ON.
         filenameBase = UserDefaults.standard.string(forKey: Self.filenameBaseKey) ?? ""
         if let raw = UserDefaults.standard.string(forKey: Self.outputFormatKey),
            let format = OutputFormat(rawValue: raw) {
@@ -908,6 +909,12 @@ class RecorderViewModel: ObservableObject {
     /// leave a stale custom filename in UserDefaults for the next launch.
     static func eraseSessionDefaults() {
         UserDefaults.standard.removeObject(forKey: filenameBaseKey)
+        #if GCS_ENABLED
+        // One-time cleanup of the 2.1.0 persisted cloud preference. Cloud is
+        // always on at launch now, so a stored value must not linger and must
+        // never be honoured.
+        UserDefaults.standard.removeObject(forKey: legacyCloudEnabledKey)
+        #endif
     }
 
     /// Directory recordings are written to. Shared with AppDelegate's

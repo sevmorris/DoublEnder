@@ -457,7 +457,7 @@ struct FaceplateSettingsPopover: View {
                     .disabled(viewModel.isCurrentlyRecording || viewModel.isCurrentlyUploading)
                 Text(viewModel.cloudUploadEnabled
                      ? "Recordings upload automatically and the session appears on the producer's dashboard."
-                     : "Local only — recordings save to the Desktop and are never uploaded. Nothing appears on the dashboard.")
+                     : "Local only for this session — recordings save to the Desktop and are never uploaded. Cloud upload switches back on the next time DoublEnder opens.")
                     .font(.system(size: 11))
                     .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)
