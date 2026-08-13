@@ -119,14 +119,29 @@ ok "Build number ${BUILD_NUM} → ${NEXT_BUILD} (committed)"
 # ── Build ─────────────────────────────────────────────────────────────────────
 step "Building (clean, Release)"
 rm -rf "$DERIVED_DATA"
+# -destination 'generic/platform=macOS' is load-bearing: without it xcodebuild
+# auto-selects the FIRST matching destination (on an Apple Silicon Mac that is
+# {platform:macOS, arch:arm64}) and narrows the build to that one arch, silently
+# overriding ARCHS = "arm64 x86_64". That shipped an arm64-only binary while the
+# README promised Intel support — Intel Macs could not launch it at all, since
+# Rosetta translates x86_64 to arm64 and never the reverse. "generic" means
+# "Any Mac", which builds the universal binary the settings already asked for.
 xcodebuild \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration Release \
     -derivedDataPath "$DERIVED_DATA" \
+    -destination 'generic/platform=macOS' \
     -quiet
 [[ -d "$APP_PATH" ]] || fail "Build did not produce $APP_PATH"
-ok "Build complete"
+
+# Fail loudly rather than shipping a single-arch build again.
+BUILT_ARCHS=$(lipo -archs "$APP_PATH/Contents/MacOS/${APP_NAME}")
+for required in arm64 x86_64; do
+    [[ " $BUILT_ARCHS " == *" $required "* ]] \
+        || fail "Universal build check failed: expected arm64 + x86_64, got '$BUILT_ARCHS'"
+done
+ok "Build complete (universal: $BUILT_ARCHS)"
 
 # ── Sign ──────────────────────────────────────────────────────────────────────
 step "Codesigning app"

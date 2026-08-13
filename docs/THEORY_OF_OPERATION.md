@@ -564,7 +564,7 @@ Version suffix conventions:
 2. **Version bump:** rewrite `MARKETING_VERSION` in `project.yml` and update the README + `docs/index.html` DMG URL patterns.
 3. **Build number bump:** increment `CURRENT_PROJECT_VERSION` in `project.yml`.
 4. **xcodegen:** regenerate `DoublEnder.xcodeproj` from `project.yml`.
-5. **Build:** `xcodebuild -configuration Release -derivedDataPath /tmp/doublender_build_{version}`.
+5. **Build:** `xcodebuild -configuration Release -derivedDataPath /tmp/doublender_build_{version} -destination 'generic/platform=macOS'`. The `-destination` flag is **load-bearing**: without it xcodebuild auto-selects the first matching destination — `{platform:macOS, arch:arm64}` on an Apple Silicon Mac — and narrows the build to that single arch, silently overriding `ARCHS = "arm64 x86_64"`. That shipped an arm64-only binary for several releases while the README promised Intel support; an Intel Mac cannot launch such a build at all, because Rosetta translates x86_64 to arm64 and never the reverse. `generic` means "Any Mac" and produces the universal binary the build settings already ask for. Both release scripts assert `lipo -archs` contains arm64 **and** x86_64 after building, and fail the release if not.
 6. **Codesign:** `codesign --force --options runtime --entitlements … --sign "Developer ID Application: Seven Morris (T9RLNAXPWU)"`.
 7. **Verify version:** `defaults read {APP_PATH}/Contents/Info.plist CFBundleShortVersionString` must match.
 8. **Stage DMG:** copy `.app` + `/Applications` symlink to a temp directory.

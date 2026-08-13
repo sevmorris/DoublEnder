@@ -897,7 +897,7 @@
       <li>Version bump: rewrite <code>MARKETING_VERSION</code> in <code>project.yml</code>, update README + <code>docs/index.html</code> DMG URL patterns</li>
       <li>Build number bump: increment <code>CURRENT_PROJECT_VERSION</code></li>
       <li><code>xcodegen generate</code>: regenerate <code>.xcodeproj</code></li>
-      <li><code>xcodebuild -configuration Release</code></li>
+      <li><code>xcodebuild -configuration Release -destination 'generic/platform=macOS'</code> — the destination flag is <strong>load-bearing</strong>: without it xcodebuild auto-selects the first matching destination (<code>{platform:macOS, arch:arm64}</code> on an Apple Silicon Mac) and narrows the build to that single arch, silently overriding <code>ARCHS = "arm64 x86_64"</code>. That shipped an arm64-only binary for several releases while the README promised Intel support, and an Intel Mac cannot launch such a build at all (Rosetta translates x86_64 to arm64, never the reverse). Both release scripts now assert <code>lipo -archs</code> contains arm64 <em>and</em> x86_64, and fail the release if not.</li>
       <li>Codesign: <code>codesign --force --options runtime --entitlements … --sign "Developer ID Application: Seven Morris (T9RLNAXPWU)"</code></li>
       <li>Verify version: <code>defaults read</code> on built app's Info.plist</li>
       <li>Stage DMG: copy <code>.app</code> + <code>/Applications</code> symlink</li>
