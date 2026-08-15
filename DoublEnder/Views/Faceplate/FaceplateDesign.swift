@@ -82,6 +82,30 @@ enum FaceplateDesign {
     /// Screen glow fill and shadow (#C96A00).
     static let screenGlowColor = Color(red: 0xC9/255, green: 0x6A/255, blue: 0x00/255)
 
+    // MARK: - Faceplate overlays
+    //
+    // The variant badges and the engraved CLOUD label are authored as
+    // full-canvas 5480x4680 transparent PNGs, so they register with the plate
+    // exactly and no position has to be measured by hand. They are NOT shipped
+    // that way: the system decodes an overlay at full resolution no matter how
+    // little of it is ink, which measured at ~98 MB of resident memory each
+    // (removing one full-canvas overlay took the app from 350 MB RSS to 242).
+    //
+    // `tools/crop-overlay.py` crops each export to its ink and emits the
+    // constants below — the ink's size and centre in base-design points — so
+    // the artwork lands in exactly the same place at roughly 1/60th the image
+    // memory. Re-run the tool whenever the art is re-exported; do not hand-edit.
+
+    /// Variant badge (red LOCAL RECORDER / blue CLOUD RECORDER). Both variants
+    /// crop to shared bounds, so the two builds are geometrically identical.
+    static let badgeSize     = CGSize(width: s(64.84), height: s(55.40))
+    static let badgePosition = CGPoint(x: s(247.45), y: s(36.34))
+
+    /// Engraved CLOUD label (Cloud only). Its y is the same value as
+    /// `blueLEDPosition`'s — the label and its light sit on one baseline.
+    static let cloudLabelSize     = CGSize(width: s(47.36), height: s(10.38))
+    static let cloudLabelPosition = CGPoint(x: s(381.63), y: s(380.80))
+
     /// Status LED frame size. The source art is 270 px, so this is a pure
     /// display size — no asset work to change it.
     ///
