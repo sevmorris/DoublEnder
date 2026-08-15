@@ -65,12 +65,24 @@ enum FaceplateDesign {
     /// Screen glow fill and shadow (#C96A00).
     static let screenGlowColor = Color(red: 0xC9/255, green: 0x6A/255, blue: 0x00/255)
 
-    /// Status LED frame size (22 pt).
-    static let ledSize: CGFloat = 22
-    /// Blue cloud-status LED position — upper bezel.
-    static let blueLEDPosition = CGPoint(x: 461, y: 338)
-    /// Red recording LED position — lower bezel.
-    static let redLEDPosition = CGPoint(x: 461, y: 378)
+    /// Status LED frame size. The source art is 270 px, so this is a pure
+    /// display size — shrinking it needs no new asset.
+    static let ledSize: CGFloat = 18
+    // The LEDs are not part of the faceplate art — the art carries only the
+    // engraved CLOUD / RECORDING labels, and each LED image supplies its own
+    // recessed socket and metal ring.
+    //
+    // x = 422.5 puts the stack under the right-hand screen bezel: measured off
+    // the plate, the viewport cutout ends at 413.6 pt and the raised bezel ring
+    // runs to 431.5 pt, so at 18 pt the column's right edge lands on the bezel's
+    // outer edge and its centre on the ring's midpoint — both readings agree.
+    // The y values are the measured vertical centres of the two engraved labels,
+    // so each light sits centred beside the word it belongs to.
+    // Re-measure all three if the faceplate art moves.
+    /// Blue cloud-status LED — beside the CLOUD label (upper).
+    static let blueLEDPosition = CGPoint(x: 422.5, y: 381)
+    /// Red recording LED — beside the RECORDING label (lower).
+    static let redLEDPosition = CGPoint(x: 422.5, y: 400)
 
     /// Shared typography for the bottom-row metadata strip.
     static let metadataFont = Font.system(size: 8.5, weight: .medium, design: .monospaced)

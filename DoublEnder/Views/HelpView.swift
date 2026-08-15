@@ -58,14 +58,14 @@ struct HelpView: View {
                     #if GCS_ENABLED
                     steps([
                         "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
-                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED above the timer lights up.",
-                        "Click the button again to stop. Your file saves to the Desktop and uploads automatically. The blue LED above the timer indicates when the cloud connection is ready.",
+                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING flashes.",
+                        "Click the button again to stop. Your file saves to the Desktop and uploads automatically. The blue LED marked CLOUD indicates when the cloud connection is ready.",
                         "A confirmation dialog appears when the upload finishes. The local file stays on your Desktop as a backup."
                     ])
                     #else
                     steps([
                         "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
-                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED above the timer lights up.",
+                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING flashes.",
                         "Click the button again to stop. Your file is saved to the Desktop.",
                         "A confirmation dialog appears with the saved filename. If notifications are enabled, a banner also offers Reveal in Finder."
                     ])
@@ -132,7 +132,7 @@ struct HelpView: View {
                     after saving. A progress indicator runs during the upload and a \
                     confirmation dialog appears when it finishes.
                     """)
-                    definition("Connection status", "The blue LED above the timer indicates cloud readiness: solid blue when the network is reachable and the embedded credential is present, off otherwise. You can still record offline — uploads will be retried with the same file when the connection returns.")
+                    definition("Connection status", "The blue LED marked CLOUD indicates cloud readiness: solid blue when the network is reachable and the embedded credential is present, off otherwise. You can still record offline — uploads will be retried with the same file when the connection returns.")
                     definition("Local backup", "Your file is saved to the Desktop first, then uploaded. The local copy is never deleted automatically — keep or remove it as you prefer.")
                     definition("Pending uploads", "If an upload fails or is interrupted (network drop, app quit, retries exhausted), the next launch offers to retry it. The original file always stays on your Desktop until the upload succeeds.")
                 }
