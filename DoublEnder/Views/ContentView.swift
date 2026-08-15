@@ -6,9 +6,6 @@ struct ContentView: View {
     @ObservedObject private var viewModel = RecorderViewModel.shared
     @State private var isStopping = false
     @StateObject private var popovers = FaceplatePopoverManager()
-    @State private var ledFlashOn = false
-
-    private let flashPublisher = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
     private var isRecordingState: Bool {
         if case .recording = viewModel.state { return true }
@@ -30,7 +27,7 @@ struct ContentView: View {
 
             FaceplateScreenGlow()
 
-            Image(isRecordingState && ledFlashOn ? "de_red-led_on" : "de_red-led_off")
+            Image(isRecordingState ? "de_red-led_on" : "de_red-led_off")
                 .resizable()
                 .scaledToFit()
                 .frame(width: FaceplateDesign.ledSize, height: FaceplateDesign.ledSize)
@@ -41,10 +38,6 @@ struct ContentView: View {
         .frame(width: FaceplateDesign.windowSize.width, height: FaceplateDesign.windowSize.height)
         .background(Color.clear)
         .ignoresSafeArea()
-        .onReceive(flashPublisher) { _ in
-            if isRecordingState { ledFlashOn.toggle() }
-            else { ledFlashOn = false }
-        }
     }
 
     @ViewBuilder

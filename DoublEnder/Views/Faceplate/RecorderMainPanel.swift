@@ -18,9 +18,9 @@ struct RecorderMainPanel: View {
             Spacer(minLength: FaceplateDesign.vpInnerPad)
             counterWindow
             warningBadge
-            Spacer(minLength: 10)
+            Spacer(minLength: FaceplateDesign.s(10))
             recordStopButton
-            Spacer(minLength: 10)
+            Spacer(minLength: FaceplateDesign.s(10))
             FaceplateMeterRow(
                 level: viewModel.meterLevel,
                 inputActive: popovers.showingInput,
@@ -73,13 +73,13 @@ struct RecorderMainPanel: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(width: FaceplateDesign.vpContentWidth)
-        .padding(.top, 4)
+        .padding(.top, FaceplateDesign.s(4))
     }
 
     private var versionInScreen: some View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         let (numeric, suffix) = FaceplateDesign.splitVersionSuffix(version)
-        return HStack(spacing: 5) {
+        return HStack(spacing: FaceplateDesign.s(5)) {
             Text("v\(numeric)\(suffix.uppercased())")
                 .foregroundColor(FaceplateDesign.secondaryAmber)
             #if GCS_ENABLED
@@ -111,32 +111,32 @@ struct RecorderMainPanel: View {
         ZStack {
             FaceplateDesign.vpSurface
             Text(viewModel.recordingTime.hhmmss)
-                .font(FaceplateDesign.crtFont(size: 41))
-                .tracking(3)
+                .font(FaceplateDesign.crtFont(size: FaceplateDesign.s(41)))
+                .tracking(FaceplateDesign.s(3))
                 .foregroundColor(FaceplateDesign.vpAmber)
-                .shadow(color: FaceplateDesign.counterGlowInner, radius: 8)
-                .shadow(color: FaceplateDesign.counterGlowOuter, radius: 22)
+                .shadow(color: FaceplateDesign.counterGlowInner, radius: FaceplateDesign.s(8))
+                .shadow(color: FaceplateDesign.counterGlowOuter, radius: FaceplateDesign.s(22))
         }
-        .frame(width: FaceplateDesign.vpContentWidth, height: 70)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(FaceplateDesign.vpBorder, lineWidth: 1.5))
-        .shadow(color: .black.opacity(0.45), radius: 3, x: 0, y: 1)
+        .frame(width: FaceplateDesign.vpContentWidth, height: FaceplateDesign.s(70))
+        .clipShape(RoundedRectangle(cornerRadius: FaceplateDesign.s(6)))
+        .overlay(RoundedRectangle(cornerRadius: FaceplateDesign.s(6)).stroke(FaceplateDesign.vpBorder, lineWidth: FaceplateDesign.s(1.5)))
+        .shadow(color: .black.opacity(0.45), radius: FaceplateDesign.s(3), x: 0, y: FaceplateDesign.s(1))
     }
 
     // MARK: - Warning badge
 
     @ViewBuilder private var warningBadge: some View {
         if let msg = viewModel.recordingWarning {
-            HStack(spacing: 4) {
+            HStack(spacing: FaceplateDesign.s(4)) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: FaceplateDesign.s(9), weight: .semibold))
                 Text(msg)
-                    .font(.system(size: 9, weight: .medium))
-                    .tracking(0.4)
+                    .font(.system(size: FaceplateDesign.s(9), weight: .medium))
+                    .tracking(FaceplateDesign.s(0.4))
             }
             .foregroundColor(.yellow.opacity(0.80))
-            .frame(height: 14)
-            .padding(.top, 3)
+            .frame(height: FaceplateDesign.s(14))
+            .padding(.top, FaceplateDesign.s(3))
         }
     }
 
@@ -145,7 +145,7 @@ struct RecorderMainPanel: View {
     private var recordStopButton: some View {
         Button { handleRecordTap() } label: {
             ZStack {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: FaceplateDesign.s(6))
                     .fill(isRecordingState ? FaceplateDesign.stopFill : FaceplateDesign.recordIdleFill)
                 // Both labels share one size so the type doesn't jump when the
                 // button toggles. "PRESS TO RECORD" is the longer string and
@@ -162,24 +162,24 @@ struct RecorderMainPanel: View {
                 // renders these strings ~8% wider and would otherwise wrap or
                 // clip on a guest's machine.
                 Text(isRecordingState ? "PRESS TO STOP" : "PRESS TO RECORD")
-                    .font(FaceplateDesign.panelFont(size: 27))
-                    .tracking(3)
+                    .font(FaceplateDesign.panelFont(size: FaceplateDesign.s(27)))
+                    .tracking(FaceplateDesign.s(3))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .foregroundColor(isRecordingState ? .white : FaceplateDesign.recordAccent)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .multilineTextAlignment(.center)
                     // Cap-only text sits optically high; nudge to compensate.
-                    .offset(y: 4)
+                    .offset(y: FaceplateDesign.s(4))
             }
-            .frame(width: FaceplateDesign.vpContentWidth, height: 72)
+            .frame(width: FaceplateDesign.vpContentWidth, height: FaceplateDesign.s(72))
             .background(FaceplateDesign.vpSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: FaceplateDesign.s(6)))
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: FaceplateDesign.s(6))
                     .stroke(
                         isRecordingState ? FaceplateDesign.vpBorder : FaceplateDesign.recordAccent,
-                        lineWidth: isRecordingState ? 1.5 : 2.0
+                        lineWidth: FaceplateDesign.s(isRecordingState ? 1.5 : 2.0)
                     )
             )
         }

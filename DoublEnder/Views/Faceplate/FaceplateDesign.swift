@@ -4,18 +4,32 @@ import AppKit
 // MARK: - Design tokens
 
 enum FaceplateDesign {
-    /// New window size — matches frame.png aspect ratio (5480 : 4680 ≈ 1.17 : 1).
-    static let windowSize = CGSize(width: 504, height: 430)
+    /// Global UI scale for the faceplate and everything inside the viewport.
+    /// Every geometry and type value below derives from it, so resizing the app
+    /// is one number rather than fifteen. Base values are the 1.0 design — a
+    /// 504 x 430 window.
+    ///
+    /// Scaling needs no new art: the faceplate is 5480 px wide, about 11x
+    /// oversampled at 1.0. Note that the engraved RECORDING / CLOUD labels are
+    /// baked into that art, so they scale WITH the plate; `ledSize` is
+    /// deliberately held at an absolute size and does not scale.
+    static let scale: CGFloat = 1.2
+
+    /// Scale a base-design value to the current UI scale.
+    static func s(_ v: CGFloat) -> CGFloat { v * scale }
+
+    /// Window size — matches the faceplate aspect ratio (5480 : 4680 ≈ 1.17 : 1).
+    static let windowSize = CGSize(width: s(504), height: s(430))
 
     // Viewport insets — identical across Local and Cloud; only the faceplate image differs.
     //   top bezel:    79 pt
     //   bottom bezel: 81 pt
     //   left bezel:   91 pt
     //   right bezel:  90 pt
-    static let vpTop:      CGFloat = 79
-    static let vpLeading:  CGFloat = 91
-    static let vpTrailing: CGFloat = 90
-    static let vpBottom:   CGFloat = 81
+    static let vpTop:      CGFloat = s(79)
+    static let vpLeading:  CGFloat = s(91)
+    static let vpTrailing: CGFloat = s(90)
+    static let vpBottom:   CGFloat = s(81)
 
     /// Warm amber (#FFD580) — clock digits, title text.
     static let vpAmber  = Color(red: 0xFF/255, green: 0xD5/255, blue: 0x80/255)
@@ -39,9 +53,9 @@ enum FaceplateDesign {
     static let meterInactive = Color(red: 0x2A/255, green: 0x1A/255, blue: 0x00/255)  // #2A1A00
 
     /// Inner padding on all four sides of the viewport; content width derived from it.
-    static let vpInnerPad:     CGFloat = 14
-    /// (504 − 91 − 90) − 14 − 14 = 295 pt.
-    static let vpContentWidth: CGFloat = 295
+    static let vpInnerPad:     CGFloat = s(14)
+    /// (504 − 91 − 90) − 14 − 14 = 295 pt at scale 1.0.
+    static let vpContentWidth: CGFloat = s(295)
 
     /// Muted amber #A0600A — version/device label colour in the bottom-row strip.
     static let secondaryAmber = Color(red: 0xA0/255, green: 0x60/255, blue: 0x0A/255)
@@ -66,26 +80,41 @@ enum FaceplateDesign {
     static let screenGlowColor = Color(red: 0xC9/255, green: 0x6A/255, blue: 0x00/255)
 
     /// Status LED frame size. The source art is 270 px, so this is a pure
-    /// display size — shrinking it needs no new asset.
-    static let ledSize: CGFloat = 18
+    /// display size — no asset work to change it.
+    ///
+    /// Scaled with the app rather than held absolute: the engraved labels are
+    /// baked into the plate and therefore grow with it, and what was tuned is
+    /// the LED's relationship to its label (~1.8x the cap height). Holding this
+    /// at 18 while the labels grew dropped it to ~1.5x and read under-scaled.
+    static let ledSize: CGFloat = s(18)
+
     // The LEDs are not part of the faceplate art — the art carries only the
     // engraved CLOUD / RECORDING labels, and each LED image supplies its own
-    // recessed socket and metal ring.
+    // recessed socket and metal ring. All three measurements below are in
+    // base-design points, taken off the 5480 x 4680 plate; re-measure them if
+    // the art changes.
     //
-    // x = 422.5 puts the stack under the right-hand screen bezel: measured off
-    // the plate, the viewport cutout ends at 413.6 pt and the raised bezel ring
-    // runs to 431.5 pt, so at 18 pt the column's right edge lands on the bezel's
-    // outer edge and its centre on the ring's midpoint — both readings agree.
-    // The y values are the measured vertical centres of the two engraved labels,
-    // so each light sits centred beside the word it belongs to.
-    // Re-measure all three if the faceplate art moves.
+    /// Outer edge of the raised screen bezel. The viewport cutout ends at
+    /// 413.6 and the bezel ring runs to here, so right-aligning the LED column
+    /// to it puts the stack under the bezel — and at 18 pt the column's centre
+    /// also lands on the ring's midpoint, satisfying both readings of "aligned".
+    private static let bezelRightEdge: CGFloat = 431.5
+    /// Vertical centres of the two engraved labels, so each light sits beside
+    /// the word it belongs to.
+    private static let cloudLabelCentreY:     CGFloat = 380.8
+    private static let recordingLabelCentreY: CGFloat = 400.2
+
+    /// Column x. Derived, not hard-coded: `ledSize` does not scale while the
+    /// plate does, so the right-alignment has to be recomputed per scale.
+    private static let ledColumnX: CGFloat = s(bezelRightEdge) - ledSize / 2
+
     /// Blue cloud-status LED — beside the CLOUD label (upper).
-    static let blueLEDPosition = CGPoint(x: 422.5, y: 381)
+    static let blueLEDPosition = CGPoint(x: ledColumnX, y: s(cloudLabelCentreY))
     /// Red recording LED — beside the RECORDING label (lower).
-    static let redLEDPosition = CGPoint(x: 422.5, y: 400)
+    static let redLEDPosition = CGPoint(x: ledColumnX, y: s(recordingLabelCentreY))
 
     /// Shared typography for the bottom-row metadata strip.
-    static let metadataFont = Font.system(size: 8.5, weight: .medium, design: .monospaced)
+    static let metadataFont = Font.system(size: s(8.5), weight: .medium, design: .monospaced)
 
     static var viewportInsets: EdgeInsets {
         EdgeInsets(

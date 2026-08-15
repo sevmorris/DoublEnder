@@ -127,9 +127,9 @@ struct FaceplateMeterRow: View {
     private static let dbMax: Float = LevelMeter.dbCeiling
 
     var body: some View {
-        let containerH: CGFloat = 34
-        let iconBoxW:   CGFloat = 34
-        let gap:        CGFloat = 6
+        let containerH: CGFloat = FaceplateDesign.s(34)
+        let iconBoxW:   CGFloat = FaceplateDesign.s(34)
+        let gap:        CGFloat = FaceplateDesign.s(6)
         let meterW:     CGFloat = FaceplateDesign.vpContentWidth - (iconBoxW * 2) - (gap * 2)
 
         HStack(alignment: .top, spacing: gap) {
@@ -161,11 +161,11 @@ struct FaceplateMeterRow: View {
         meterW: CGFloat,
         containerH: CGFloat
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: FaceplateDesign.s(4)) {
             Canvas { ctx, size in
                 let n = Self.segCount
-                let segGap: CGFloat = 1.5
-                let inset:  CGFloat = 3
+                let segGap: CGFloat = FaceplateDesign.s(1.5)
+                let inset:  CGFloat = FaceplateDesign.s(3)
                 let availW = size.width - inset * 2
                 let availH = size.height - inset * 2
                 let sw = (availW - CGFloat(n - 1) * segGap) / CGFloat(n)
@@ -189,8 +189,8 @@ struct FaceplateMeterRow: View {
             }
             .frame(width: meterW, height: containerH)
             .background(FaceplateDesign.vpSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(FaceplateDesign.vpBorder, lineWidth: 1.2))
+            .clipShape(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)))
+            .overlay(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)).stroke(FaceplateDesign.vpBorder, lineWidth: FaceplateDesign.s(1.2)))
 
             GeometryReader { _ in
                 let labels = LevelMeter.scaleLabels
@@ -198,12 +198,12 @@ struct FaceplateMeterRow: View {
                     let (db, text) = labels[i]
                     let frac = CGFloat((db - Self.dbMin) / (Self.dbMax - Self.dbMin))
                     Text(text)
-                        .font(.system(size: 7, weight: .medium, design: .monospaced))
+                        .font(.system(size: FaceplateDesign.s(7), weight: .medium, design: .monospaced))
                         .foregroundColor(FaceplateDesign.vpAmber.opacity(0.55))
-                        .position(x: frac * meterW, y: 5)
+                        .position(x: frac * meterW, y: FaceplateDesign.s(5))
                 }
             }
-            .frame(width: meterW, height: 12)
+            .frame(width: meterW, height: FaceplateDesign.s(12))
         }
     }
 
@@ -223,11 +223,11 @@ struct FaceplateMeterRow: View {
                 .resizable()
                 .scaledToFit()
                 .foregroundColor(FaceplateDesign.vpAmber.opacity(disabled ? 0.35 : (active ? 1.0 : 0.65)))
-                .frame(width: 20, height: 20)
+                .frame(width: FaceplateDesign.s(20), height: FaceplateDesign.s(20))
                 .frame(width: width, height: height, alignment: .center)
                 .background(FaceplateDesign.vpSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(FaceplateDesign.vpBorder, lineWidth: 1.2))
+                .clipShape(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)))
+                .overlay(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)).stroke(FaceplateDesign.vpBorder, lineWidth: FaceplateDesign.s(1.2)))
                 .contentShape(Rectangle())
                 .background(ViewAnchor { capture($0) })
         }
@@ -272,13 +272,13 @@ struct FaceplateSecondaryCard<Content: View>: View {
 
     var body: some View {
         content()
-            .padding(.horizontal, 16)
-            .padding(.vertical, 18)
+            .padding(.horizontal, FaceplateDesign.s(16))
+            .padding(.vertical, FaceplateDesign.s(18))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(FaceplateDesign.secondarySurface)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: FaceplateDesign.s(8), style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: FaceplateDesign.s(8), style: .continuous)
                     .strokeBorder(FaceplateDesign.vpBorder, lineWidth: 1.5)
             )
             .preferredColorScheme(.dark)
@@ -297,13 +297,13 @@ struct FaceplateSecondaryButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(size: FaceplateDesign.s(10), weight: .bold))
                 .tracking(1.5)
                 .foregroundColor(FaceplateDesign.secondaryText)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 4).fill(FaceplateDesign.secondaryFieldBg))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(FaceplateDesign.vpAmber, lineWidth: 1))
+                .padding(.horizontal, FaceplateDesign.s(18))
+                .padding(.vertical, FaceplateDesign.s(7))
+                .background(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)).fill(FaceplateDesign.secondaryFieldBg))
+                .overlay(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)).stroke(FaceplateDesign.vpAmber, lineWidth: FaceplateDesign.s(1)))
         }
         .buttonStyle(.plain)
         .focusEffectDisabledIfAvailable()
