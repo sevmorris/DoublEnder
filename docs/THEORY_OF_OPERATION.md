@@ -38,7 +38,7 @@ Both share 100% of the Swift source in `DoublEnder/`. They differ only in what's
 | Variant | Version suffix | Key addition | Distribution |
 |---|---|---|---|
 | **DoublEnder Local** | `lr` | — | GitHub releases + GCS permalink |
-| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), a runtime switch that turns all of the above off for a session (§8), and Cloud-only art in `CloudAssets.xcassets` — the blue LED pair, the `CLOUD` label overlay and the blue CLOUD RECORDER badge (§2) | GCS (private) |
+| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), a runtime switch that turns all of the above off for a session (§8), and Cloud-only art in `CloudAssets.xcassets` — the blue LED pair and the `CLOUD` label overlay (§2) | GCS (private) |
 
 The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. Every `#if GCS_ENABLED` block in the shared source tree compiles to nothing in Local builds, so the service-account key and upload logic are never shipped in the public app.
 
@@ -82,17 +82,17 @@ The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. 
 
 **PCMSidecar** is a pure I/O object. It writes a flat raw-PCM crash-recovery file alongside the main output. It has no dependencies on AudioEngine or the VM — AudioEngine calls it from the writer delegate queue.
 
-**The faceplate** is a layered SwiftUI stack: a `ZStack` with the screen surface behind, interactive content (RecorderMainPanel) in the middle, then the faceplate PNG as a non-interactive decoration, then one or two full-canvas transparent overlays, a screen glow, and finally the LED images. The window is `[.borderless]` with a transparent background — the faceplate image provides the visual frame. Settings and device-picker popovers are standard `NSPopover`s that float outside the borderless window.
+**The faceplate** is a layered SwiftUI stack: a `ZStack` with the screen surface behind, interactive content (RecorderMainPanel) in the middle, then the faceplate PNG as a non-interactive decoration, then (on Cloud) a transparent label overlay, a screen glow, and finally the LED images. The window is `[.borderless]` with a transparent background — the faceplate image provides the visual frame. Settings and device-picker popovers are standard `NSPopover`s that float outside the borderless window.
 
-**One plate, variant overlays.** `de_faceplate` lives in `SharedAssets.xcassets` and is rendered by *both* variants. It carries the brushed metal, the bezel, the DoublEnder wordmark, and the engraved `RECORDING` label. Everything variant-specific is a separate full-canvas transparent PNG composited on top at the same frame — no position of its own, so it registers with the plate exactly:
+**One plate, variant overlays.** `de_faceplate` lives in `SharedAssets.xcassets` and is rendered by *both* variants. It carries the brushed metal, the bezel, the DoublEnder wordmark, and the engraved `RECORDING` label. The only variant-specific art is the Cloud build's engraved `CLOUD` label:
 
 | Overlay | Catalog | Appears in |
 |---|---|---|
-| `de_badge_local` (red LOCAL RECORDER badge) | `Assets.xcassets` | Local only |
-| `de_badge_cloud` (blue CLOUD RECORDER badge) | `CloudAssets.xcassets` | Cloud only |
 | `de_cloud_label` (engraved `CLOUD` label) | `CloudAssets.xcassets` | Cloud only |
 
-The Cloud target excludes `Assets.xcassets` and adds `CloudAssets.xcassets`, so each build picks up its own badge from the same layer with no conditional in the view. The alternative — a complete plate per variant — was rejected because the viewport cutout must line up exactly with the hardcoded `vpTop/vpLeading/vpTrailing/vpBottom` insets; a single shared plate makes that alignment identical by construction, where two plates could drift a few pixels apart in one variant only.
+Overlays are **authored** full-canvas, on the plate's own 5480 × 4680 canvas, so they register with it exactly and no position has to be measured by hand. They are **shipped cropped**: an overlay is decoded at full resolution however little of it is ink, costing roughly 98 MB of resident memory each — measured by removing one layer and watching the app drop from 350 MB to 242 MB. `tools/crop-overlay.py` crops an export to its ink and emits the frame and centre that put it back in the same place, in base-design points so it still scales. Re-run the tool when the art changes rather than hand-editing the constants.
+
+The Cloud target excludes `Assets.xcassets` and adds `CloudAssets.xcassets`, so variant-specific art resolves per build with no conditional in the view. The alternative — a complete plate per variant — was rejected because the viewport cutout must line up exactly with the hardcoded `vpTop/vpLeading/vpTrailing/vpBottom` insets; a single shared plate makes that alignment identical by construction, where two plates could drift a few pixels apart in one variant only.
 
 **The LEDs are not in the art.** Each LED asset supplies its own recessed socket and ring, and is composited over the plate; the plate has no holes drawn in it. Their coordinates are derived, not hardcoded: the column is right-aligned to the screen bezel's measured outer edge (`bezelRightEdge`), and each light is vertically centred on the engraved label it belongs to. Both LEDs are solid — see §8.
 

@@ -96,18 +96,6 @@ enum FaceplateDesign {
     // the artwork lands in exactly the same place at roughly 1/60th the image
     // memory. Re-run the tool whenever the art is re-exported; do not hand-edit.
 
-    /// Variant badge (red LOCAL RECORDER / blue CLOUD RECORDER). Both variants
-    /// crop to shared bounds, so the two builds are geometrically identical.
-    ///
-    /// x is deliberately NOT the tool's emitted 247.45: the artwork's ink sits
-    /// 3.7 pt left of centre on its canvas, while the plate's viewport cutout
-    /// is centred to within 0.14 pt, so honouring the export would leave the
-    /// badge visibly off-centre above a centred screen. Pinned to the true
-    /// window centre instead. If the art is ever re-exported centred, this can
-    /// go back to whatever the tool emits.
-    static let badgeSize     = CGSize(width: s(64.84), height: s(55.40))
-    static let badgePosition = CGPoint(x: s(504.0 / 2), y: s(36.34))
-
     /// Engraved CLOUD label (Cloud only). Its y is the same value as
     /// `blueLEDPosition`'s — the label and its light sit on one baseline.
     static let cloudLabelSize     = CGSize(width: s(47.36), height: s(10.38))

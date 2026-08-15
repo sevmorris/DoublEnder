@@ -25,16 +25,6 @@ struct ContentView: View {
                 .frame(width: FaceplateDesign.windowSize.width, height: FaceplateDesign.windowSize.height)
                 .allowsHitTesting(false)
 
-            // Variant badge — red LOCAL RECORDER. Lives in Assets.xcassets,
-            // which the Cloud target excludes, so the two builds get their own
-            // badge from the same layer without a conditional. Authored
-            // full-canvas, shipped cropped — see FaceplateDesign's overlay note.
-            Image("de_badge_local")
-                .resizable()
-                .frame(width: FaceplateDesign.badgeSize.width, height: FaceplateDesign.badgeSize.height)
-                .position(FaceplateDesign.badgePosition)
-                .allowsHitTesting(false)
-
             FaceplateScreenGlow()
 
             Image(isRecordingState ? "de_red-led_on" : "de_red-led_off")

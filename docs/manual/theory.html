@@ -467,7 +467,7 @@
         <tr>
           <td>DoublEnder Cloud</td>
           <td><code>cr</code></td>
-          <td>GCS resumable upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), session heartbeat (SessionHeartbeat), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), a runtime switch that turns all of the above off for a session, and Cloud-only art in CloudAssets.xcassets — the blue LED pair, the CLOUD label overlay and the blue CLOUD RECORDER badge</td>
+          <td>GCS resumable upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), session heartbeat (SessionHeartbeat), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), a runtime switch that turns all of the above off for a session, and Cloud-only art in CloudAssets.xcassets — the blue LED pair and the CLOUD label overlay</td>
           <td>GCS (private)</td>
         </tr>
       </tbody>
@@ -512,17 +512,16 @@
     <p><strong>PCMSidecar</strong> is a pure I/O object. It writes a flat raw-PCM crash-recovery file alongside the main output, on the same writer queue as the AVAssetWriter, with no dependency on AudioEngine or the VM.</p>
 
     <h3 id="faceplate">The Faceplate: One Plate, Variant Overlays</h3>
-    <p>The faceplate is a <code>ZStack</code>: the screen surface behind, interactive content (RecorderMainPanel) in the middle, then the faceplate PNG as a non-interactive decoration, then one or two full-canvas transparent overlays, a screen glow, and finally the LED images. The window is <code>[.borderless]</code> with a transparent background — the plate provides the visual frame.</p>
-    <p><code>de_faceplate</code> lives in <code>SharedAssets.xcassets</code> and is rendered by <em>both</em> variants, carrying the brushed metal, bezel, DoublEnder wordmark and the engraved <code>RECORDING</code> label. Everything variant-specific is a separate full-canvas transparent PNG composited at the same frame, so it needs no position of its own and registers with the plate exactly:</p>
+    <p>The faceplate is a <code>ZStack</code>: the screen surface behind, interactive content (RecorderMainPanel) in the middle, then the faceplate PNG as a non-interactive decoration, then (on Cloud) a transparent label overlay, a screen glow, and finally the LED images. The window is <code>[.borderless]</code> with a transparent background — the plate provides the visual frame.</p>
+    <p><code>de_faceplate</code> lives in <code>SharedAssets.xcassets</code> and is rendered by <em>both</em> variants, carrying the brushed metal, bezel, DoublEnder wordmark and the engraved <code>RECORDING</code> label. The only variant-specific art is the Cloud build's engraved <code>CLOUD</code> label:</p>
     <table class="compare-table">
       <thead><tr><th>Overlay</th><th>Catalog</th><th>Appears in</th></tr></thead>
       <tbody>
-        <tr><td><code>de_badge_local</code></td><td><code>Assets.xcassets</code></td><td>Local only — red LOCAL RECORDER badge</td></tr>
-        <tr><td><code>de_badge_cloud</code></td><td><code>CloudAssets.xcassets</code></td><td>Cloud only — blue CLOUD RECORDER badge</td></tr>
         <tr><td><code>de_cloud_label</code></td><td><code>CloudAssets.xcassets</code></td><td>Cloud only — engraved CLOUD label</td></tr>
       </tbody>
     </table>
-    <p>The Cloud target excludes <code>Assets.xcassets</code> and adds <code>CloudAssets.xcassets</code>, so each build picks up its own badge from the same layer with no conditional in the view.</p>
+    <p>Overlays are <strong>authored</strong> full-canvas, on the plate's own 5480 &times; 4680 canvas, so they register with it exactly and no position has to be measured by hand. They are <strong>shipped cropped</strong>: an overlay is decoded at full resolution however little of it is ink, costing roughly 98 MB of resident memory each — measured by removing one layer and watching the app drop from 350 MB to 242 MB. <code>tools/crop-overlay.py</code> crops an export to its ink and emits the frame and centre that put it back in the same place, in base-design points so it still scales.</p>
+    <p>The Cloud target excludes <code>Assets.xcassets</code> and adds <code>CloudAssets.xcassets</code>, so variant-specific art resolves per build with no conditional in the view.</p>
 
     <details class="callout callout-impl">
       <summary><span class="callout-cat">Under the Hood</span> Why one shared plate rather than a plate per variant</summary>
