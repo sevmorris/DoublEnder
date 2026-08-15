@@ -15,7 +15,7 @@ settings:
     # download filenames, and crash reports. release.sh's regex rewrites
     # match an optional letter suffix so future bumps stay self-consistent.
     MARKETING_VERSION: "2.2.0lr"
-    CURRENT_PROJECT_VERSION: "31"
+    CURRENT_PROJECT_VERSION: "32"
 
 targets:
   DoublEnder:
