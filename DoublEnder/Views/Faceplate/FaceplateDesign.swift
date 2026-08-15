@@ -11,8 +11,9 @@ enum FaceplateDesign {
     ///
     /// Scaling needs no new art: the faceplate is 5480 px wide, about 11x
     /// oversampled at 1.0. Note that the engraved RECORDING / CLOUD labels are
-    /// baked into that art, so they scale WITH the plate; `ledSize` is
-    /// deliberately held at an absolute size and does not scale.
+    /// baked into that art, so they scale WITH the plate — which is why
+    /// `ledSize` scales too (see its note), keeping each light in proportion to
+    /// the word it labels.
     static let scale: CGFloat = 1.2
 
     /// Scale a base-design value to the current UI scale.
@@ -21,7 +22,9 @@ enum FaceplateDesign {
     /// Window size — matches the faceplate aspect ratio (5480 : 4680 ≈ 1.17 : 1).
     static let windowSize = CGSize(width: s(504), height: s(430))
 
-    // Viewport insets — identical across Local and Cloud; only the faceplate image differs.
+    // Viewport insets — identical across Local and Cloud. Both variants render
+    // the SAME shared de_faceplate art; Cloud only adds the de_cloud_label
+    // overlay on top, so these insets can never drift between the two.
     //   top bezel:    79 pt
     //   bottom bezel: 81 pt
     //   left bezel:   91 pt
