@@ -1,6 +1,6 @@
 # DoublEnder — Theory of Operation
 
-**Version:** 2.1.2lr · Last updated: 2026-08-11
+**Version:** 2.2.0lr · Last updated: 2026-08-14
 
 ---
 
@@ -38,7 +38,7 @@ Both share 100% of the Swift source in `DoublEnder/`. They differ only in what's
 | Variant | Version suffix | Key addition | Distribution |
 |---|---|---|---|
 | **DoublEnder Local** | `lr` | — | GitHub releases + GCS permalink |
-| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), and a runtime switch that turns all of the above off for a session (§8) | GCS (private) |
+| **DoublEnder Cloud** | `cr` | GCS resumable upload (Uploader, CloudConnectivity, CloudContentView, `GCS_ENABLED` flag), session heartbeat (SessionHeartbeat), pre-recording name prompt (`REQUIRE_RECORDING_NAME_AT_START`), a runtime switch that turns all of the above off for a session (§8), and Cloud-only art in `CloudAssets.xcassets` — the blue LED pair, the `CLOUD` label overlay and the blue CLOUD RECORDER badge (§2) | GCS (private) |
 
 The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. Every `#if GCS_ENABLED` block in the shared source tree compiles to nothing in Local builds, so the service-account key and upload logic are never shipped in the public app.
 
@@ -82,7 +82,21 @@ The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. 
 
 **PCMSidecar** is a pure I/O object. It writes a flat raw-PCM crash-recovery file alongside the main output. It has no dependencies on AudioEngine or the VM — AudioEngine calls it from the writer delegate queue.
 
-**The faceplate** is a layered SwiftUI stack: a `ZStack` with the screen surface behind, interactive content (RecorderMainPanel) in the middle, the faceplate PNG image on top as a non-interactive decoration, a screen glow overlay, and the LED images at fixed positions in the bezel. The window is `[.borderless]` with a transparent background — the faceplate image provides the visual frame. Settings and device-picker popovers are standard `NSPopover`s that float outside the borderless window.
+**The faceplate** is a layered SwiftUI stack: a `ZStack` with the screen surface behind, interactive content (RecorderMainPanel) in the middle, then the faceplate PNG as a non-interactive decoration, then one or two full-canvas transparent overlays, a screen glow, and finally the LED images. The window is `[.borderless]` with a transparent background — the faceplate image provides the visual frame. Settings and device-picker popovers are standard `NSPopover`s that float outside the borderless window.
+
+**One plate, variant overlays.** `de_faceplate` lives in `SharedAssets.xcassets` and is rendered by *both* variants. It carries the brushed metal, the bezel, the DoublEnder wordmark, and the engraved `RECORDING` label. Everything variant-specific is a separate full-canvas transparent PNG composited on top at the same frame — no position of its own, so it registers with the plate exactly:
+
+| Overlay | Catalog | Appears in |
+|---|---|---|
+| `de_badge_local` (red LOCAL RECORDER badge) | `Assets.xcassets` | Local only |
+| `de_badge_cloud` (blue CLOUD RECORDER badge) | `CloudAssets.xcassets` | Cloud only |
+| `de_cloud_label` (engraved `CLOUD` label) | `CloudAssets.xcassets` | Cloud only |
+
+The Cloud target excludes `Assets.xcassets` and adds `CloudAssets.xcassets`, so each build picks up its own badge from the same layer with no conditional in the view. The alternative — a complete plate per variant — was rejected because the viewport cutout must line up exactly with the hardcoded `vpTop/vpLeading/vpTrailing/vpBottom` insets; a single shared plate makes that alignment identical by construction, where two plates could drift a few pixels apart in one variant only.
+
+**The LEDs are not in the art.** Each LED asset supplies its own recessed socket and ring, and is composited over the plate; the plate has no holes drawn in it. Their coordinates are derived, not hardcoded: the column is right-aligned to the screen bezel's measured outer edge (`bezelRightEdge`), and each light is vertically centred on the engraved label it belongs to. Both LEDs are solid — see §8.
+
+**One scale factor.** All faceplate geometry and type derive from `FaceplateDesign.scale` through `FaceplateDesign.s(_:)`. The base 1.0 design is a 504 × 430 window; the shipped scale is 1.2, so the real window is 604.8 × 516. Resizing the whole UI is that one constant — the plate art is 5480 px wide, roughly 9× oversampled even at 1.2, so no scale change needs new assets. `ledSize` scales with it deliberately: the engraved labels are baked into the plate and grow with it, and what matters is the light's proportion to the word it labels.
 
 ### Why this architecture vs. alternatives
 
@@ -203,6 +217,8 @@ AppState (RecorderViewModel.state):
 ```
 
 ### Normal lifecycle
+
+"RECORD tap" and "STOP tap" below are shorthand for the single record/stop button, which is labelled **PRESS TO RECORD** when idle and **PRESS TO STOP** while recording. Both labels render at one shared size so the type never changes when the button toggles.
 
 ```
 init()
@@ -515,7 +531,9 @@ The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from t
 - `credentialsOK`: checked once at init by parsing the service-account JSON for `private_key` and `client_email`. A bundle stripped of the key file (corrupted build) shows `isReady = false` forever.
 - `networkSatisfied`: tracked live by `NWPathMonitor`. Updates arrive within ~1 s of a path change (Wi-Fi drop, VPN flip, airplane mode). The monitor runs on a `.utility` background queue; updates hop to the main actor via `Task { @MainActor }` for the `@Published` mutation.
 
-`CloudContentView` lights the blue LED only when the local-only switch is on *and* `connectivity.isReady` — see the switch's two indicators above. `ContentView` (Local) has no blue LED — the LED images are not present and `CloudConnectivity` is not imported.
+`CloudContentView` lights the blue LED only when the local-only switch is on *and* `connectivity.isReady` — see the switch's two indicators above. `ContentView` (Local) has no blue LED — the blue LED art lives in `CloudAssets.xcassets` and is not in the Local target, and `CloudConnectivity` is not imported. The red `RECORDING` LED is present in both variants (its art is in `SharedAssets.xcassets`) and is **solid** while `state == .recording`, dark otherwise.
+
+Neither light blinks. The red LED did blink on a 0.75 s timer until 2.2.0; the blink existed to signal "something is happening" while the light was unlabelled, and once the plate carried an engraved `RECORDING` label beside it the label carried that meaning instead. Solid also matches field-recorder convention, where a blinking light means armed or paused and a solid one means rolling — and liveness is already evident from the incrementing counter and the moving meter. Removing it deleted the timer from both content views.
 
 ### Session heartbeat (dashboard)
 

@@ -467,7 +467,7 @@
         <tr>
           <td>DoublEnder Cloud</td>
           <td><code>cr</code></td>
-          <td>GCS resumable upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), session heartbeat (SessionHeartbeat), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), and a runtime switch that turns all of the above off for a session</td>
+          <td>GCS resumable upload (<code>GCS_ENABLED</code> flag, Uploader, CloudConnectivity, CloudContentView), session heartbeat (SessionHeartbeat), pre-recording name prompt (<code>REQUIRE_RECORDING_NAME_AT_START</code>), a runtime switch that turns all of the above off for a session, and Cloud-only art in CloudAssets.xcassets — the blue LED pair, the CLOUD label overlay and the blue CLOUD RECORDER badge</td>
           <td>GCS (private)</td>
         </tr>
       </tbody>
@@ -510,6 +510,26 @@
     <p><strong>RecorderViewModel</strong> is the single source of truth. It holds <code>AppState</code>, all timers, <code>selectedInputDeviceID</code>, and user preferences. It mediates between AppDelegate's event-driven callbacks and AudioEngine's completion handlers. It is a singleton (<code>shared</code>) because AppDelegate needs access independently of SwiftUI's view hierarchy.</p>
     <p><strong>AudioEngine</strong> owns all AVFoundation objects. It knows nothing about SwiftUI or app state. It publishes <code>@Published</code> flags and fires callbacks that the VM handles, so the engine can be rebuilt, stopped, or torn down without touching the UI layer.</p>
     <p><strong>PCMSidecar</strong> is a pure I/O object. It writes a flat raw-PCM crash-recovery file alongside the main output, on the same writer queue as the AVAssetWriter, with no dependency on AudioEngine or the VM.</p>
+
+    <h3 id="faceplate">The Faceplate: One Plate, Variant Overlays</h3>
+    <p>The faceplate is a <code>ZStack</code>: the screen surface behind, interactive content (RecorderMainPanel) in the middle, then the faceplate PNG as a non-interactive decoration, then one or two full-canvas transparent overlays, a screen glow, and finally the LED images. The window is <code>[.borderless]</code> with a transparent background — the plate provides the visual frame.</p>
+    <p><code>de_faceplate</code> lives in <code>SharedAssets.xcassets</code> and is rendered by <em>both</em> variants, carrying the brushed metal, bezel, DoublEnder wordmark and the engraved <code>RECORDING</code> label. Everything variant-specific is a separate full-canvas transparent PNG composited at the same frame, so it needs no position of its own and registers with the plate exactly:</p>
+    <table class="compare-table">
+      <thead><tr><th>Overlay</th><th>Catalog</th><th>Appears in</th></tr></thead>
+      <tbody>
+        <tr><td><code>de_badge_local</code></td><td><code>Assets.xcassets</code></td><td>Local only — red LOCAL RECORDER badge</td></tr>
+        <tr><td><code>de_badge_cloud</code></td><td><code>CloudAssets.xcassets</code></td><td>Cloud only — blue CLOUD RECORDER badge</td></tr>
+        <tr><td><code>de_cloud_label</code></td><td><code>CloudAssets.xcassets</code></td><td>Cloud only — engraved CLOUD label</td></tr>
+      </tbody>
+    </table>
+    <p>The Cloud target excludes <code>Assets.xcassets</code> and adds <code>CloudAssets.xcassets</code>, so each build picks up its own badge from the same layer with no conditional in the view.</p>
+
+    <details class="callout callout-impl">
+      <summary><span class="callout-cat">Under the Hood</span> Why one shared plate rather than a plate per variant</summary>
+      <p>The viewport cutout has to line up exactly with the hardcoded <code>vpTop/vpLeading/vpTrailing/vpBottom</code> insets. A single shared plate makes that alignment identical for both variants by construction; two complete plates could drift a few pixels apart in one variant only — a silent misalignment of the screen contents that you would never catch without deliberately diffing the two files. The overlay is also ~477 KB against the plate's ~20 MB, so design iterations stay cheap.</p>
+      <p><strong>The LEDs are not in the art.</strong> Each LED asset supplies its own recessed socket and ring and is composited over the plate, which has no holes drawn in it. Their coordinates are derived rather than hardcoded: the column right-aligns to the screen bezel's measured outer edge, and each light is vertically centred on the engraved label it belongs to.</p>
+      <p><strong>One scale factor.</strong> All faceplate geometry and type derive from <code>FaceplateDesign.scale</code> via <code>FaceplateDesign.s(_:)</code>. The base 1.0 design is a 504 × 430 window; the shipped scale is 1.2, so the real window is 604.8 × 516. The plate art is 5480 px wide — roughly 9× oversampled even at 1.2 — so changing the scale never needs new assets. <code>ledSize</code> scales too: the engraved labels are baked into the plate and grow with it, and what matters is each light's proportion to the word it labels.</p>
+    </details>
 
     <details class="callout callout-history">
       <summary><span class="callout-cat">Design Rationale</span> AVCaptureSession over AVAudioEngine</summary>
@@ -631,6 +651,7 @@
     </table>
 
     <h3>Normal Lifecycle</h3>
+    <p style="font-size:0.9rem;">"RECORD tap" and "STOP tap" below are shorthand for the single record/stop button, labelled <strong>PRESS TO RECORD</strong> when idle and <strong>PRESS TO STOP</strong> while recording. Both labels render at one shared size so the type never changes when the button toggles.</p>
     <div class="chain">
       <div class="chain-row">
         <div class="chain-node"><code>init()</code> → .selectingMic</div>
@@ -845,7 +866,7 @@
     <p><code>runPendingUploadCheckIfNeeded</code> (in <code>applicationDidFinishLaunching</code>) reads the pending-upload record from <code>UserDefaults</code>. In local-only mode it returns immediately without prompting, leaving the record intact. If the file still exists on disk, <code>PendingUploadPrompt.present</code> shows a modal offering Upload or Skip. Upload — when the record carries a session URI — resumes from GCS's committed offset rather than restarting. If the file is gone (user deleted it between sessions), the record is cleared silently.</p>
 
     <h3>CloudConnectivity and the Blue LED</h3>
-    <p><code>CloudConnectivity</code> (singleton, <code>@MainActor</code>) publishes a single <code>isReady</code> flag: <code>credentialsOK &amp;&amp; networkSatisfied</code>. <code>credentialsOK</code> is checked once at init by parsing the service-account JSON. <code>networkSatisfied</code> is tracked live by <code>NWPathMonitor</code>, updating within ~1 second of any path change. The blue LED in <code>CloudContentView</code> lights only when the local-only switch is on <em>and</em> <code>connectivity.isReady</code> — solid on/off, not flashing (contrast with the red recording LED, which flashes at 0.75 s).</p>
+    <p><code>CloudConnectivity</code> (singleton, <code>@MainActor</code>) publishes a single <code>isReady</code> flag: <code>credentialsOK &amp;&amp; networkSatisfied</code>. <code>credentialsOK</code> is checked once at init by parsing the service-account JSON. <code>networkSatisfied</code> is tracked live by <code>NWPathMonitor</code>, updating within ~1 second of any path change. The blue LED in <code>CloudContentView</code> lights only when the local-only switch is on <em>and</em> <code>connectivity.isReady</code> — solid on/off. The red RECORDING LED is solid too — it blinked on a 0.75 s timer until 2.2.0, but once the plate carried an engraved RECORDING label beside it, the label carried that meaning and the blink became noise. Solid also matches field-recorder convention, where blinking means armed or paused and solid means rolling. Neither light blinks.</p>
 
     <h3 id="heartbeat">Session Heartbeat (Dashboard)</h3>
     <p><code>SessionHeartbeat</code> (singleton, compiled only into Cloud builds) lets a producer watch live sessions on a dashboard as Recording / Idle / Stale. While a take is in progress it POSTs <code>{sessionId, guestName, state}</code> to a Cloudflare Worker <code>/ingest</code> endpoint every 30 seconds; <code>sessionId</code> is a per-launch UUID, so each running Cloud instance is one dashboard row.</p>
@@ -906,7 +927,7 @@
       <li>Verify DMG: mount, read version, unmount</li>
       <li>Tag and push: <code>git tag vX.Y.Zlr</code>, push branch and tag</li>
       <li>GitHub release: <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
-      <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-tap</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to vX.Y.Zlr</code></li>
+      <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-tap</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to X.Y.Zlr</code></li>
       <li>GCS permalink: <code>gcloud storage cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: public, max-age=60</code>. (Distinct from the Cloud <em>update manifest</em> <code>cloud-latest.json</code>, which is uploaded with <code>Cache-Control: no-cache</code> — update checks must read fresh; the 60-second cap on the DMG merely keeps a just-published build from being masked by an older cached copy.)</li>
       <li>Cloud release: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
       <li>Prune old releases: keep the 5 most recent GitHub releases; delete older tags and assets</li>
