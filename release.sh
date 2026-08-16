@@ -47,9 +47,11 @@ fail()  { echo "\n  ✗ $*" >&2; exit 1; }
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 step "Preflight checks"
-for cmd in xcodebuild xcodegen hdiutil gh git codesign xcrun; do
+for cmd in xcodebuild xcodegen hdiutil gh git codesign xcrun python3; do
     command -v $cmd &>/dev/null || fail "'$cmd' not found in PATH"
 done
+python3 -c "import dmgbuild" 2>/dev/null \
+    || fail "python3 module 'dmgbuild' not installed — run: python3 -m pip install dmgbuild"
 ok "Tools present"
 
 cd "$PROJECT_DIR"
@@ -156,25 +158,34 @@ BUILT_VERSION=$(defaults read "$APP_PATH/Contents/Info.plist" CFBundleShortVersi
     fail "App version mismatch: expected $VERSION, got $BUILT_VERSION"
 ok "App reports $BUILT_VERSION"
 
-# ── Stage DMG contents ────────────────────────────────────────────────────────
-step "Staging DMG contents"
-rm -rf "$STAGING"
-mkdir "$STAGING"
-cp -R "$APP_PATH" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
-ok "App and Applications alias staged"
-
 # ── Create DMG ────────────────────────────────────────────────────────────────
+# Built with dmgbuild rather than bare hdiutil so the installer window is laid
+# out: background art with an arrow, the app and the Applications alias pinned
+# to its endpoints, chrome hidden. dmgbuild writes the .DS_Store directly, so
+# this needs no Finder, no GUI session and no automation permission — styling a
+# mounted image with AppleScript would make releases fail for environment
+# reasons rather than code ones.
+#
+# Two PATH subtleties, both load-bearing:
+#   * python3 is resolved BEFORE the PATH override, so we keep the interpreter
+#     that actually has dmgbuild installed rather than Xcode's bundled one.
+#   * /bin is prepended for the child, because dmgbuild shells out to bare
+#     `sync` and a personal ~/bin/sync would otherwise shadow the system one
+#     and abort the build.
 step "Creating DMG"
 rm -f "$DMG"
-hdiutil create \
-    -volname "${APP_NAME} ${TAG}" \
-    -srcfolder "$STAGING" \
-    -ov \
-    -format UDZO \
-    -o "$DMG" \
-    -quiet
-ok "Created $(du -sh $DMG | cut -f1) DMG"
+DMG_BACKGROUND="$PROJECT_DIR/tools/dmg/dmg-background-doublender.png"
+[[ -f "$DMG_BACKGROUND" ]] \
+    || fail "Missing DMG background: ${DMG_BACKGROUND#$PROJECT_DIR/} — regenerate with tools/dmg/make-background.py"
+PY_BIN=$(command -v python3)
+PATH="/bin:/usr/bin:$PATH" "$PY_BIN" -m dmgbuild \
+    -s "$PROJECT_DIR/tools/dmg/dmg-settings.py" \
+    -D app="$APP_PATH" \
+    -D background="$DMG_BACKGROUND" \
+    "Install ${APP_NAME}" \
+    "$DMG" >/dev/null
+[[ -f "$DMG" ]] || fail "dmgbuild did not produce $DMG"
+ok "Created $(du -sh $DMG | cut -f1) styled DMG"
 
 # ── Notarize ──────────────────────────────────────────────────────────────────
 step "Notarizing DMG"
