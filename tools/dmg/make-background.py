@@ -16,8 +16,8 @@ W, H = 540, 380                      # DMG window content size, 1x
 PLATE = "DoublEnder/SharedAssets.xcassets/de_faceplate.imageset/de_faceplate.png"
 FONT = os.path.expanduser("~/Library/Fonts/Eurostile.otf")
 
-INK   = (255, 255, 255)              # Pure white for high contrast
-EDGE  = (10, 10, 15, 120)            # Dark drop-shadow
+INK   = (40, 45, 55)                 # Dark ink for light background
+EDGE  = (255, 255, 255, 180)         # Light highlight below for engraved effect
 
 # Icon centres, shared with the dmgbuild settings file. Keep in sync.
 APP_XY  = (150, 185)
@@ -25,14 +25,14 @@ APPS_XY = (390, 185)
 
 
 def sleek_background(scale: int) -> Image.Image:
-    """A sleek, modern dark gradient background for the DMG installer."""
+    """A sleek, modern light gradient background for the DMG installer."""
     tw, th = W * scale, H * scale
     out = Image.new("RGB", (tw, th))
     draw = ImageDraw.Draw(out)
     
-    # Modern dark gradient: deep gray-blue to almost black
-    color_top = (45, 48, 55)
-    color_bottom = (15, 17, 20)
+    # Modern light gradient: soft white to platinum/silver
+    color_top = (245, 247, 250)
+    color_bottom = (210, 215, 225)
     
     for y in range(th):
         r = int(color_top[0] + (color_bottom[0] - color_top[0]) * y / th)
@@ -41,13 +41,13 @@ def sleek_background(scale: int) -> Image.Image:
         draw.line([(0, y), (tw, y)], fill=(r, g, b))
         
     # Subtle top highlight
-    draw.line([(0, 0), (tw, 0)], fill=(75, 80, 90))
+    draw.line([(0, 0), (tw, 0)], fill=(255, 255, 255))
     
     return out
 
 
 def engrave(draw, fn, *, scale):
-    """Draw something twice: a dark drop shadow, then the light ink."""
+    """Draw something twice: a light edge one pixel low, then the dark ink."""
     fn(draw, EDGE, 1 * scale, scale)
     fn(draw, INK + (255,), 0, scale)
 
@@ -55,21 +55,31 @@ def engrave(draw, fn, *, scale):
 def arrow(draw, colour, dy, scale):
     s = scale
     y = 185 * s + dy
-    x0, x1 = 226 * s, 316 * s
-    shaft_half = 10 * s              # Fat shaft
-    head_len = 28 * s                # Arrowhead length
-    head_half = 24 * s               # Arrowhead width
-
-    poly = [
-        (x0, y - shaft_half),
-        (x1 - head_len, y - shaft_half),
-        (x1 - head_len, y - head_half),
-        (x1, y),
-        (x1 - head_len, y + head_half),
-        (x1 - head_len, y + shaft_half),
-        (x0, y + shaft_half)
+    
+    x_end = 300 * s
+    x_start = 226 * s
+    
+    # Straight stem dimensions
+    shaft_half = 10 * s
+    head_len = 36 * s
+    head_half = 32 * s
+    
+    pts = [
+        (x_start, y - shaft_half),
+        (x_end - head_len, y - shaft_half),
+        (x_end - head_len, y - head_half),
+        (x_end, y),
+        (x_end - head_len, y + head_half),
+        (x_end - head_len, y + shaft_half),
+        (x_start, y + shaft_half)
     ]
-    draw.polygon(poly, fill=colour)
+    
+    # Draw outline for extra contrast like the reference image
+    outline_color = (255, 255, 255, 255) if colour == INK + (255,) else None
+    if outline_color:
+        draw.polygon(pts, fill=colour, outline=outline_color, width=2*s)
+    else:
+        draw.polygon(pts, fill=colour)
 
 
 def build(scale: int, app_name: str) -> Image.Image:
