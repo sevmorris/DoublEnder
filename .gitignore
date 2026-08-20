@@ -26,7 +26,9 @@ DoublEnder/Services/RecordingUploadMetadata.swift
 DoublEnder/Views/CloudContentView.swift
 DoublEnderTests/RecordingUploadMetadataTests.swift
 release-cloud.sh
-scripts/
+# Cloud release tooling stays private; the shared drift check does not.
+scripts/*
+!scripts/check-shared.sh
 
 # GCS service account key — never commit
 DoublEnderCloud/doublender-*.json
