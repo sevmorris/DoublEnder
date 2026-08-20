@@ -16,8 +16,8 @@ app_name = os.path.basename(app)
 # Keep these three in sync with tools/dmg/make-background.py, which draws the
 # arrow between exactly these two icon centres.
 WINDOW = ((240, 180), (540, 380))
-APP_XY = (150, 185)
-APPS_XY = (390, 185)
+APP_XY = (150, 150)
+APPS_XY = (390, 150)
 
 format = "UDZO"
 compression_level = 9
