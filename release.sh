@@ -87,40 +87,50 @@ CURRENT=$(awk -F'"' '/^[[:space:]]+MARKETING_VERSION:/ {print $2; exit}' "$PROJE
 if [[ -z "$CURRENT" ]]; then
     fail "Could not read MARKETING_VERSION from project.yml"
 fi
+# Only the project.yml rewrite is conditional. The docs rewrite below always
+# runs: when the version had already been bumped by hand, the old `else` skipped
+# the whole block, leaving README and docs/ pointing at the previous release with
+# nothing reporting it.
 if [[ "$CURRENT" == "$VERSION" ]]; then
-    ok "Already at $VERSION"
+    ok "project.yml already at $VERSION"
 else
     ESC_CURRENT=$(printf '%s' "$CURRENT" | sed 's/[.[\*^$]/\\&/g')
     ESC_VERSION=$(printf '%s'  "$VERSION" | sed 's/[.[\*^$]/\\&/g')
     sed -i '' "s/MARKETING_VERSION: \"${ESC_CURRENT}\"/MARKETING_VERSION: \"${ESC_VERSION}\"/g" \
         "$PROJECT_DIR/project.yml"
-    # README version badge: match any X.Y.Z[suffix] so the pattern succeeds
-    # even when the badge carries a different suffix than the version currently
-    # in project.yml (e.g. bumping suffix from "lr"→"cr" or across releases
-    # where the README was left stale).  Handle both the HTML (<strong>) and
-    # Markdown (**) variants so either format rewrites cleanly.
-    sed -i '' "s|\*\*Version:\*\* [0-9][0-9.]*[a-z]*|**Version:** ${VERSION}|g" "$PROJECT_DIR/README.md"
-    sed -i '' "s|<strong>Version:</strong> [0-9][0-9.]*[a-z]*|<strong>Version:</strong> ${VERSION}|g" "$PROJECT_DIR/README.md"
-    # Patterns accept an optional trailing letter suffix (e.g. "lr") so that
-    # "DoublEnder-v1.6.18lr.dmg" or "Download v1.6.18lr" rewrite cleanly on
-    # the next bump. The suffix matches the convention public DoublEnder
-    # ("lr") and Cloud ("cr") share — see settings.base MARKETING_VERSION.
-    sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/README.md"
-    sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
-    sed -i '' "s|Download v[0-9][0-9.]*[a-z]*|Download ${TAG}|g" "$PROJECT_DIR/docs/index.html"
+    ok "project.yml $CURRENT → $VERSION"
+fi
 
-    # Sanity-check: nothing should still reference the old version.
-    if grep -E "DoublEnder-v[0-9]+\.[0-9]+\.[0-9]+[a-z]*\.dmg" \
-            "$PROJECT_DIR/README.md" "$PROJECT_DIR/docs/index.html" \
-            | grep -v "${TAG}\.dmg" >/dev/null 2>&1; then
-        fail "Stale version references remain after rewrite — check sed patterns"
-    fi
+# README version badge: match any X.Y.Z[suffix] so the pattern succeeds
+# even when the badge carries a different suffix than the version currently
+# in project.yml (e.g. bumping suffix from "lr"→"cr" or across releases
+# where the README was left stale).  Handle both the HTML (<strong>) and
+# Markdown (**) variants so either format rewrites cleanly.
+sed -i '' "s|\*\*Version:\*\* [0-9][0-9.]*[a-z]*|**Version:** ${VERSION}|g" "$PROJECT_DIR/README.md" "$PROJECT_DIR/docs/THEORY_OF_OPERATION.md"
+sed -i '' "s|<strong>Version:</strong> [0-9][0-9.]*[a-z]*|<strong>Version:</strong> ${VERSION}|g" "$PROJECT_DIR/README.md"
+# Patterns accept an optional trailing letter suffix (e.g. "lr") so that
+# "DoublEnder-v1.6.18lr.dmg" or "Download v1.6.18lr" rewrite cleanly on
+# the next bump. The suffix matches the convention public DoublEnder
+# ("lr") and Cloud ("cr") share — see settings.base MARKETING_VERSION.
+sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/README.md"
+sed -i '' "s|DoublEnder-v[0-9][0-9.]*[a-z]*\.dmg|DoublEnder-${TAG}.dmg|g" "$PROJECT_DIR/docs/index.html"
+sed -i '' "s|Download v[0-9][0-9.]*[a-z]*|Download ${TAG}|g" "$PROJECT_DIR/docs/index.html"
 
-    xcodegen generate --quiet
-    ok "Bumped $CURRENT → $VERSION"
-    git add project.yml README.md docs/index.html DoublEnder.xcodeproj/project.pbxproj
+# Sanity-check: nothing should still reference the old version.
+if grep -E "DoublEnder-v[0-9]+\.[0-9]+\.[0-9]+[a-z]*\.dmg" \
+        "$PROJECT_DIR/README.md" "$PROJECT_DIR/docs/index.html" \
+        | grep -v "${TAG}\.dmg" >/dev/null 2>&1; then
+    fail "Stale version references remain after rewrite — check sed patterns"
+fi
+
+xcodegen generate --quiet
+git add project.yml README.md docs/index.html docs/THEORY_OF_OPERATION.md \
+    DoublEnder.xcodeproj/project.pbxproj
+if ! git diff --cached --quiet; then
     git commit -m "Bump version to $VERSION"
-    ok "Committed version bump"
+    ok "Committed version bump for $VERSION"
+else
+    ok "Version files already current"
 fi
 
 step "Bumping build number"
@@ -325,15 +335,20 @@ fi
 # ── Remove old releases (keep the ${KEEP_RELEASES} most recent) ───────────────
 KEEP_RELEASES=5
 step "Removing old releases (keeping ${KEEP_RELEASES} most recent)"
+# Filtered to v* so non-release tags (build-dependency releases, checkpoints)
+# are never in scope for pruning by date alone.
 OLD_TAGS=$(gh release list --repo "$REPO" --limit 100 --json tagName \
-    --jq '.[].tagName' | tail -n +$((KEEP_RELEASES + 1)) || true)
+    --jq '.[].tagName' | grep -E '^v[0-9]' | tail -n +$((KEEP_RELEASES + 1)) || true)
 if [[ -z "$OLD_TAGS" ]]; then
     ok "No old releases to remove"
 else
     while IFS= read -r old_tag; do
-        gh release delete "$old_tag" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
-        git tag -d "$old_tag" 2>/dev/null || true
-        ok "Removed $old_tag"
+        # Prunes the release page and its asset, NOT the git tag. The tag is the
+        # only durable pointer to what shipped: without it a version is
+        # unbuildable from a clean clone and unreachable from its own history.
+        # A release page is a convenience; a tag is the record.
+        gh release delete "$old_tag" --repo "$REPO" --yes 2>/dev/null || true
+        ok "Pruned release page for $old_tag (tag kept)"
     done <<< "$OLD_TAGS"
 fi
 
