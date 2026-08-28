@@ -17,6 +17,7 @@ struct RecorderMainPanel: View {
         VStack(spacing: 0) {
             Spacer(minLength: FaceplateDesign.vpInnerPad)
             counterWindow
+            autoRecordBadge
             warningBadge
             Spacer(minLength: FaceplateDesign.s(10))
             recordStopButton
@@ -53,6 +54,21 @@ struct RecorderMainPanel: View {
             Spacer(minLength: FaceplateDesign.vpInnerPad)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            // The VM decides when to ask; the alert lives here, next to the
+            // manual path's copy of it. Captures nothing but the view model,
+            // which is the singleton the VM already is.
+            viewModel.requestAutoRecordStart = { [weak viewModel] in
+                guard let viewModel else { return .decline }
+                if viewModel.shouldPromptForRecordingName {
+                    guard let stem = Self.runNamePromptModal(
+                        defaultName: viewModel.autoRecordGuestName
+                    ) else { return .decline }
+                    return .start(name: stem)
+                }
+                return Self.runStartConfirmModal() ? .start(name: nil) : .decline
+            }
+        }
     }
 
     // MARK: - Bottom info row
@@ -124,6 +140,37 @@ struct RecorderMainPanel: View {
     }
 
     // MARK: - Warning badge
+
+    /// Countdown to an automatic start, with its own way out. Worded so the
+    /// clock reads as information rather than a deadline: nothing is lost by
+    /// letting it run out, and CANCEL is right there for when something is.
+    @ViewBuilder private var autoRecordBadge: some View {
+        if let remaining = viewModel.autoRecordCountdown {
+            HStack(spacing: FaceplateDesign.s(8)) {
+                // Zero-padded and monospaced so the row cannot move: a plain
+                // "\(remaining)s" changes character count at 9 and changes
+                // glyph width between digits, and since the row is centred,
+                // either one makes the whole label twitch once a second.
+                // Matches the counter above, which is already padded hh:mm:ss.
+                Text("READY TO RECORD IN \(String(format: "%02d", remaining))S")
+                    .font(.system(size: FaceplateDesign.s(12), weight: .semibold).monospacedDigit())
+                    .tracking(FaceplateDesign.s(0.6))
+                    .foregroundColor(FaceplateDesign.vpAmber)
+                    .shadow(color: FaceplateDesign.counterGlowInner, radius: FaceplateDesign.s(5))
+
+                Button("CANCEL") { viewModel.cancelAutoRecord() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: FaceplateDesign.s(10), weight: .bold))
+                    .tracking(FaceplateDesign.s(0.5))
+                    // Deliberately quieter than the message — the countdown is
+                    // the thing to read, the escape hatch is the thing to find.
+                    .foregroundColor(FaceplateDesign.vpAmber.opacity(0.70))
+                    .focusEffectDisabledIfAvailable()
+            }
+            .frame(height: FaceplateDesign.s(16))
+            .padding(.top, FaceplateDesign.s(4))
+        }
+    }
 
     @ViewBuilder private var warningBadge: some View {
         if let msg = viewModel.recordingWarning {
@@ -197,7 +244,10 @@ struct RecorderMainPanel: View {
         case .selectingMic, .ready:
             guard viewModel.canStartRecording else { return }
             if viewModel.shouldPromptForRecordingName {
-                if let stem = runNamePromptModal() {
+                if let stem = Self.runNamePromptModal(
+                    defaultName: viewModel.autoRecordGuestName
+                ) {
+                    viewModel.autoRecordGuestName = stem
                     viewModel.startRecording(nameOverride: stem)
                 }
             } else {
@@ -219,8 +269,11 @@ struct RecorderMainPanel: View {
     ///
     /// Returns the sanitized name on "Start Recording", or `nil` on Cancel
     /// or sanitized-to-empty input.
+    /// Static so the closure stored on the view model captures no view — an
+    /// instance method would have retained `popovers` and the `isStopping`
+    /// binding for the life of the singleton.
     @MainActor
-    private func runNamePromptModal() -> String? {
+    private static func runNamePromptModal(defaultName: String = "") -> String? {
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .informational
@@ -228,15 +281,18 @@ struct RecorderMainPanel: View {
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.placeholderString = "Your name"
+        field.stringValue = defaultName
         alert.accessoryView = field
 
         let startButton = alert.addButton(withTitle: "Start Recording")
         let cancelButton = alert.addButton(withTitle: "Cancel")
-        startButton.isEnabled = false
+        // Pre-filled from last time means the guest can just hit Return.
+        startButton.isEnabled = !RecorderViewModel
+            .sanitizedRecordingName(from: defaultName).isEmpty
         // Strip Return from Start while it's disabled — otherwise Cocoa
         // visually transfers the default-button ring to Cancel, making
         // Return dismiss with Cancel. Restored when the name is non-empty.
-        startButton.keyEquivalent = ""
+        startButton.keyEquivalent = startButton.isEnabled ? "\r" : ""
         cancelButton.keyEquivalent = "\u{1b}"
 
         let observer = NotificationCenter.default.addObserver(
@@ -256,5 +312,19 @@ struct RecorderMainPanel: View {
         guard response == .alertFirstButtonReturn else { return nil }
         let stem = RecorderViewModel.sanitizedRecordingName(from: field.stringValue)
         return stem.isEmpty ? nil : stem
+    }
+
+    /// Consent step for builds with no name prompt (Local, and Cloud with
+    /// upload switched off). Same decision, without the field.
+    @MainActor
+    private static func runStartConfirmModal() -> Bool {
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .informational
+        alert.messageText = "Start recording?"
+        alert.informativeText = "DoublEnder is ready and your input is set."
+        alert.addButton(withTitle: "Start Recording")
+        alert.addButton(withTitle: "Not Now").keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
