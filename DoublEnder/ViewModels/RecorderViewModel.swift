@@ -6,15 +6,6 @@ import OSLog
 
 private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "RecorderViewModel")
 
-/// Outcome of the pre-recording prompt. Not an optional String: see
-/// `RecorderViewModel.requestAutoRecordStart` for why that shape was wrong.
-enum AutoRecordDecision {
-    /// Start now, optionally under this name.
-    case start(name: String?)
-    /// Not this session.
-    case decline
-}
-
 enum AppState {
     case selectingMic
     case ready
@@ -59,9 +50,14 @@ class RecorderViewModel: ObservableObject {
 
     private static let filenameBaseKey = "filenameBase"
     private static let outputFormatKey = "outputFormat"
-    private static let autoRecordEnabledKey = "autoRecordEnabled"
-    private static let autoRecordGuestNameKey = "autoRecordGuestName"
-    private static let autoRecordNoticeShownKey = "autoRecordNoticeShown"
+    private static let lastGuestNameKey = "lastGuestName"
+    /// Legacy keys from the auto-record countdown shipped in 2.4.0–2.4.1 and
+    /// withdrawn in 2.5.0. The guest name is migrated because it is the one
+    /// piece worth keeping; the other two are only removed, so a stored value
+    /// cannot linger on installs that set them.
+    private static let legacyAutoRecordNameKey = "autoRecordGuestName"
+    private static let legacyAutoRecordEnabledKey = "autoRecordEnabled"
+    private static let legacyAutoRecordNoticeKey = "autoRecordNoticeShown"
     /// UID → first-seen timestamp (seconds since 1970) for every USB device
     /// the app has ever observed. Used at launch to break ties when multiple
     /// USB devices are present — the device with the most recent timestamp
@@ -135,7 +131,6 @@ class RecorderViewModel: ObservableObject {
             if let device = availableInputDevices.first(where: { $0.uniqueID == selectedInputDeviceID }) {
                 audioEngine.setDevice(device)
             }
-            restartAutoRecordCountdownIfArmed()
         }
     }
 
@@ -164,12 +159,6 @@ class RecorderViewModel: ObservableObject {
     /// in project.cloud.yml. Public DoublEnder doesn't declare the Info.plist
     /// key at all, so it reads as falsy here and the prompt code path stays
     /// inert.
-    /// True inside an xcodebuild test run, where no human can answer a dialog.
-    static var isRunningUnderTests: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
-    }
-
     static var requiresRecordingNameAtStart: Bool {
         guard let raw = Bundle.main.infoDictionary?["RequireRecordingNameAtStart"] as? String else {
             return false
@@ -227,71 +216,16 @@ class RecorderViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(outputFormat.rawValue, forKey: Self.outputFormatKey) }
     }
 
-    // MARK: - Auto-record
+    // MARK: - Guest name
 
-    /// Persisted, default ON.
-    ///
-    /// This prompts; it does not record on its own. Capture always begins with
-    /// an explicit "Start Recording" — nobody's microphone is opened without
-    /// them saying so, which on a guest's own machine is the only defensible
-    /// default. What the feature removes is having to *remember* the button:
-    /// the dialog comes to you instead of waiting to be found.
-    ///
-    /// The cost of that choice, stated plainly because it is real: a guest who
-    /// walks away from an unanswered prompt records nothing. Consent is worth
-    /// more than the guarantee, but the guarantee is genuinely gone.
-    ///
-    /// Off is remembered across launches — see `cancelAutoRecord()` for the
-    /// deliberately session-scoped counterpart.
-    @Published var autoRecordEnabled: Bool = true {
+    /// Remembered across launches and offered back as the name prompt's
+    /// default. DoublEnder runs on the guest's own machine, so this is "who am
+    /// I", not "who is on today" — typed once, correct every session after.
+    @Published var lastGuestName: String = "" {
         didSet {
-            UserDefaults.standard.set(autoRecordEnabled, forKey: Self.autoRecordEnabledKey)
-            if autoRecordEnabled {
-                evaluateAutoRecordArming()
-            } else {
-                disarmAutoRecord()
-            }
+            UserDefaults.standard.set(lastGuestName, forKey: Self.lastGuestNameKey)
         }
     }
-
-    /// Seconds left before auto-record fires, or nil when not counting down.
-    /// The faceplate reads this to show the countdown and its cancel control.
-    @Published private(set) var autoRecordCountdown: Int?
-
-    /// Cancelled for this launch only. A guest who opened the app to check a
-    /// setting means "not right now", not "never" — turning it off for good is
-    /// the settings switch, which is a separate, deliberate act.
-    private var autoRecordCancelledForLaunch = false
-
-    /// Auto-record fires at most once per launch. Without this, stopping the
-    /// auto-started take would re-arm and immediately start another, which is
-    /// a trap: you'd have to disable the feature to stop recording at all.
-    private var autoRecordFired = false
-
-    private var autoRecordTimer: AnyCancellable?
-
-    /// Remembered across launches and offered back as the prompt's default.
-    /// DoublEnder runs on the guest's own machine, so this is "who am I", not
-    /// "who is on today" — typed once, correct every session after.
-    @Published var autoRecordGuestName: String = "" {
-        didSet {
-            UserDefaults.standard.set(autoRecordGuestName, forKey: Self.autoRecordGuestNameKey)
-        }
-    }
-
-    /// Asks the guest whether to start, and under what name. Installed by the
-    /// faceplate, which owns the NSAlert; the VM owns *when* it is asked.
-    ///
-    /// Returns a decision rather than an optional string on purpose. An
-    /// optional-returning closure behind an optional hook produced a `String??`
-    /// whose two nil layers meant opposite things, and the guard read the wrong
-    /// one — declining armed the take, and a missing hook cancelled the feature
-    /// outright. An enum makes both cases unrepresentable.
-    var requestAutoRecordStart: (() -> AutoRecordDecision)?
-
-    /// Long enough for a USB interface to enumerate and for the switch prompt
-    /// to be read and answered, short enough that it doesn't read as hung.
-    static let autoRecordCountdownSeconds = 15
 
     #if GCS_ENABLED
     /// Master switch for every cloud-side feature: GCS upload, the session
@@ -472,17 +406,11 @@ class RecorderViewModel: ObservableObject {
         // SwiftUI re-evaluates the label.
         audioEngine.$engineHealthy
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-                self?.evaluateAutoRecordArming()
-            }
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         audioEngine.$selectedDeviceUsable
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-                self?.evaluateAutoRecordArming()
-            }
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         // isRebuilding is read by `canStartRecording` — fire objectWillChange
         // when it flips so the RECORD button updates within the same runloop
@@ -493,9 +421,6 @@ class RecorderViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
-                // isRebuilding going false is the usual way canStartRecording
-                // first becomes true at launch, so this is the main arming edge.
-                self?.evaluateAutoRecordArming()
             }
             .store(in: &cancellables)
         #if GCS_ENABLED
@@ -535,12 +460,21 @@ class RecorderViewModel: ObservableObject {
         // Restore persisted settings. `cloudUploadEnabled` is deliberately
         // absent here — it is session-scoped and always starts ON.
         filenameBase = UserDefaults.standard.string(forKey: Self.filenameBaseKey) ?? ""
-        // Absent key means a fresh install, which must default ON — so read the
-        // object and only treat an explicit stored false as off.
-        if let stored = UserDefaults.standard.object(forKey: Self.autoRecordEnabledKey) as? Bool {
-            autoRecordEnabled = stored
+        // Carry the name across the rename rather than resetting it. Someone
+        // who typed their name once under the old build should not have to
+        // notice it vanished.
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: Self.lastGuestNameKey) == nil,
+           let legacyName = defaults.string(forKey: Self.legacyAutoRecordNameKey),
+           !legacyName.isEmpty {
+            defaults.set(legacyName, forKey: Self.lastGuestNameKey)
         }
-        autoRecordGuestName = UserDefaults.standard.string(forKey: Self.autoRecordGuestNameKey) ?? ""
+        lastGuestName = defaults.string(forKey: Self.lastGuestNameKey) ?? ""
+
+        // The withdrawn feature's switches. Removed, never read.
+        defaults.removeObject(forKey: Self.legacyAutoRecordNameKey)
+        defaults.removeObject(forKey: Self.legacyAutoRecordEnabledKey)
+        defaults.removeObject(forKey: Self.legacyAutoRecordNoticeKey)
         if let raw = UserDefaults.standard.string(forKey: Self.outputFormatKey),
            let format = OutputFormat(rawValue: raw) {
             outputFormat = format
@@ -578,10 +512,6 @@ class RecorderViewModel: ObservableObject {
         // switch unless recording (don't interrupt), it's already the
         // selected device, or the user dismissed it this session.
         audioEngine.onNewUSBDeviceDetected = { [weak self] device in
-            // Reset regardless of what they choose: dismissing the prompt is
-            // still a decision made against a running clock, and the whole
-            // point of the window is to let device selection settle first.
-            self?.restartAutoRecordCountdownIfArmed()
             self?.presentUSBSwitchPrompt(for: device)
         }
 
@@ -749,124 +679,6 @@ class RecorderViewModel: ObservableObject {
     /// used as the entire filename (no timestamp). Cloud builds with the
     /// pre-recording name prompt pass the user's input here; other callers
     /// omit the argument and fall through to the timestamp scheme.
-    // MARK: - Auto-record
-
-    /// Arm the countdown if every precondition holds. Cheap and idempotent —
-    /// call it from anything that could make auto-record newly possible.
-    private func evaluateAutoRecordArming() {
-        // A test host launches the real app, so anything that presents UI at
-        // launch blocks xcodebuild forever with nobody to answer it. That is
-        // not hypothetical: this prompt hung DoublEnderCloudTests, and with it
-        // verify-cloud.sh and release-cloud.sh, until the run was killed.
-        guard !Self.isRunningUnderTests else { return }
-
-        guard autoRecordEnabled,
-              !autoRecordCancelledForLaunch,
-              !autoRecordFired,
-              !isCurrentlyRecording,
-              autoRecordTimer == nil,
-              canStartRecording,
-              // No point counting down to a prompt that cannot be shown; a
-              // later arming edge picks this up once the faceplate is up.
-              requestAutoRecordStart != nil
-        else { return }
-
-        // Once, on the first launch that can arm. An existing install would
-        // otherwise get an unexplained dialog fifteen seconds after opening,
-        // which reads as the app doing something behind your back — the exact
-        // impression a recorder can least afford to give.
-        presentAutoRecordNoticeIfNeeded()
-        guard autoRecordEnabled else { return }   // they chose Turn Off in it
-
-        startAutoRecordCountdown()
-    }
-
-    /// Blocking by design: it runs before the countdown starts, so the clock
-    /// cannot expire behind it. Suppressed under tests with everything else.
-    private func presentAutoRecordNoticeIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: Self.autoRecordNoticeShownKey) else { return }
-        // Marked shown BEFORE presenting, deliberately. If the app dies while
-        // the alert is up, the choice is between never showing it again and
-        // showing it every launch forever; a dialog that cannot be escaped is
-        // the worse of the two.
-        UserDefaults.standard.set(true, forKey: Self.autoRecordNoticeShownKey)
-
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "DoublEnder now offers to start recording"
-        alert.informativeText = "\(Self.autoRecordCountdownSeconds) seconds after launch it will ask whether to start. Nothing is recorded until you say so. Change this under Settings."
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Turn Off")
-        if alert.runModal() == .alertSecondButtonReturn {
-            autoRecordEnabled = false
-        }
-    }
-
-    private func startAutoRecordCountdown() {
-        autoRecordCountdown = Self.autoRecordCountdownSeconds
-        // .common, so the clock keeps running behind a modal. .default would
-        // pause it, which sounds safer and is not: an unanswered dialog would
-        // suspend auto-record indefinitely, and "nobody is at the keyboard" is
-        // exactly the case this feature exists for. The USB switch prompt gets
-        // its window back through restartAutoRecordCountdownIfArmed() instead
-        // — an explicit reset for the one dialog whose outcome changes the take.
-        autoRecordTimer = Timer.publish(every: 1, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in self?.autoRecordTick() }
-    }
-
-    private func autoRecordTick() {
-        guard let remaining = autoRecordCountdown else { return }
-        guard canStartRecording else {
-            // The engine went out from under us (device rebuild, disconnect).
-            // Stand down rather than fire into a session that can't capture;
-            // whatever restores the engine re-arms through evaluate.
-            disarmAutoRecord()
-            return
-        }
-        if remaining > 1 {
-            autoRecordCountdown = remaining - 1
-            return
-        }
-        disarmAutoRecord()
-        autoRecordFired = true
-        askToStartRecording()
-    }
-
-    /// The settle window is over and the mic has stopped moving — ask.
-    /// Declining is a session-scoped no, exactly like cancelling the countdown.
-    private func askToStartRecording() {
-        guard let ask = requestAutoRecordStart else { return }
-        switch ask() {
-        case .decline:
-            autoRecordCancelledForLaunch = true
-        case .start(let name):
-            if let name, !name.isEmpty { autoRecordGuestName = name }
-            startRecording(nameOverride: name)
-        }
-    }
-
-    /// A new input device appeared, or the selection changed. Give the guest
-    /// the full window back — they were almost certainly mid-setup, and the
-    /// device they end on is the one they're stuck with for the whole take.
-    private func restartAutoRecordCountdownIfArmed() {
-        guard autoRecordTimer != nil else { return }
-        autoRecordCountdown = Self.autoRecordCountdownSeconds
-    }
-
-    /// Stop the countdown without deciding anything about future arming.
-    private func disarmAutoRecord() {
-        autoRecordTimer?.cancel()
-        autoRecordTimer = nil
-        autoRecordCountdown = nil
-    }
-
-    /// The guest declined this one. Stays declined until the app is relaunched.
-    func cancelAutoRecord() {
-        autoRecordCancelledForLaunch = true
-        disarmAutoRecord()
-    }
-
     func startRecording(nameOverride: String? = nil) {
         if let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
@@ -875,11 +687,6 @@ class RecorderViewModel: ObservableObject {
             state = .error(reason)
             return
         }
-        // Covers both callers: a manual RECORD tap that beat the countdown,
-        // and the countdown firing. Either way nothing should stay armed.
-        disarmAutoRecord()
-        autoRecordFired = true
-
         do {
             let fileURL = makeRecordingURL(nameOverride: nameOverride)
 

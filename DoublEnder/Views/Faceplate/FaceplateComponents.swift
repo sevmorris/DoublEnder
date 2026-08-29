@@ -444,26 +444,6 @@ struct FaceplateSettingsPopover: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(alignment: .leading, spacing: 5) {
-                fieldLabel("AUTO-RECORD")
-                Toggle("Ask to start recording on launch", isOn: $viewModel.autoRecordEnabled)
-                    .toggleStyle(.switch)
-                    .font(.system(size: 12))
-                    .foregroundColor(FaceplateDesign.secondaryText)
-                    .tint(FaceplateDesign.recordAccent)
-                    // Arming is gated on not-recording anyway; disabling here
-                    // keeps the popover from implying it does something now.
-                    // Not gated on uploading: that property is Cloud-only, and
-                    // this switch ships in both builds.
-                    .disabled(viewModel.isCurrentlyRecording)
-                Text(viewModel.autoRecordEnabled
-                     ? "\(RecorderViewModel.autoRecordCountdownSeconds)s after the app is ready, DoublEnder asks whether to start, so a session can't be missed. Recording never begins until you say so."
-                     : "Recording only starts when you press RECORD.")
-                    .font(.system(size: 11))
-                    .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
             #if GCS_ENABLED
             VStack(alignment: .leading, spacing: 5) {
                 fieldLabel("CLOUD")
