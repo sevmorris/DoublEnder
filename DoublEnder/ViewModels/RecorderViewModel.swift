@@ -794,11 +794,7 @@ class RecorderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "DoublEnder now offers to start recording"
-        alert.informativeText = """
-            \(Self.autoRecordCountdownSeconds) seconds after the app is ready,             DoublEnder asks whether to start, so a session can't be missed.
-
-            Recording never begins until you say so, and you can change this             any time under Settings.
-            """
+        alert.informativeText = "\(Self.autoRecordCountdownSeconds) seconds after launch it will ask whether to start. Nothing is recorded until you say so. Change this under Settings."
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Turn Off")
         if alert.runModal() == .alertSecondButtonReturn {
