@@ -46,3 +46,9 @@ AUDIT.md
 # dirty-tree check in release.sh's preflight.
 __pycache__/
 *.pyc
+
+# Private Cloud overlay: audit findings and the sunset runbook. Tracked in
+# sevmorris/DoublEnder-cloud, never here — these name internal risks and
+# customer-facing decisions that have no business in a public repo.
+SUNSET.md
+docs/audit/
