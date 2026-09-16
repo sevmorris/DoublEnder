@@ -23,6 +23,7 @@ struct ContentView: View {
             Image("de_faceplate")
                 .resizable()
                 .frame(width: FaceplateDesign.windowSize.width, height: FaceplateDesign.windowSize.height)
+                .allowsHitTesting(false)
 
             FaceplateScreenGlow()
 
@@ -35,7 +36,7 @@ struct ContentView: View {
                 .help(isRecordingState ? "Recording in progress" : "")
         }
         .frame(width: FaceplateDesign.windowSize.width, height: FaceplateDesign.windowSize.height)
-        .background(Color.clear)
+        .background(Color.clear.contentShape(Rectangle()))
         .ignoresSafeArea()
     }
 
