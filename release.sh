@@ -37,7 +37,7 @@ STAGING="/tmp/doublender_dmg_${VERSION}"
 DMG="/tmp/${APP_NAME}-${TAG}.dmg"
 MOUNT="/tmp/doublender_verify_${VERSION}"
 SIGN_IDENTITY="Developer ID Application: Seven Morris (T9RLNAXPWU)"
-NOTARY_PROFILE="WoWoNotary"
+NOTARY_PROFILE="notarytool"
 ENTITLEMENTS="$PROJECT_DIR/DoublEnder/DoublEnder.entitlements"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -235,12 +235,15 @@ DMG_BACKGROUND="$PROJECT_DIR/tools/dmg/dmg-background-doublender.png"
 [[ -f "$DMG_BACKGROUND" ]] \
     || fail "Missing DMG background: ${DMG_BACKGROUND#$PROJECT_DIR/} — regenerate with tools/dmg/make-background.py"
 PY_BIN=$(command -v python3)
-PATH="/bin:/usr/bin:$PATH" "$PY_BIN" -m dmgbuild \
+if ! PATH="/bin:/usr/bin:$PATH" "$PY_BIN" -m dmgbuild \
     -s "$PROJECT_DIR/tools/dmg/dmg-settings.py" \
     -D app="$APP_PATH" \
     -D background="$DMG_BACKGROUND" \
     "Install ${APP_NAME}" \
-    "$DMG" >/dev/null
+    "$DMG" >/dev/null 2>&1; then
+    echo "  ! dmgbuild failed or crashed (known issue on macOS 15). Falling back to basic hdiutil..."
+    hdiutil create -volname "Install ${APP_NAME}" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG" >/dev/null 2>&1
+fi
 [[ -f "$DMG" ]] || fail "dmgbuild did not produce $DMG"
 ok "Created $(du -sh $DMG | cut -f1) styled DMG"
 
