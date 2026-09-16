@@ -36,7 +36,7 @@ struct ContentView: View {
                 .help(isRecordingState ? "Recording in progress" : "")
         }
         .frame(width: FaceplateDesign.windowSize.width, height: FaceplateDesign.windowSize.height)
-        .background(Color.clear.contentShape(Rectangle()))
+        .background(Color.black.opacity(0.001))
         .ignoresSafeArea()
     }
 
