@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # release.sh — Build, sign, notarize, package, and publish a DoublEnder release.
 #
-# Usage: ./release.sh <version>
+# Usage: ./release.sh <version> [--generated-notes]
 #   e.g. ./release.sh 1.6.30lr
 #
 # When the private Cloud overlay (project.cloud.yml) is present, also publishes
@@ -14,17 +14,30 @@
 set -euo pipefail
 
 REPO="sevmorris/DoublEnder"
-TAP_REPO="sevmorris/homebrew-tap"
-TAP_CASK_PATH="Casks/doublender.rb"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
-if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 <version>"
+# One positional argument (the version) plus optional flags in any position.
+# Anything else — including no arguments, or a second positional that isn't a
+# flag — still fails with usage, as it did before the flags existed.
+ALLOW_GENERATED_NOTES=0
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --generated-notes) ALLOW_GENERATED_NOTES=1 ;;
+        *)                 ARGS+=("$arg") ;;
+    esac
+done
+
+if [[ ${#ARGS[@]} -ne 1 ]]; then
+    echo "Usage: $0 <version> [--generated-notes]"
     echo "  e.g. $0 1.0.0"
+    echo ""
+    echo "  --generated-notes  Release without a curated release-notes file,"
+    echo "                     generating notes from commit subjects instead."
     exit 1
 fi
 
-VERSION="$1"
+VERSION="${ARGS[1]}"
 TAG="v${VERSION}"
 SCRIPT_DIR="${0:A:h}"
 PROJECT_DIR="$SCRIPT_DIR"
@@ -36,6 +49,7 @@ APP_PATH="$DERIVED_DATA/Build/Products/Release/${APP_NAME}.app"
 STAGING="/tmp/doublender_dmg_${VERSION}"
 DMG="/tmp/${APP_NAME}-${TAG}.dmg"
 MOUNT="/tmp/doublender_verify_${VERSION}"
+NOTES_FILE="$PROJECT_DIR/release-notes/${TAG}.md"
 SIGN_IDENTITY="Developer ID Application: Seven Morris (T9RLNAXPWU)"
 # notarytool keychain profile, shared by every sibling release script. A profile
 # cannot be exported, so a new Mac needs it created again under this name:
@@ -64,6 +78,13 @@ cleanup() {
     [[ -d "${DERIVED_DATA:-}" ]] && rm -rf -- "$DERIVED_DATA" || true
     [[ -f "${DMG:-}" ]]          && rm -f  -- "$DMG"          || true
 }
+# A zsh EXIT trap does not fire on a signal, so Ctrl-C or a closed terminal
+# during the long notarization wait used to leave the version bump sitting in
+# the working tree — the same stranded-bump state that blocked two releases on
+# 2026-09-16, which the deferred commit only fixed for an ordinary failure.
+# These handlers exit and let the EXIT trap do the cleanup, exactly once.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 trap cleanup EXIT
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -172,6 +193,28 @@ step "Checking shared files against sibling repos"
 "$PROJECT_DIR/scripts/check-shared.sh" \
     || fail "Shared files have drifted from the sibling repos — reconcile them before releasing"
 ok "Shared files in sync"
+
+# ── Release-notes gate ────────────────────────────────────────────────────────
+# The notes are read much later, at the GitHub-release step — by which point the
+# branch and the tag have both been pushed. Failing there would strand a pushed
+# tag with no release behind it, so the absence has to be caught here, while
+# nothing has been mutated and nothing has left the machine.
+#
+# Without this, a forgotten notes file is invisible: the curated path announces
+# itself, the generated path says nothing, and both end on the same "Release
+# published" line. Shipping auto-generated notes becomes a silent default rather
+# than a decision.
+if [[ -f "$NOTES_FILE" ]]; then
+    ok "Curated notes present: release-notes/${TAG}.md"
+elif (( ALLOW_GENERATED_NOTES )); then
+    echo "\n  ⚠ --generated-notes — publishing $TAG without curated notes" >&2
+    echo "      expected:  release-notes/${TAG}.md" >&2
+    echo "      notes will be generated from commit subjects since the last tag" >&2
+    ok "Generated notes accepted"
+else
+    echo "      expected:  release-notes/${TAG}.md" >&2
+    fail "No curated notes for $TAG — write that file, or re-run with --generated-notes"
+fi
 
 # ── Version bump ──────────────────────────────────────────────────────────────
 step "Bumping version to $VERSION"
@@ -350,68 +393,47 @@ ok "Pushed $TAG to $REMOTE/$BRANCH"
 
 # ── GitHub release ────────────────────────────────────────────────────────────
 step "Creating GitHub release"
-# grep -v exits 1 when it filters everything (e.g. first release with only this tag),
-# and set -e would abort — use `|| true` to keep going with an empty PREV_TAG.
-# App tags only: a non-release tag (a dependency release, a checkpoint) made
-# after the last release would otherwise be taken as it and silently shorten
-# these notes.
-PREV_TAG=$(git tag --list 'v[0-9]*' --sort=-creatordate | grep -v "^${TAG}$" | head -1 || true)
-if [[ -n "$PREV_TAG" ]]; then
-    CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" \
-        | grep -v "^- Bump version" \
-        | grep -v "^- Bump build number" \
-        | grep -v "^- docs:" || true)
+# A curated description at release-notes/v<version>.md wins over the generated
+# commit list. Use it when the release needs prose the log can't produce —
+# licensing notes, a known-gap disclosure, an explanation of what changed and
+# what deliberately didn't. Without one, fall back to subjects since the last tag.
+#
+# NOTES_FILE is defined with the other paths and its absence is gated in
+# preflight, so reaching the generated branch here means --generated-notes was
+# passed deliberately.
+if [[ -f "$NOTES_FILE" ]]; then
+    ok "Using curated notes: release-notes/${TAG}.md"
+    gh release create "$TAG" "$DMG" \
+        --repo "$REPO" \
+        --title "${APP_NAME} ${TAG}" \
+        --notes-file "$NOTES_FILE"
 else
-    CHANGES=$(git log --pretty=format:"- %s" \
-        | grep -v "^- Bump version" \
-        | grep -v "^- Bump build number" \
-        | grep -v "^- docs:" || true)
-fi
-[[ -n "$CHANGES" ]] || CHANGES="- Initial release"
-RELEASE_NOTES="### Changes
-${CHANGES}"
-gh release create "$TAG" "$DMG" \
-    --repo "$REPO" \
-    --title "${APP_NAME} ${TAG}" \
-    --notes "$RELEASE_NOTES"
-ok "Release published"
-
-# ── Bump Homebrew cask ────────────────────────────────────────────────────────
-step "Bumping Homebrew cask"
-DMG_SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
-[[ -n "$DMG_SHA256" ]] || fail "Could not compute SHA256 of $DMG"
-# Explicit template instead of -t: BSD and GNU mktemp disagree on -t semantics
-# (GNU requires XXXXXX in the template and aborts without it).
-TAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/homebrew-tap.XXXXXX")
-# Use SSH origin so the push uses the same key as the main DoublEnder push
-# above — the gh CLI clone defaults to HTTPS which would prompt for creds.
-git clone --quiet "git@github.com:${TAP_REPO}.git" "$TAP_DIR"
-CASK_FILE="$TAP_DIR/$TAP_CASK_PATH"
-[[ -f "$CASK_FILE" ]] || fail "Tap repo missing $TAP_CASK_PATH"
-# Match the existing version/sha256 lines regardless of suffix or hex value.
-# Both lines are bare-quoted strings on dedicated lines; the regex deliberately
-# spans the whole line so a stale value can't survive the rewrite.
-sed -i '' "s|^  version \".*\"\$|  version \"${VERSION}\"|" "$CASK_FILE"
-sed -i '' "s|^  sha256 \".*\"\$|  sha256 \"${DMG_SHA256}\"|" "$CASK_FILE"
-# Verify both replacements landed — sed -i silently no-ops on a missed pattern.
-grep -q "^  version \"${VERSION}\"\$" "$CASK_FILE" \
-    || fail "Cask version rewrite failed"
-grep -q "^  sha256 \"${DMG_SHA256}\"\$" "$CASK_FILE" \
-    || fail "Cask sha256 rewrite failed"
-(
-    cd "$TAP_DIR"
-    if [[ -z "$(git status --porcelain)" ]]; then
-        # No-op if the cask was already at this version (e.g. re-run after
-        # a partial failure).
-        ok "Cask already at $VERSION"
+    # grep -v exits 1 when it filters everything (e.g. first release with only this tag),
+    # and set -e would abort — use `|| true` to keep going with an empty PREV_TAG.
+    # App tags only: a non-release tag (a dependency release, a checkpoint) made
+    # after the last release would otherwise be taken as it and silently shorten
+    # these notes.
+    PREV_TAG=$(git tag --list 'v[0-9]*' --sort=-creatordate | grep -v "^${TAG}$" | head -1 || true)
+    if [[ -n "$PREV_TAG" ]]; then
+        CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" \
+            | grep -v "^- Bump version" \
+            | grep -v "^- Bump build number" \
+            | grep -v "^- docs:" || true)
     else
-        git add "$TAP_CASK_PATH"
-        git commit --quiet -m "Bump doublender to ${VERSION}"
-        git push --quiet origin HEAD
-        ok "Cask bumped to ${VERSION} (sha256 ${DMG_SHA256:0:12}…)"
+        CHANGES=$(git log --pretty=format:"- %s" \
+            | grep -v "^- Bump version" \
+            | grep -v "^- Bump build number" \
+            | grep -v "^- docs:" || true)
     fi
-)
-rm -rf "$TAP_DIR"
+    [[ -n "$CHANGES" ]] || CHANGES="- Initial release"
+    RELEASE_NOTES="### Changes
+${CHANGES}"
+    gh release create "$TAG" "$DMG" \
+        --repo "$REPO" \
+        --title "${APP_NAME} ${TAG}" \
+        --notes "$RELEASE_NOTES"
+fi
+ok "Release published"
 
 # ── Publish GCS permalink ─────────────────────────────────────────────────────
 step "Publishing GCS download permalink"
