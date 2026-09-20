@@ -357,6 +357,15 @@ ok "Created $(du -sh $DMG | cut -f1) styled DMG"
 # ── Notarize ──────────────────────────────────────────────────────────────────
 step "Notarizing DMG"
 # NOTARY_PROFILE is defined at the top and proven usable in preflight.
+
+# The image itself is signed, not only the app inside it. An unsigned DMG
+# reports "no usable signature" to spctl even with a valid ticket stapled, so
+# the wrapper can never be assessed — a download that looks unsigned to
+# Gatekeeper while the app within it is perfectly notarized. Signing has to
+# precede submission; stapling afterwards leaves the signature intact.
+codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG" \
+    || fail "Signing the DMG failed"
+
 xcrun notarytool submit "$DMG" --wait --keychain-profile "$NOTARY_PROFILE"
 xcrun stapler staple "$DMG"
 ok "Notarization complete"
