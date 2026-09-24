@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    # WaxOnWaxOff's build-and-test job, adapted: DoublEnder bundles no binaries,
+    # and its project is generated from project.yml. The repo is public, so the
+    # macOS runner is free.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # What the sibling apps pin.
+          xcode-version: '26.3'
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the project
+        # project.yml is the source of truth, and release.sh regenerates
+        # before it builds, so this does too. The Cloud overlay
+        # (project.cloud.yml, DoublEnderCloud/) is private and not in this
+        # tree, so this is the public build and DoublEnderTests.
+        run: xcodegen generate --quiet
+
+      - name: Build and test
+        # ClipHack's cap: a wedged test host fails in minutes instead of
+        # burning the job budget.
+        timeout-minutes: 15
+        run: |
+          xcodebuild \
+            -project DoublEnder.xcodeproj \
+            -scheme DoublEnder \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            test
