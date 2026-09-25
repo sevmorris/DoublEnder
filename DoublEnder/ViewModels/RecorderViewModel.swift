@@ -139,7 +139,7 @@ class RecorderViewModel: ObservableObject {
     /// Optional override for the filename prefix. The timestamp is always
     /// appended; an empty string falls back to `defaultRecordingPrefix`.
     @Published var filenameBase: String = "" {
-        didSet { UserDefaults.standard.set(filenameBase, forKey: Self.filenameBaseKey) }
+        didSet { defaults.set(filenameBase, forKey: Self.filenameBaseKey) }
     }
 
     /// Default filename prefix used when `filenameBase` is empty. Read from
@@ -213,7 +213,7 @@ class RecorderViewModel: ObservableObject {
 
     /// Output container/codec. Defaults to AAC.
     @Published var outputFormat: OutputFormat = .aac {
-        didSet { UserDefaults.standard.set(outputFormat.rawValue, forKey: Self.outputFormatKey) }
+        didSet { defaults.set(outputFormat.rawValue, forKey: Self.outputFormatKey) }
     }
 
     // MARK: - Guest name
@@ -223,7 +223,7 @@ class RecorderViewModel: ObservableObject {
     /// I", not "who is on today" — typed once, correct every session after.
     @Published var lastGuestName: String = "" {
         didSet {
-            UserDefaults.standard.set(lastGuestName, forKey: Self.lastGuestNameKey)
+            defaults.set(lastGuestName, forKey: Self.lastGuestNameKey)
         }
     }
 
@@ -371,7 +371,11 @@ class RecorderViewModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
-    init() {
+    /// Where settings are read from and saved to.
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .app) {
+        self.defaults = defaults
         audioEngine.$availableInputDevices.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         // Forward engine warning flags so ContentView re-renders when they change.
         audioEngine.$lowQualityInput
@@ -459,11 +463,10 @@ class RecorderViewModel: ObservableObject {
 
         // Restore persisted settings. `cloudUploadEnabled` is deliberately
         // absent here — it is session-scoped and always starts ON.
-        filenameBase = UserDefaults.standard.string(forKey: Self.filenameBaseKey) ?? ""
+        filenameBase = defaults.string(forKey: Self.filenameBaseKey) ?? ""
         // Carry the name across the rename rather than resetting it. Someone
         // who typed their name once under the old build should not have to
         // notice it vanished.
-        let defaults = UserDefaults.standard
         if defaults.string(forKey: Self.lastGuestNameKey) == nil,
            let legacyName = defaults.string(forKey: Self.legacyAutoRecordNameKey),
            !legacyName.isEmpty {
@@ -475,7 +478,7 @@ class RecorderViewModel: ObservableObject {
         defaults.removeObject(forKey: Self.legacyAutoRecordNameKey)
         defaults.removeObject(forKey: Self.legacyAutoRecordEnabledKey)
         defaults.removeObject(forKey: Self.legacyAutoRecordNoticeKey)
-        if let raw = UserDefaults.standard.string(forKey: Self.outputFormatKey),
+        if let raw = defaults.string(forKey: Self.outputFormatKey),
            let format = OutputFormat(rawValue: raw) {
             outputFormat = format
         }
@@ -596,7 +599,7 @@ class RecorderViewModel: ObservableObject {
     /// about. Call this whenever the device list refreshes so the launch-time
     /// tie-break has accurate data for any device the user has ever plugged in.
     func recordCurrentUSBDevicesFirstSeen() {
-        var map = UserDefaults.standard.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
+        var map = defaults.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
         let now = Date().timeIntervalSince1970
         var changed = false
         for device in audioEngine.usbInputDevices() {
@@ -606,7 +609,7 @@ class RecorderViewModel: ObservableObject {
             }
         }
         if changed {
-            UserDefaults.standard.set(map, forKey: Self.usbFirstSeenKey)
+            defaults.set(map, forKey: Self.usbFirstSeenKey)
         }
     }
 
@@ -616,7 +619,7 @@ class RecorderViewModel: ObservableObject {
     /// never stamped fall back to a 0 timestamp, so unknown devices lose
     /// every tie-break to known ones.
     private func mostRecentlyConnectedUSBDevice() -> AVCaptureDevice? {
-        let map = UserDefaults.standard.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
+        let map = defaults.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
         let usb = audioEngine.usbInputDevices()
         return usb.max { (map[$0.uniqueID] ?? 0) < (map[$1.uniqueID] ?? 0) }
     }
@@ -937,19 +940,19 @@ class RecorderViewModel: ObservableObject {
     /// We hit UserDefaults directly rather than mutating `filenameBase` —
     /// that property's didSet would re-write the key with an empty string.
     func clearSessionSettings() {
-        UserDefaults.standard.removeObject(forKey: Self.filenameBaseKey)
+        defaults.removeObject(forKey: Self.filenameBaseKey)
     }
 
     /// Called from `applicationWillFinishLaunching` — before the VM is
     /// initialised — so that a crash or force-quit in a prior session doesn't
     /// leave a stale custom filename in UserDefaults for the next launch.
-    static func eraseSessionDefaults() {
-        UserDefaults.standard.removeObject(forKey: filenameBaseKey)
+    static func eraseSessionDefaults(in defaults: UserDefaults = .app) {
+        defaults.removeObject(forKey: filenameBaseKey)
         #if GCS_ENABLED
         // One-time cleanup of the 2.1.0 persisted cloud preference. Cloud is
         // always on at launch now, so a stored value must not linger and must
         // never be honoured.
-        UserDefaults.standard.removeObject(forKey: legacyCloudEnabledKey)
+        defaults.removeObject(forKey: legacyCloudEnabledKey)
         #endif
     }
 
@@ -1016,7 +1019,7 @@ class RecorderViewModel: ObservableObject {
     /// The persisted pending upload, or nil. Tolerates a legacy bare-path value
     /// written by a pre-FR-003 build (treated as "no session → restart").
     private var persistedPendingUpload: PendingUpload? {
-        guard let raw = UserDefaults.standard.string(forKey: Self.pendingUploadKey) else { return nil }
+        guard let raw = defaults.string(forKey: Self.pendingUploadKey) else { return nil }
         if let data = raw.data(using: .utf8),
            let record = try? JSONDecoder().decode(PendingUpload.self, from: data) {
             return record
@@ -1032,13 +1035,13 @@ class RecorderViewModel: ObservableObject {
     private func setPendingUpload(_ record: PendingUpload) {
         guard let data = try? JSONEncoder().encode(record),
               let json = String(data: data, encoding: .utf8) else { return }
-        UserDefaults.standard.set(json, forKey: Self.pendingUploadKey)
+        defaults.set(json, forKey: Self.pendingUploadKey)
     }
 
     /// Forget the pending upload (called on success, or when the user skips
     /// the launch prompt).
     func clearPendingUpload() {
-        UserDefaults.standard.removeObject(forKey: Self.pendingUploadKey)
+        defaults.removeObject(forKey: Self.pendingUploadKey)
     }
 
     /// Manual retry from the upload-failed error view. The local file is
