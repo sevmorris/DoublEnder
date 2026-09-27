@@ -270,7 +270,7 @@ init()
 If the main file writer was in an error state at disconnect time, `stopRecording` receives `.failure`; if a PCM sidecar exists, `recoverSidecarIfNeeded` re-wraps it to WAV and presents that as the saved file instead.
 
 **Session interruption (another app takes the mic):**
-`AVCaptureSessionWasInterrupted` fires. The interruption watchdog arms for 5 seconds. Meanwhile `sessionInterrupted = true` is published, and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers (either `AVCaptureSessionInterruptionEnded` or a successful sample buffer arriving), the watchdog is cancelled and the take continues. If 5 seconds pass without recovery, the watchdog fires `handleRecordingCaptureFailure` and the take is stopped and saved. In practice the take fails sooner: no buffers arrive during an interruption, so the data-flow watchdog, armed by the last buffer before it, fires 3 seconds after that buffer. An interruption therefore has to end within about 3 seconds to be survived.
+`AVCaptureSessionWasInterrupted` fires. No buffers arrive during an interruption, so the data-flow watchdog is cancelled and the interruption watchdog arms for 5 seconds in its place. Meanwhile `sessionInterrupted = true` is published, and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers (either `AVCaptureSessionInterruptionEnded` or a successful sample buffer arriving), the watchdog is cancelled and the take continues. When `AVCaptureSessionInterruptionEnded` arrives, the session is restarted if it stopped. If it is running again, a fresh 3-second data-flow deadline is armed, so a session that restarts but delivers nothing fails the take like any other stall; if it did not restart, the take fails at once. If 5 seconds pass without recovery, the watchdog fires `handleRecordingCaptureFailure` and the take is stopped and saved. Up to 2.5.6 the data-flow watchdog stayed armed through an interruption and failed the take 3 seconds after the last buffer, so the 5-second allowance never applied.
 
 **Data-flow stall (driver silently stops delivering):**
 The data-flow watchdog fires after 3 seconds with no successful `append`. This catches USB hub starvation, driver firmware hangs, and Bluetooth profile transitions that don't generate an `AVCaptureSessionWasInterrupted` notification. The path is identical to the interruption watchdog: `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording` → VM stop.
@@ -308,11 +308,9 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **What it covers:** `AVCaptureSessionWasInterrupted` indicates the session has lost the input to something else — another app or the system taking the audio hardware. It is treated as recoverable: a brief interruption ends and the session resumes.
 
-**Mechanism:** On `captureSessionWasInterrupted`, arm a `DispatchWorkItem` for 5 seconds. If the session recovers — either via `captureSessionInterruptionEnded` or a successful sample buffer arriving (whichever is first) — cancel the watchdog. If 5 seconds pass without recovery, the take is treated as a hard failure.
+**Mechanism:** On `captureSessionWasInterrupted` during a take, cancel the data-flow watchdog (no buffers flow during an interruption, so it would otherwise fire 3 seconds after the last one) and arm a `DispatchWorkItem` for 5 seconds. If the session recovers — either via `captureSessionInterruptionEnded` or a successful sample buffer arriving (whichever is first) — cancel the watchdog. If 5 seconds pass without recovery, the take is treated as a hard failure.
 
 **Cancellation points:** `captureSessionInterruptionEnded`, `markDataFlowing` (first successful buffer after interruption), all recording-stop and cancel paths. Its firing is guarded by `disconnectStopPending`, so it stands down if another path is already stopping the take.
-
-**In practice the data-flow watchdog fires first.** Arriving interruptions do not cancel the data-flow watchdog, and no buffers flow during one, so it fires 3 seconds after the last buffer — before this watchdog's 5 seconds are up. An interruption is survived only if it ends within about 3 seconds.
 
 **UI surface:** While the watchdog is running, `sessionInterrupted = true` is published. RecorderViewModel exposes this as `recordingWarning = "Input interrupted — reconnecting…"`, shown as a yellow badge in the viewport. The clock keeps running.
 
@@ -320,7 +318,7 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **What it covers:** "Session running but driver stopped delivering." This is distinct from an interruption — `AVCaptureSessionWasInterrupted` does not fire. Causes include USB hub power starvation (the device reports as connected but stops sending), driver firmware hangs, and certain Bluetooth profile transitions where the hardware silently switches to SCO mode without signalling the session.
 
-**Mechanism:** On every call to `markDataFlowing` (which is called from the delegate whenever `input.append` returns true), the existing watchdog is cancelled and a new `DispatchWorkItem` is created for 3 seconds. If 3 seconds pass without a successful append, the watchdog fires `handleRecordingCaptureFailure`. Because the watchdog is cancelled and re-armed on every successful buffer, it only fires when the data truly stops.
+**Mechanism:** `armDataFlowWatchdog` cancels the existing watchdog and creates a new `DispatchWorkItem` for 3 seconds. It runs on every call to `markDataFlowing` (which is called from the delegate whenever `input.append` returns true), and when an interruption ends with the session running again, so a restart that delivers nothing fails the take instead of recording silence. If 3 seconds pass without a successful append, the watchdog fires `handleRecordingCaptureFailure`. Because the watchdog is cancelled and re-armed on every successful buffer, it only fires when the data truly stops. An interruption cancels it when it begins, leaving the interruption watchdog's 5 seconds to govern until the session recovers.
 
 **Interaction with interruption watchdog:** If both fire in close proximity (a device disconnect that coincides with an interruption notification), `disconnectStopPending` and `didDispatchDisconnect` latches prevent duplicate teardowns. See "The disconnect latch chain" below.
 
@@ -338,9 +336,9 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **Cancellation points:** the first successful append in `markDataFlowing`, and every recording-stop / cancel / teardown path (`stopRecording`, `cancelRecording`, `abandonStaleRecordingState`, `clearStaleRecordingSessionIfNeeded`, both `tearDownWriterLocked` branches).
 
-**Deliberately NOT cancelled on `captureSessionInterruptionEnded`:** if an interruption ends but the restarted session still delivers nothing, this watchdog is the only remaining guard — and a genuinely healthy restart cancels it via `markDataFlowing` within milliseconds anyway. Do not "fix" this by adding that cancellation point.
+**Deliberately NOT cancelled on `captureSessionInterruptionEnded`:** a take whose first buffer never arrived keeps this deadline whatever an interruption did — and a genuinely healthy restart cancels it via `markDataFlowing` within milliseconds anyway. Do not "fix" this by adding that cancellation point.
 
-That guard covers only a take whose first buffer never arrived, since the first append cancels this watchdog. `captureSessionInterruptionEnded` also cancels the data-flow watchdog, which only the next successful append re-arms. So a mid-take interruption that ends with the session running but silent is left with no watchdog at all; the 1-second input-health poll checks only that the device is connected.
+That guard covers only a take whose first buffer never arrived, since the first append cancels this watchdog. A restart later in the take is guarded by the data-flow watchdog, which `captureSessionInterruptionEnded` arms afresh once the session is running again. Up to 2.5.6 it only cancelled the data-flow watchdog, so a mid-take interruption that ended with the session running but silent was left with no watchdog at all; the 1-second input-health poll checks only that the device is connected.
 
 ### The drop threshold (3 drops → take failure)
 

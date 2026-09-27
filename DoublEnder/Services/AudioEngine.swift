@@ -192,21 +192,26 @@ class AudioEngine: NSObject, ObservableObject {
     /// the previous one. Catches "session running but driver stopped
     /// delivering" failures that AVCaptureSession does not surface as an
     /// interruption (USB hub starvation, driver firmware hang, Bluetooth
-    /// profile transitions without an interruption notification). Re-armed
-    /// on every `markDataFlowing` call; cancelled in every recording-stop /
-    /// cancel / teardown path alongside `interruptionWatchdog`.
+    /// profile transitions without an interruption notification). Armed by
+    /// `armDataFlowWatchdog` on every `markDataFlowing` call and when an
+    /// interruption ends with the session running again. Cancelled when an
+    /// interruption begins, so the interruption watchdog's 5 s governs, and
+    /// in every recording-stop / cancel / teardown path alongside
+    /// `interruptionWatchdog`.
     private var dataFlowWatchdog: DispatchWorkItem?
+    /// 3 s: how long a running take may go without a successful append.
+    private static let dataFlowTimeoutSeconds: TimeInterval = 3
     /// Watchdog fired when the FIRST sample buffer never arrives after record
-    /// start (FR-001). The data-flow watchdog above is armed only from
-    /// `markDataFlowing` — i.e. only after at least one successful append — so
-    /// a device that enumerates and reports connected but never delivers a
-    /// single buffer (wedged driver, hub power starvation present at start)
-    /// previously "recorded" silently forever. Armed once in `startRecording`;
+    /// start (FR-001). The data-flow watchdog above is armed only by a
+    /// successful append or by an interruption ending — so a device that
+    /// enumerates and reports connected but never delivers a single buffer
+    /// (wedged driver, hub power starvation present at start) previously
+    /// "recorded" silently forever. Armed once in `startRecording`;
     /// cancelled by the first `markDataFlowing` and by every recording-stop /
     /// cancel / teardown path. Deliberately NOT cancelled on
-    /// `captureSessionInterruptionEnded` — if the restarted session still
-    /// delivers nothing, this remains the only guard, and a healthy restart
-    /// cancels it via `markDataFlowing` within milliseconds anyway.
+    /// `captureSessionInterruptionEnded` — a take whose first buffer never
+    /// came keeps this deadline whatever the interruption did, and a healthy
+    /// restart cancels it via `markDataFlowing` within milliseconds anyway.
     private var firstBufferWatchdog: DispatchWorkItem?
     /// 5 s: the capture session is already running and feeding the level meter
     /// before RECORD is even tappable (`canStartRecording` requires the rebuild
@@ -542,21 +547,8 @@ class AudioEngine: NSObject, ObservableObject {
             firstBufferWatchdog?.cancel()
             firstBufferWatchdog = nil
         }
-        // Re-arm the data-flow watchdog on every successful buffer. If the
-        // driver silently stops delivering (USB hub starvation, firmware
-        // hang, BT profile transition with no interruption signal), this
-        // fires after 3 s and routes through the same failure path as the
-        // interruption watchdog.
-        dataFlowWatchdog?.cancel()
-        let dfWatchdog = DispatchWorkItem { [weak self] in
-            guard let self, self.isRecording, !self.disconnectStopPending else { return }
-            logger.warning("Data-flow watchdog fired — no buffers for 3 s")
-            self.dataFlowWatchdog = nil
-            self.disconnectStopPending = true
-            self.handleRecordingCaptureFailure(reason: "Microphone stopped delivering audio")
-        }
-        dataFlowWatchdog = dfWatchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: dfWatchdog)
+        // Re-arm the data-flow watchdog on every successful buffer.
+        armDataFlowWatchdog()
         if !isWritingData { isWritingData = true }
         writeIndicatorClearWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -564,6 +556,30 @@ class AudioEngine: NSObject, ObservableObject {
         }
         writeIndicatorClearWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: item)
+    }
+
+    /// Give the take a fresh data-flow deadline, replacing any pending one:
+    /// if no buffer appends within `dataFlowTimeoutSeconds`, fail the take.
+    /// If the driver silently stops delivering (USB hub starvation, firmware
+    /// hang, BT profile transition with no interruption signal), this routes
+    /// through the same failure path as the interruption watchdog. Main queue
+    /// only, like all watchdog state. Armed by every successful append, and
+    /// when an interruption ends with the session running again, so a restart
+    /// that delivers nothing fails the take too.
+    private func armDataFlowWatchdog() {
+        dataFlowWatchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording, !self.disconnectStopPending else { return }
+            logger.warning("Data-flow watchdog fired — no buffers for \(Int(Self.dataFlowTimeoutSeconds), privacy: .public) s")
+            self.dataFlowWatchdog = nil
+            self.disconnectStopPending = true
+            self.handleRecordingCaptureFailure(reason: "Microphone stopped delivering audio")
+        }
+        dataFlowWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.dataFlowTimeoutSeconds,
+            execute: watchdog
+        )
     }
 
     func refreshDevices() {
@@ -764,6 +780,13 @@ class AudioEngine: NSObject, ObservableObject {
             self.interruptionWatchdog?.cancel()
             self.interruptionWatchdog = nil
             guard self.isRecording else { return }
+            // This watchdog governs the interruption. No buffers flow during
+            // one, so the data-flow watchdog, left armed by the last buffer,
+            // would fail the take 3 s after it, before the 5 s allowance is
+            // up. It is armed again by the next buffer, or when the
+            // interruption ends with the session running.
+            self.dataFlowWatchdog?.cancel()
+            self.dataFlowWatchdog = nil
             self.sessionInterrupted = true
             let watchdog = DispatchWorkItem { [weak self] in
                 guard let self, self.isRecording, !self.disconnectStopPending else { return }
@@ -800,10 +823,17 @@ class AudioEngine: NSObject, ObservableObject {
                 }
                 let stillDown = self.captureSession?.isRunning == false
                 DispatchQueue.main.async {
-                    guard stillDown else { return }
                     guard !self.disconnectStopPending else { return }
-                    self.disconnectStopPending = true
-                    self.handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+                    if stillDown {
+                        self.disconnectStopPending = true
+                        self.handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+                    } else if self.isRecording {
+                        // Running again, but running is not delivering: give
+                        // the restart the same deadline as any buffer gets.
+                        // Nothing else re-arms the data-flow watchdog until
+                        // the next append, and a silent restart has none.
+                        self.armDataFlowWatchdog()
+                    }
                 }
             }
         }
@@ -992,8 +1022,8 @@ class AudioEngine: NSObject, ObservableObject {
         isRecording = true
 
         // FR-001: arm the first-buffer deadline. The data-flow watchdog is
-        // armed only from markDataFlowing — i.e. only once a buffer has
-        // already appended — so a device that never delivers buffer one
+        // armed only by an append or an interruption ending — never at
+        // record start — so a device that never delivers buffer one
         // previously "recorded" silence forever with no failure surface.
         // Fires through the same disconnect latch chain as the other two
         // watchdogs; cancelled by the first successful append and by every
