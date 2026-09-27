@@ -138,9 +138,17 @@ private enum ThemedConfirmation {
         NSApp.runModal(for: window)
     }
 
-    /// Centre `window` on the same screen that the main app window occupies,
-    /// falling back to the primary screen (m17 — multi-monitor placement).
+    /// Size `window` to its content and centre it on the same screen that the
+    /// main app window occupies, falling back to the primary screen (m17 —
+    /// multi-monitor placement).
     fileprivate static func centerOnAppScreen(_ window: NSWindow) {
+        // Taking the hosting controller left the window the size of the
+        // controller's view, which SwiftUI hasn't laid out yet: 0×0. It grows
+        // to fit only after the first layout, from its bottom-left corner, so
+        // centring it as it is put that corner in the middle of the screen.
+        if let content = window.contentViewController?.view {
+            window.setContentSize(content.fittingSize)
+        }
         let screen = NSApp.windows
             .first(where: { !$0.isMiniaturized && $0.isVisible && $0 !== window })?.screen
             ?? NSScreen.main

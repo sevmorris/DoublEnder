@@ -467,11 +467,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Modal placement
 
-    /// Centre `window` on the same screen as the main window, falling back to
-    /// the primary screen if neither can be determined. `NSWindow.center()`
-    /// always targets the primary screen, which is wrong on multi-monitor rigs
-    /// where the user runs DoublEnder on a secondary display (m17).
+    /// Size `window` to its content and centre it on the same screen as the
+    /// main window, falling back to the primary screen if neither can be
+    /// determined. `NSWindow.center()` always targets the primary screen,
+    /// which is wrong on multi-monitor rigs where the user runs DoublEnder on
+    /// a secondary display (m17).
     private func centerModal(_ window: NSWindow) {
+        // Taking the hosting controller left the window the size of the
+        // controller's view, which SwiftUI hasn't laid out yet: 0×0. It grows
+        // to fit only after the first layout, from its bottom-left corner, so
+        // centring it as it is put that corner in the middle of the screen.
+        if let content = window.contentViewController?.view {
+            window.setContentSize(content.fittingSize)
+        }
         let screen = mainWindow?.screen ?? NSScreen.main
         guard let screen else { window.center(); return }
         let sf = screen.visibleFrame
