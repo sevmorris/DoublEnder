@@ -46,6 +46,7 @@ targets:
       properties:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         NSMicrophoneUsageDescription: "DoublEnder needs microphone access to record audio."
+        NSDesktopFolderUsageDescription: "DoublEnder saves recordings to your Desktop and checks it for recordings left by a crash."
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
