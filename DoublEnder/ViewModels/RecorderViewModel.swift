@@ -807,9 +807,7 @@ class RecorderViewModel: ObservableObject {
                 self.recordingTime = 0
                 self.recordedFileURL = nil
                 if let reason = self.pendingDisconnectReason {
-                    self.state = .error(
-                        "\(reason). No audio was captured — try again with the built-in microphone."
-                    )
+                    self.state = .error(Self.noAudioCapturedMessage(reason: reason))
                 } else {
                     self.state = .ready
                 }
@@ -818,19 +816,49 @@ class RecorderViewModel: ObservableObject {
                 if self.recoverSidecarIfNeeded(from: self.recordedFileURL) {
                     self.recordedFileURL = nil
                     self.state = .ready
-                } else if self.hasRecoverableSidecar(for: self.recordedFileURL) {
-                    self.state = .error(
-                        "Recording was interrupted but your audio is safe. "
-                            + "Quit and relaunch DoublEnder to recover it as a WAV file."
-                    )
                 } else {
-                    let prefix = self.pendingDisconnectReason.map { "\($0). " } ?? ""
-                    self.state = .error("\(prefix)Failed to finalize recording: \(error.localizedDescription)")
+                    self.state = .error(Self.stopFailureMessage(
+                        for: error,
+                        mainOutput: self.recordedFileURL,
+                        disconnectReason: self.pendingDisconnectReason
+                    ))
                 }
             }
             self.pendingDisconnectReason = nil
             completion?()
         }
+    }
+
+    /// Told to the user when a take ends with nothing written, after `reason`
+    /// (why it stopped) when something stopped it.
+    static func noAudioCapturedMessage(reason: String?) -> String {
+        let prefix = reason.map { "\($0). " } ?? ""
+        return "\(prefix)No audio was captured — try again with the built-in microphone."
+    }
+
+    /// Told to the user when the engine's stop fails and the sidecar was not
+    /// recovered on the spot. Takes the take's main output URL rather than
+    /// engine state, so tests can decide it without a capture session.
+    ///
+    /// Only a sidecar that holds audio is worth "your audio is safe": launch
+    /// recovery deletes a header-only one without a word. The writer leaves
+    /// one of those when it is torn down before any sample reaches it (canAdd
+    /// or startWriting failed on the first buffer). The engine has dropped its
+    /// writer by the time stop runs and reports `.noActiveRecording`, and the
+    /// user is told what the no-samples stop tells them: no audio was captured.
+    static func stopFailureMessage(
+        for error: Error, mainOutput: URL?, disconnectReason: String?
+    ) -> String {
+        if hasRecoverableSidecar(for: mainOutput) {
+            return "Recording was interrupted but your audio is safe. "
+                + "Quit and relaunch DoublEnder to recover it as a WAV file."
+        }
+        if let recordingError = error as? RecordingError,
+           case .noActiveRecording = recordingError {
+            return noAudioCapturedMessage(reason: disconnectReason)
+        }
+        let prefix = disconnectReason.map { "\($0). " } ?? ""
+        return "\(prefix)Failed to finalize recording: \(error.localizedDescription)"
     }
 
     /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
@@ -1220,11 +1248,12 @@ class RecorderViewModel: ObservableObject {
         audioEngine.start()
     }
 
-    /// True when a `.pcmrec` sidecar exists for the given main output URL,
-    /// meaning launch-time recovery can re-wrap the take into a WAV.
-    private func hasRecoverableSidecar(for mainOutput: URL?) -> Bool {
+    /// True when the `.pcmrec` sidecar for the given main output URL holds
+    /// audio, meaning launch-time recovery can re-wrap the take into a WAV.
+    /// A header-only sidecar doesn't count: recovery discards it.
+    private static func hasRecoverableSidecar(for mainOutput: URL?) -> Bool {
         guard let mainOutput else { return false }
-        return FileManager.default.fileExists(atPath: PCMSidecar.url(for: mainOutput).path)
+        return PCMSidecar.hasRecoverableContent(at: PCMSidecar.url(for: mainOutput))
     }
 }
 
