@@ -44,11 +44,14 @@ struct HelpView: View {
 
                 dividerRow
 
-                section("Microphone Permission") {
+                section("Permissions") {
                     text("""
-                    The first time you record, macOS will ask for microphone access. \
-                    Click Allow. If you accidentally denied it, go to System Settings → \
-                    Privacy & Security → Microphone and enable DoublEnder there.
+                    The first time DoublEnder opens, macOS asks for two things: \
+                    microphone access, so it can record, and access to your Desktop, \
+                    where it saves recordings and looks for any left by a crash. \
+                    Click Allow for both. If you denied one by accident, turn \
+                    DoublEnder back on in System Settings → Privacy & Security → \
+                    Microphone, or → Files and Folders for the Desktop.
                     """)
                 }
 
@@ -58,14 +61,14 @@ struct HelpView: View {
                     #if GCS_ENABLED
                     steps([
                         "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
-                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING flashes.",
+                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING lights up.",
                         "Click the button again to stop. Your file saves to the Desktop and uploads automatically. The blue LED marked CLOUD indicates when the cloud connection is ready.",
                         "A confirmation dialog appears when the upload finishes. The local file stays on your Desktop as a backup."
                     ])
                     #else
                     steps([
                         "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
-                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING flashes.",
+                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING lights up.",
                         "Click the button again to stop. Your file is saved to the Desktop.",
                         "A confirmation dialog appears with the saved filename. If notifications are enabled, a banner also offers Reveal in Finder."
                     ])
