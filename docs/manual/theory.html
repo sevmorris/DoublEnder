@@ -916,7 +916,7 @@
     <h2>App Lifecycle and Release Model</h2>
 
     <h3>Launch Sequence</h3>
-    <p><code>applicationWillFinishLaunching</code>: <code>registerBundledFonts</code> (DSEG7 Classic for the seven-segment counter), <code>NotificationService.shared.configure</code> (register "Reveal in Finder" action category), <code>RecorderViewModel.eraseSessionDefaults()</code> (clear custom filename from prior session; runs even after a crash where <code>applicationWillTerminate</code> never fired), then <code>showMainWindow</code> (build the <code>FaceplateWindow</code> and put it on screen).</p>
+    <p><code>applicationWillFinishLaunching</code>: <code>registerBundledFonts</code> (DSEG7 Classic for the seven-segment counter, Saira for the record button), <code>NotificationService.shared.configure</code> (register "Reveal in Finder" action category), <code>RecorderViewModel.eraseSessionDefaults()</code> (clear custom filename from prior session; runs even after a crash where <code>applicationWillTerminate</code> never fired), then <code>showMainWindow</code> (build the <code>FaceplateWindow</code> and put it on screen).</p>
     <p><code>applicationDidFinishLaunching</code>: <code>runCrashRecoveryIfNeeded</code>, <code>runPendingUploadCheckIfNeeded</code> and <code>offerUploadOfRecoveredTake</code> (Cloud only), <code>checkForUpdates(silent: true)</code>.</p>
 
     <details class="callout callout-impl">
