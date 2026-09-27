@@ -286,22 +286,9 @@ final class PCMSidecar {
         let tag = layout.pointee.mChannelLayoutTag
         let gains: [Float]?
         switch tag {
-        case kAudioChannelLayoutTag_UseChannelDescriptions:
-            let count = Int(layout.pointee.mNumberChannelDescriptions)
-            let offset = MemoryLayout<AudioChannelLayout>
-                .offset(of: \AudioChannelLayout.mChannelDescriptions) ?? 12
-            let stride = MemoryLayout<AudioChannelDescription>.stride
-            guard layoutSize >= offset + count * stride else { return nil }
-            let descriptions = UnsafeRawPointer(layout) + offset
-            let labels = (0..<count).map { index in
-                descriptions.load(fromByteOffset: index * stride, as: AudioChannelDescription.self)
-                    .mChannelLabel
-            }
+        case kAudioChannelLayoutTag_UseChannelDescriptions, kAudioChannelLayoutTag_UseChannelBitmap:
+            guard let labels = channelLabels(in: layout, size: layoutSize) else { return nil }
             gains = labelGains(labels)
-        case kAudioChannelLayoutTag_UseChannelBitmap:
-            // Bit n of the bitmap is label n + 1, in label order.
-            let bits = layout.pointee.mChannelBitmap.rawValue
-            gains = labelGains((0..<32).filter { bits & (1 << $0) != 0 }.map { AudioChannelLabel($0 + 1) })
         case kAudioChannelLayoutTag_Stereo,
              kAudioChannelLayoutTag_StereoHeadphones,
              kAudioChannelLayoutTag_Binaural:
@@ -318,6 +305,33 @@ final class PCMSidecar {
             }
         }
         return gains?.count == channels ? gains : nil
+    }
+
+    /// The channel labels of a layout that lists them — by channel
+    /// descriptions or by bitmap — in channel order, or nil for a layout that
+    /// names a tag instead, or one shorter than its descriptions claim.
+    static func channelLabels(
+        in layout: UnsafePointer<AudioChannelLayout>, size: Int
+    ) -> [AudioChannelLabel]? {
+        switch layout.pointee.mChannelLayoutTag {
+        case kAudioChannelLayoutTag_UseChannelDescriptions:
+            let count = Int(layout.pointee.mNumberChannelDescriptions)
+            let offset = MemoryLayout<AudioChannelLayout>
+                .offset(of: \AudioChannelLayout.mChannelDescriptions) ?? 12
+            let stride = MemoryLayout<AudioChannelDescription>.stride
+            guard size >= offset + count * stride else { return nil }
+            let descriptions = UnsafeRawPointer(layout) + offset
+            return (0..<count).map { index in
+                descriptions.load(fromByteOffset: index * stride, as: AudioChannelDescription.self)
+                    .mChannelLabel
+            }
+        case kAudioChannelLayoutTag_UseChannelBitmap:
+            // Bit n of the bitmap is label n + 1, in label order.
+            let bits = layout.pointee.mChannelBitmap.rawValue
+            return (0..<32).filter { bits & (1 << $0) != 0 }.map { AudioChannelLabel($0 + 1) }
+        default:
+            return nil
+        }
     }
 
     /// `writerMixGains` for a layout given as channel labels, or nil if any
