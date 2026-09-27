@@ -84,14 +84,14 @@ enum FaceplateDesign {
 
     // MARK: - Faceplate overlays
     //
-    // The variant badges and the engraved CLOUD label are authored as
-    // full-canvas 5480x4680 transparent PNGs, so they register with the plate
-    // exactly and no position has to be measured by hand. They are NOT shipped
+    // The engraved CLOUD label, the one faceplate overlay, is authored as a
+    // full-canvas 5480x4680 transparent PNG, so it registers with the plate
+    // exactly and no position has to be measured by hand. It is NOT shipped
     // that way: the system decodes an overlay at full resolution no matter how
     // little of it is ink, which measured at ~98 MB of resident memory each
     // (removing one full-canvas overlay took the app from 350 MB RSS to 242).
     //
-    // `tools/crop-overlay.py` crops each export to its ink and emits the
+    // `tools/crop-overlay.py` crops the export to its ink and emits the
     // constants below — the ink's size and centre in base-design points — so
     // the artwork lands in exactly the same place at roughly 1/60th the image
     // memory. Re-run the tool whenever the art is re-exported; do not hand-edit.
@@ -126,8 +126,9 @@ enum FaceplateDesign {
     private static let cloudLabelCentreY:     CGFloat = 380.8
     private static let recordingLabelCentreY: CGFloat = 400.2
 
-    /// Column x. Derived, not hard-coded: `ledSize` does not scale while the
-    /// plate does, so the right-alignment has to be recomputed per scale.
+    /// Column x: the LEDs' centre, right-aligned to the bezel's outer edge.
+    /// Derived from `ledSize` rather than hard-coded, so the column stays
+    /// aligned if the LED size changes; both terms scale with the plate.
     private static let ledColumnX: CGFloat = s(bezelRightEdge) - ledSize / 2
 
     /// Blue cloud-status LED — beside the CLOUD label (upper).

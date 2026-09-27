@@ -343,6 +343,10 @@ class RecorderViewModel: ObservableObject {
     private static let inputWatchInterval: TimeInterval = 1
     /// Set when stop was triggered by a disconnect so we can alert the user.
     private var pendingDisconnectReason: String?
+    /// Set when the disk watch, not the user, stopped the take: the
+    /// DiskSpaceChecker message. `stopRecording` tells the user with whatever
+    /// confirms the take, once, and clears it.
+    private var diskStopReason: String?
     /// Suppresses the idle input-loss alert while a recording-disconnect
     /// handler is already showing one and switching to the built-in mic.
     private var suppressIdleInputLossAlert = false
@@ -683,6 +687,7 @@ class RecorderViewModel: ObservableObject {
     /// pre-recording name prompt pass the user's input here; other callers
     /// omit the argument and fall through to the timestamp scheme.
     func startRecording(nameOverride: String? = nil) {
+        diskStopReason = nil
         if let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
             format: outputFormat
@@ -727,15 +732,22 @@ class RecorderViewModel: ObservableObject {
 
     /// Stop the take when the Desktop volume drops below the minimum —
     /// finalize while the writer can still flush rather than failing mid-stream.
+    /// The reason goes to the user with the take's confirmation.
     private func checkDiskSpaceDuringRecording() {
         guard isCurrentlyRecording else { return }
-        guard DiskSpaceChecker.recordingBlockedReason(
+        guard let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
             format: outputFormat
-        ) != nil else {
+        ) else {
             return
         }
+        diskStopReason = reason
         stopRecording()
+    }
+
+    /// The line a take's confirmation adds when the disk watch stopped it.
+    static func diskStopNote(reason: String) -> String {
+        "Recording stopped early. \(reason)"
     }
 
     /// Cleanly finalize the current recording. `completion` runs on the main
@@ -768,6 +780,12 @@ class RecorderViewModel: ObservableObject {
                 return
             }
             self.isFinalizingRecording = false
+            // The disk watch stopped this take: say so with whatever ends it,
+            // once. Only the first stop can have set it — every stop cancels
+            // the disk watch — so a swallowed follower never takes it.
+            let diskReason = self.diskStopReason
+            let diskNote = diskReason.map { Self.diskStopNote(reason: $0) }
+            self.diskStopReason = nil
             switch result {
             case .success(.some(let url)):
                 // Notify the user that the recording is on disk — fires for both
@@ -782,7 +800,7 @@ class RecorderViewModel: ObservableObject {
                     self.recordingTime = 0
                     self.recordedFileURL = nil
                     self.state = .ready
-                    RecordingSavedConfirmation.present(fileName: url.lastPathComponent)
+                    RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: diskNote)
                     self.pendingDisconnectReason = nil
                     completion?()
                     return
@@ -790,15 +808,16 @@ class RecorderViewModel: ObservableObject {
                 // The file is finalized on disk. Hand off to the uploader and
                 // let the .uploading state drive the progress UI. The stop
                 // button unblocks immediately via the completion call below.
+                // The upload's confirmation carries the disk note, once.
                 self.recordingTime = 0
                 self.uploadProgress = 0
                 self.state = .uploading
-                Task { await self.performUpload() }
+                Task { await self.performUpload(note: diskNote) }
                 #else
                 self.recordingTime = 0
                 self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready
-                RecordingSavedConfirmation.present(fileName: url.lastPathComponent)
+                RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: diskNote)
                 self.pendingDisconnectReason = nil
                 completion?()
                 return
@@ -807,25 +826,25 @@ class RecorderViewModel: ObservableObject {
                 self.recordingTime = 0
                 self.recordedFileURL = nil
                 if let reason = self.pendingDisconnectReason {
-                    self.state = .error(
-                        "\(reason). No audio was captured — try again with the built-in microphone."
-                    )
+                    self.state = .error(Self.noAudioCapturedMessage(reason: reason))
+                } else if let diskReason {
+                    // Nothing was saved, and the disk is why.
+                    self.state = .error(diskReason)
                 } else {
                     self.state = .ready
                 }
             case .failure(let error):
                 self.recordingTime = 0
-                if self.recoverSidecarIfNeeded(from: self.recordedFileURL) {
+                if self.recoverSidecarIfNeeded(from: self.recordedFileURL, note: diskNote) {
                     self.recordedFileURL = nil
                     self.state = .ready
-                } else if self.hasRecoverableSidecar(for: self.recordedFileURL) {
-                    self.state = .error(
-                        "Recording was interrupted but your audio is safe. "
-                            + "Quit and relaunch DoublEnder to recover it as a WAV file."
-                    )
                 } else {
-                    let prefix = self.pendingDisconnectReason.map { "\($0). " } ?? ""
-                    self.state = .error("\(prefix)Failed to finalize recording: \(error.localizedDescription)")
+                    let message = Self.stopFailureMessage(
+                        for: error,
+                        mainOutput: self.recordedFileURL,
+                        disconnectReason: self.pendingDisconnectReason
+                    )
+                    self.state = .error(diskReason.map { "\($0) \(message)" } ?? message)
                 }
             }
             self.pendingDisconnectReason = nil
@@ -833,9 +852,42 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
+    /// Told to the user when a take ends with nothing written, after `reason`
+    /// (why it stopped) when something stopped it.
+    static func noAudioCapturedMessage(reason: String?) -> String {
+        let prefix = reason.map { "\($0). " } ?? ""
+        return "\(prefix)No audio was captured — try again with the built-in microphone."
+    }
+
+    /// Told to the user when the engine's stop fails and the sidecar was not
+    /// recovered on the spot. Takes the take's main output URL rather than
+    /// engine state, so tests can decide it without a capture session.
+    ///
+    /// Only a sidecar that holds audio is worth "your audio is safe": launch
+    /// recovery deletes a header-only one without a word. The writer leaves
+    /// one of those when it is torn down before any sample reaches it (canAdd
+    /// or startWriting failed on the first buffer). The engine has dropped its
+    /// writer by the time stop runs and reports `.noActiveRecording`, and the
+    /// user is told what the no-samples stop tells them: no audio was captured.
+    static func stopFailureMessage(
+        for error: Error, mainOutput: URL?, disconnectReason: String?
+    ) -> String {
+        if hasRecoverableSidecar(for: mainOutput) {
+            return "Recording was interrupted but your audio is safe. "
+                + "Quit and relaunch DoublEnder to recover it as a WAV file."
+        }
+        if let recordingError = error as? RecordingError,
+           case .noActiveRecording = recordingError {
+            return noAudioCapturedMessage(reason: disconnectReason)
+        }
+        let prefix = disconnectReason.map { "\($0). " } ?? ""
+        return "\(prefix)Failed to finalize recording: \(error.localizedDescription)"
+    }
+
     /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
     /// finalize — returns true when a recovered file was saved and presented.
-    private func recoverSidecarIfNeeded(from mainOutput: URL?) -> Bool {
+    /// `note` goes on the saved confirmation, as for a finalized take.
+    private func recoverSidecarIfNeeded(from mainOutput: URL?, note: String? = nil) -> Bool {
         guard let mainOutput else { return false }
         let sidecarURL = PCMSidecar.url(for: mainOutput)
         guard PCMSidecar.hasRecoverableContent(at: sidecarURL) else { return false }
@@ -847,11 +899,12 @@ class RecorderViewModel: ObservableObject {
             #if GCS_ENABLED
             // Local-only mode mirrors the Local build's confirmation; with
             // cloud on, the upload flow owns the user-facing confirmation.
-            if !cloudUploadEnabled {
-                RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent)
+            // A note has nowhere else to go, so it brings the confirmation.
+            if !cloudUploadEnabled || note != nil {
+                RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
             }
             #else
-            RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent)
+            RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
             #endif
             return true
         } catch {
@@ -918,6 +971,7 @@ class RecorderViewModel: ObservableObject {
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()
         pendingDisconnectReason = nil
+        diskStopReason = nil
         let url = recordedFileURL
 
         audioEngine.cancelRecording { [weak self] in
@@ -1108,8 +1162,9 @@ class RecorderViewModel: ObservableObject {
     /// offset rather than restarting (FR-003). The pending record is persisted
     /// up front (path only) so an interruption before initiation still restarts
     /// next launch, then upgraded with the session URI so an interruption after
-    /// initiation resumes.
-    private func performUpload() async {
+    /// initiation resumes. `note` goes on the confirmation that ends this call,
+    /// success or failure; a later retry is a new call and doesn't repeat it.
+    private func performUpload(note: String? = nil) async {
         guard let fileURL = recordedFileURL else {
             await MainActor.run { self.state = .error("No recording found to upload") }
             return
@@ -1160,7 +1215,8 @@ class RecorderViewModel: ObservableObject {
                     // Persistent, app-controlled confirmation — blocks until
                     // the user clicks OK (notifications can't guarantee this).
                     UploadConfirmation.present(success: true,
-                                               fileName: fileURL.lastPathComponent)
+                                               fileName: fileURL.lastPathComponent,
+                                               note: note)
                 }
                 return
             } catch {
@@ -1182,7 +1238,8 @@ class RecorderViewModel: ObservableObject {
                     await MainActor.run {
                         self.state = .uploadFailed(fileURL)
                         UploadConfirmation.present(success: false,
-                                                   fileName: fileURL.lastPathComponent)
+                                                   fileName: fileURL.lastPathComponent,
+                                                   note: note)
                     }
                     return
                 }
@@ -1202,6 +1259,7 @@ class RecorderViewModel: ObservableObject {
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()
         pendingDisconnectReason = nil
+        diskStopReason = nil
         if audioEngine.isRecordingActive {
             audioEngine.abandonStaleRecordingState()
         }
@@ -1220,11 +1278,12 @@ class RecorderViewModel: ObservableObject {
         audioEngine.start()
     }
 
-    /// True when a `.pcmrec` sidecar exists for the given main output URL,
-    /// meaning launch-time recovery can re-wrap the take into a WAV.
-    private func hasRecoverableSidecar(for mainOutput: URL?) -> Bool {
+    /// True when the `.pcmrec` sidecar for the given main output URL holds
+    /// audio, meaning launch-time recovery can re-wrap the take into a WAV.
+    /// A header-only sidecar doesn't count: recovery discards it.
+    private static func hasRecoverableSidecar(for mainOutput: URL?) -> Bool {
         guard let mainOutput else { return false }
-        return FileManager.default.fileExists(atPath: PCMSidecar.url(for: mainOutput).path)
+        return PCMSidecar.hasRecoverableContent(at: PCMSidecar.url(for: mainOutput))
     }
 }
 

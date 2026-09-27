@@ -126,17 +126,20 @@ class AudioEngine: NSObject, ObservableObject {
     /// by the delegate when it builds the writer input on first sample.
     /// Cleared on stop / cancel.
     private var pendingOutputSettings: [String: Any]?
-    /// Destination URL for the take. Held so the delegate can pass it to
-    /// PCMSidecar.init once the source format description is known.
+    /// Destination URL for the take, set with the writer in startRecording
+    /// and cleared with it. Nothing reads it now: the sidecar is created in
+    /// startRecording, before the first buffer, not by the delegate.
     private var pendingFileURL: URL?
     private let writerLock = NSLock()
     /// uniqueID → kind, rebuilt on each device refresh so the picker
     /// doesn't re-query CoreAudio on every SwiftUI render.
     private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
-    // 3 consecutive drops ≈ 30 ms of silence before failing the take.
-    // Lowered from 5 (≈50 ms) — 30 ms is already audible on a word boundary;
-    // failing sooner triggers the sidecar recovery path before more audio is lost.
+    // 3 consecutive drops before failing the take: tens of milliseconds of
+    // lost audio, depending on the device's buffer size (30 ms at 10 ms
+    // buffers). Lowered from 5 — that much is already audible on a word
+    // boundary; failing sooner triggers the sidecar recovery path before more
+    // audio is lost.
     private let writeErrorThreshold = 3
     /// Consecutive sample buffers dropped because the writer wasn't ready.
     /// Sustained backpressure means audio is being lost — treat like a
@@ -192,21 +195,26 @@ class AudioEngine: NSObject, ObservableObject {
     /// the previous one. Catches "session running but driver stopped
     /// delivering" failures that AVCaptureSession does not surface as an
     /// interruption (USB hub starvation, driver firmware hang, Bluetooth
-    /// profile transitions without an interruption notification). Re-armed
-    /// on every `markDataFlowing` call; cancelled in every recording-stop /
-    /// cancel / teardown path alongside `interruptionWatchdog`.
+    /// profile transitions without an interruption notification). Armed by
+    /// `armDataFlowWatchdog` on every `markDataFlowing` call and when an
+    /// interruption ends with the session running again. Cancelled when an
+    /// interruption begins, so the interruption watchdog's 5 s governs, and
+    /// in every recording-stop / cancel / teardown path alongside
+    /// `interruptionWatchdog`.
     private var dataFlowWatchdog: DispatchWorkItem?
+    /// 3 s: how long a running take may go without a successful append.
+    private static let dataFlowTimeoutSeconds: TimeInterval = 3
     /// Watchdog fired when the FIRST sample buffer never arrives after record
-    /// start (FR-001). The data-flow watchdog above is armed only from
-    /// `markDataFlowing` — i.e. only after at least one successful append — so
-    /// a device that enumerates and reports connected but never delivers a
-    /// single buffer (wedged driver, hub power starvation present at start)
-    /// previously "recorded" silently forever. Armed once in `startRecording`;
+    /// start (FR-001). The data-flow watchdog above is armed only by a
+    /// successful append or by an interruption ending — so a device that
+    /// enumerates and reports connected but never delivers a single buffer
+    /// (wedged driver, hub power starvation present at start) previously
+    /// "recorded" silently forever. Armed once in `startRecording`;
     /// cancelled by the first `markDataFlowing` and by every recording-stop /
     /// cancel / teardown path. Deliberately NOT cancelled on
-    /// `captureSessionInterruptionEnded` — if the restarted session still
-    /// delivers nothing, this remains the only guard, and a healthy restart
-    /// cancels it via `markDataFlowing` within milliseconds anyway.
+    /// `captureSessionInterruptionEnded` — a take whose first buffer never
+    /// came keeps this deadline whatever the interruption did, and a healthy
+    /// restart cancels it via `markDataFlowing` within milliseconds anyway.
     private var firstBufferWatchdog: DispatchWorkItem?
     /// 5 s: the capture session is already running and feeding the level meter
     /// before RECORD is even tappable (`canStartRecording` requires the rebuild
@@ -254,9 +262,9 @@ class AudioEngine: NSObject, ObservableObject {
         super.init()
         refreshDevices()
         // Refresh the device list whenever the system wakes or the app comes
-        // to front — devices plugged in while DoublEnder was in the background
-        // otherwise stay hidden in the picker until something else triggers a
-        // config-change notification.
+        // to front, in case a device that changed while DoublEnder was asleep
+        // or in the background went unreported. These overlap the CoreAudio
+        // listener below on purpose.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleRefreshTrigger),
@@ -285,7 +293,8 @@ class AudioEngine: NSObject, ObservableObject {
     /// `refreshDevices` runs whenever any audio device is added or removed
     /// anywhere on the system. The listener block dispatches to the main
     /// queue before touching engine state, matching every other entry into
-    /// `refreshDevices` (notification observers, engine config change).
+    /// `refreshDevices` (the wake and app-activation observers, and the view
+    /// model's own calls).
     private func installDeviceListListener() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async { self?.refreshDevices() }
@@ -342,10 +351,12 @@ class AudioEngine: NSObject, ObservableObject {
     /// AVCaptureDevice.default(for: .audio) returns).
     ///
     /// Caller is responsible for `setSystemDefaultInputDevice` if it wants
-    /// to redirect the system default before invoking this. We re-read the
-    /// system default after the session is running so silent CoreAudio
-    /// rejections (some virtual devices) still surface as `selectedDeviceUsable`
-    /// false.
+    /// to redirect the system default before invoking this. Once the session
+    /// is running, `intendedDeviceID` (when given) is resolved back to an
+    /// AVCaptureDevice and compared with the bound input; a mismatch publishes
+    /// `selectedDeviceUsable` false. The system default is not re-read, so a
+    /// silent CoreAudio rejection of the default change goes unnoticed — and
+    /// doesn't matter, since the session binds the device directly.
     ///
     /// Always called from main; callers rely on `isRebuilding` (set
     /// synchronously before dispatch) and `canStartRecording` to gate
@@ -542,21 +553,8 @@ class AudioEngine: NSObject, ObservableObject {
             firstBufferWatchdog?.cancel()
             firstBufferWatchdog = nil
         }
-        // Re-arm the data-flow watchdog on every successful buffer. If the
-        // driver silently stops delivering (USB hub starvation, firmware
-        // hang, BT profile transition with no interruption signal), this
-        // fires after 3 s and routes through the same failure path as the
-        // interruption watchdog.
-        dataFlowWatchdog?.cancel()
-        let dfWatchdog = DispatchWorkItem { [weak self] in
-            guard let self, self.isRecording, !self.disconnectStopPending else { return }
-            logger.warning("Data-flow watchdog fired — no buffers for 3 s")
-            self.dataFlowWatchdog = nil
-            self.disconnectStopPending = true
-            self.handleRecordingCaptureFailure(reason: "Microphone stopped delivering audio")
-        }
-        dataFlowWatchdog = dfWatchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: dfWatchdog)
+        // Re-arm the data-flow watchdog on every successful buffer.
+        armDataFlowWatchdog()
         if !isWritingData { isWritingData = true }
         writeIndicatorClearWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -564,6 +562,30 @@ class AudioEngine: NSObject, ObservableObject {
         }
         writeIndicatorClearWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: item)
+    }
+
+    /// Give the take a fresh data-flow deadline, replacing any pending one:
+    /// if no buffer appends within `dataFlowTimeoutSeconds`, fail the take.
+    /// If the driver silently stops delivering (USB hub starvation, firmware
+    /// hang, BT profile transition with no interruption signal), this routes
+    /// through the same failure path as the interruption watchdog. Main queue
+    /// only, like all watchdog state. Armed by every successful append, and
+    /// when an interruption ends with the session running again, so a restart
+    /// that delivers nothing fails the take too.
+    private func armDataFlowWatchdog() {
+        dataFlowWatchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording, !self.disconnectStopPending else { return }
+            logger.warning("Data-flow watchdog fired — no buffers for \(Int(Self.dataFlowTimeoutSeconds), privacy: .public) s")
+            self.dataFlowWatchdog = nil
+            self.disconnectStopPending = true
+            self.handleRecordingCaptureFailure(reason: "Microphone stopped delivering audio")
+        }
+        dataFlowWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.dataFlowTimeoutSeconds,
+            execute: watchdog
+        )
     }
 
     func refreshDevices() {
@@ -604,15 +626,15 @@ class AudioEngine: NSObject, ObservableObject {
         // callbacks — launch-time device population is not a "new arrival"
         // from the user's perspective and is handled by the VM's USB-on-
         // launch policy separately. Subsequent refreshes (from the CoreAudio
-        // listener, app activation, system wake, or engine config change)
-        // fire onNewUSBDeviceDetected for any USB UID that wasn't there before.
+        // listener, app activation, system wake, or the view model's own
+        // calls) fire onNewUSBDeviceDetected for any USB UID that wasn't there
+        // before.
         //
         // Order matters: update `knownInputDeviceUIDs` BEFORE firing the
         // callback. The VM's handler runs an app-modal NSAlert which spins a
         // nested event loop, and any re-entrant refreshDevices that lands
-        // during that loop (app activation, another hot-plug, engine config
-        // change) would otherwise see the same UID as "new" again and stack
-        // duplicate prompts.
+        // during that loop (app activation, another hot-plug) would otherwise
+        // see the same UID as "new" again and stack duplicate prompts.
         // Diff against the filtered list — we don't want to fire the
         // hot-plug callback for macOS-internal aggregates appearing
         // (which happens every time CoreAudio rebuilds them under us).
@@ -764,6 +786,13 @@ class AudioEngine: NSObject, ObservableObject {
             self.interruptionWatchdog?.cancel()
             self.interruptionWatchdog = nil
             guard self.isRecording else { return }
+            // This watchdog governs the interruption. No buffers flow during
+            // one, so the data-flow watchdog, left armed by the last buffer,
+            // would fail the take 3 s after it, before the 5 s allowance is
+            // up. It is armed again by the next buffer, or when the
+            // interruption ends with the session running.
+            self.dataFlowWatchdog?.cancel()
+            self.dataFlowWatchdog = nil
             self.sessionInterrupted = true
             let watchdog = DispatchWorkItem { [weak self] in
                 guard let self, self.isRecording, !self.disconnectStopPending else { return }
@@ -800,10 +829,17 @@ class AudioEngine: NSObject, ObservableObject {
                 }
                 let stillDown = self.captureSession?.isRunning == false
                 DispatchQueue.main.async {
-                    guard stillDown else { return }
                     guard !self.disconnectStopPending else { return }
-                    self.disconnectStopPending = true
-                    self.handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+                    if stillDown {
+                        self.disconnectStopPending = true
+                        self.handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+                    } else if self.isRecording {
+                        // Running again, but running is not delivering: give
+                        // the restart the same deadline as any buffer gets.
+                        // Nothing else re-arms the data-flow watchdog until
+                        // the next append, and a silent restart has none.
+                        self.armDataFlowWatchdog()
+                    }
                 }
             }
         }
@@ -908,12 +944,12 @@ class AudioEngine: NSObject, ObservableObject {
         //   rate is intentional: AAC is a delivery format.
         //
         // WAV (LPCM): mono int24. AVSampleRateKey: 48_000 is a placeholder
-        //   only — kAudioFormatLinearPCM requires an explicit rate key or
-        //   canAddInput returns false, but the actual value used is patched
-        //   in the first-buffer delegate path once the device's real rate is
-        //   known from the CMSampleBuffer format description. This ensures
-        //   the WAV is written at the hardware's native rate rather than
-        //   always resampling to 48 kHz.
+        //   only: the value used is patched in the first-buffer delegate path
+        //   once the device's real rate is known from the CMSampleBuffer
+        //   format description. This ensures the WAV is written at the
+        //   hardware's native rate rather than always resampling to 48 kHz.
+        //   The writer doesn't need the placeholder — on macOS 26.7 it
+        //   accepted these settings without a rate — but it is harmless.
         let outputSettings: [String: Any]
         switch format {
         case .aac:
@@ -992,8 +1028,8 @@ class AudioEngine: NSObject, ObservableObject {
         isRecording = true
 
         // FR-001: arm the first-buffer deadline. The data-flow watchdog is
-        // armed only from markDataFlowing — i.e. only once a buffer has
-        // already appended — so a device that never delivers buffer one
+        // armed only by an append or an interruption ending — never at
+        // record start — so a device that never delivers buffer one
         // previously "recorded" silence forever with no failure surface.
         // Fires through the same disconnect latch chain as the other two
         // watchdogs; cancelled by the first successful append and by every
@@ -1584,11 +1620,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         }
     }
 
-    /// Peak of the mono-downmixed signal from a CMSampleBuffer (0…1).
+    /// Peak of the buffer mixed to mono (0…1, or above 1 when the mix clips).
     ///
-    /// Delegates to `PCMSidecar.normalizedMonoFloatSamples` for the channel
-    /// conversion so the meter reads the same averaged mono signal that ends
-    /// up in the recorded file. Returns 0 for unsupported PCM formats.
+    /// Mixes through `PCMSidecar.normalizedMonoFloatSamples`, the mix the
+    /// sidecar records, which is the writer's own mix of the main file for
+    /// every channel layout whose writer mix has been measured, so the meter
+    /// shows the level the file records. Other layouts can differ (see that
+    /// function). Returns 0 for unsupported PCM formats.
     private func peakLinear(from sampleBuffer: CMSampleBuffer) -> Float {
         guard let mono = PCMSidecar.normalizedMonoFloatSamples(from: sampleBuffer) else { return 0 }
         return LevelMeter.peakLinear(in: mono)

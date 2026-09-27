@@ -37,8 +37,10 @@ final class PCMSidecarTests: XCTestCase {
         XCTAssertEqual(result?[2] ?? -99, -1.0, accuracy: 1e-6)
     }
 
-    func testNormalizedMonoFloatSamplesInt24StereoAveragesChannels() throws {
-        // 2 stereo frames. Frame 1: (+max, -max) → ~0. Frame 2: (0, +max) → max/2.
+    /// Two channels mix as AVAssetWriter mixes the main file: each scaled by
+    /// 1/√2 and summed (see the writer tests below), not averaged.
+    func testNormalizedMonoFloatSamplesInt24StereoMixesLikeTheWriter() throws {
+        // 2 stereo frames. Frame 1: (+max, -max) → ~0. Frame 2: (0, +max) → max × 0.707.
         let bytes: [UInt8] = [
             0xFF, 0xFF, 0x7F,   // L: +8388607
             0x00, 0x00, 0x80,   // R: -8388608
@@ -50,8 +52,9 @@ final class PCMSidecarTests: XCTestCase {
         )
         let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
         XCTAssertEqual(result?.count, 2)
-        let frame1Expected = (Float(8_388_607) / 8_388_608.0 + Float(-8_388_608) / 8_388_608.0) / 2
-        let frame2Expected = (0 + Float(8_388_607) / 8_388_608.0) / 2
+        let gain = Float(0.5).squareRoot()
+        let frame1Expected = (Float(8_388_607) / 8_388_608.0 + Float(-8_388_608) / 8_388_608.0) * gain
+        let frame2Expected = (0 + Float(8_388_607) / 8_388_608.0) * gain
         XCTAssertEqual(result?[0] ?? -99, frame1Expected, accuracy: 1e-6)
         XCTAssertEqual(result?[1] ?? -99, frame2Expected, accuracy: 1e-6)
     }
@@ -74,8 +77,8 @@ final class PCMSidecarTests: XCTestCase {
         XCTAssertEqual(result?[2] ?? -99, Float(Int32.min) / Float(Int32.max), accuracy: 1e-6)
     }
 
-    func testNormalizedMonoFloatSamplesInt32StereoAveragesChannels() throws {
-        // 2 stereo frames. Frame 1: (max, min) → ~0. Frame 2: (0, max) → ~0.5.
+    func testNormalizedMonoFloatSamplesInt32StereoMixesLikeTheWriter() throws {
+        // 2 stereo frames. Frame 1: (max, min) → ~0. Frame 2: (0, max) → ~0.707.
         let bytes: [UInt8] = [
             0xFF, 0xFF, 0xFF, 0x7F,   // L: Int32.max
             0x00, 0x00, 0x00, 0x80,   // R: Int32.min
@@ -88,19 +91,134 @@ final class PCMSidecarTests: XCTestCase {
         let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
         XCTAssertEqual(result?.count, 2)
         let divisor = Float(Int32.max)
-        let frame1Expected = (Float(Int32.max) / divisor + Float(Int32.min) / divisor) / 2
-        let frame2Expected = (0 + Float(Int32.max) / divisor) / 2
+        let gain = Float(0.5).squareRoot()
+        let frame1Expected = (Float(Int32.max) / divisor + Float(Int32.min) / divisor) * gain
+        let frame2Expected = (0 + Float(Int32.max) / divisor) * gain
         XCTAssertEqual(result?[0] ?? -99, frame1Expected, accuracy: 1e-6)
         XCTAssertEqual(result?[1] ?? -99, frame2Expected, accuracy: 1e-6)
     }
 
+    /// Planar input used to give channel 0 alone, so a mic on channel 1 of a
+    /// planar device never reached the meter.
+    func testNormalizedMonoFloatSamplesPlanarStereoMixesBothChannels() throws {
+        let buffer = try makePlanarFloatSampleBuffer(channels: [[0.5, -0.25], [0.25, 0.25]])
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 2)
+        let gain = Float(0.5).squareRoot()
+        XCTAssertEqual(result?[0] ?? -99, 0.75 * gain, accuracy: 1e-6)
+        XCTAssertEqual(result?[1] ?? -99, 0, accuracy: 1e-6)
+    }
+
+    // MARK: - The writer's mono mix
+
+    // AVAssetWriter makes the main file mono itself. These write multichannel
+    // takes through it with the app's WAV settings and require
+    // normalizedMonoFloatSamples, which feeds the meter and the sidecar, to
+    // reach the file's peak within 0.1 dB. Averaging the two channels of an
+    // unlabelled pair read 3 dB under the file. They also catch Apple
+    // changing the writer's mix.
+
+    func testMixMatchesWriterWithToneOnOneChannel() throws {
+        try assertMixMatchesWriter(
+            try interleavedToneBuffers(peaks: [0.5, 0]), fileName: "left.wav"
+        )
+    }
+
+    func testMixMatchesWriterWithToneOnTheOtherChannel() throws {
+        try assertMixMatchesWriter(
+            try interleavedToneBuffers(peaks: [0, 0.5]), fileName: "right.wav"
+        )
+    }
+
+    func testMixMatchesWriterWithToneOnBothChannels() throws {
+        try assertMixMatchesWriter(
+            try interleavedToneBuffers(peaks: [0.5, 0.5]), fileName: "both.wav"
+        )
+    }
+
+    func testMixMatchesWriterForPlanarChannels() throws {
+        try assertMixMatchesWriter(
+            try planarToneBuffers(left: 0.25, right: 0.5), fileName: "planar.wav"
+        )
+    }
+
+    /// The writer mixes by channel label (`PCMSidecar.writerMixGains`). Every
+    /// layout the mixer claims to know, with a tone on each channel alone and
+    /// on all of them, at a level that keeps every mix below full scale.
+    func testMixMatchesWriterForEachMeasuredLayout() throws {
+        func labelled(_ labels: AudioChannelLabel...) -> Data {
+            channelLayout(tag: kAudioChannelLayoutTag_UseChannelDescriptions, labels: labels)
+        }
+        let layouts: [(name: String, channels: Int, layout: Data?)] = [
+            ("unlabelled mono", 1, nil),
+            ("mono labelled left", 1, labelled(kAudioChannelLabel_Left)),
+            ("mono labelled discrete 1", 1, labelled(kAudioChannelLabel_Discrete_1)),
+            ("Stereo", 2, channelLayout(tag: kAudioChannelLayoutTag_Stereo)),
+            ("StereoHeadphones", 2, channelLayout(tag: kAudioChannelLayoutTag_StereoHeadphones)),
+            ("Binaural", 2, channelLayout(tag: kAudioChannelLayoutTag_Binaural)),
+            ("MidSide", 2, channelLayout(tag: kAudioChannelLayoutTag_MidSide)),
+            ("left, right", 2, labelled(kAudioChannelLabel_Left, kAudioChannelLabel_Right)),
+            ("left, right bitmap", 2,
+             channelLayout(tag: kAudioChannelLayoutTag_UseChannelBitmap, bitmap: [.bit_Left, .bit_Right])),
+            ("surrounds", 2, labelled(kAudioChannelLabel_LeftSurround, kAudioChannelLabel_RightSurround)),
+            ("centre, unknown", 2, labelled(kAudioChannelLabel_Center, kAudioChannelLabel_Unknown)),
+            ("mono, mono", 2, labelled(kAudioChannelLabel_Mono, kAudioChannelLabel_Mono)),
+            ("unused", 2, labelled(kAudioChannelLabel_Unused, kAudioChannelLabel_Unused)),
+            ("DiscreteInOrder 2", 2, channelLayout(tag: kAudioChannelLayoutTag_DiscreteInOrder | 2)),
+            ("discrete 1, 0", 2, labelled(kAudioChannelLabel_Discrete_1, kAudioChannelLabel_Discrete_0)),
+            ("left, discrete 1", 2, labelled(kAudioChannelLabel_Left, kAudioChannelLabel_Discrete_1)),
+            ("Quadraphonic", 4, channelLayout(tag: kAudioChannelLayoutTag_Quadraphonic)),
+            ("DiscreteInOrder 4", 4, channelLayout(tag: kAudioChannelLayoutTag_DiscreteInOrder | 4)),
+            ("discrete 0 to 3", 4, labelled(
+                kAudioChannelLabel_Discrete_0, kAudioChannelLabel_Discrete_1,
+                kAudioChannelLabel_Discrete_2, kAudioChannelLabel_Discrete_3
+            )),
+        ]
+        for (index, entry) in layouts.enumerated() {
+            var patterns = (0..<entry.channels).map { lit in
+                (0..<entry.channels).map { $0 == lit ? 0.25 : 0 }
+            }
+            if entry.channels > 1 {
+                patterns.append([Double](repeating: 0.25, count: entry.channels))
+            }
+            for (pattern, peaks) in patterns.enumerated() {
+                try assertMixMatchesWriter(
+                    try interleavedToneBuffers(peaks: peaks, layout: entry.layout),
+                    fileName: "layout-\(index)-\(pattern).wav",
+                    context: "\(entry.name), tone peaks \(peaks)"
+                )
+            }
+        }
+    }
+
+    /// With no layout, more than two channels mix as they did before the
+    /// mixer followed the writer, whose mix of them hasn't been measured.
+    func testMoreThanTwoUnlabelledChannelsAreAveraged() throws {
+        // One frame: +max, 0, -max/2 (as close as 24 bits allow).
+        let bytes: [UInt8] = [
+            0xFF, 0xFF, 0x7F,   // +8388607
+            0x00, 0x00, 0x00,   // 0
+            0x00, 0x00, 0xC0,   // -4194304
+        ]
+        let buffer = try makePCMSampleBuffer(
+            bytes: bytes, channels: 3, bitsPerChannel: 24, frameCount: 1
+        )
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 1)
+        let expected = (Float(8_388_607) / 8_388_608.0 + 0 - 0.5) / 3
+        XCTAssertEqual(result?[0] ?? -99, expected, accuracy: 1e-6)
+    }
+
     /// Build an interleaved little-endian signed-integer PCM CMSampleBuffer.
+    /// `channelLayout`, if given, labels the channels in the format
+    /// description, as a capture format may (see `channelLayout(tag:labels:)`).
     private func makePCMSampleBuffer(
         bytes: [UInt8],
         channels: UInt32,
         bitsPerChannel: UInt32,
         frameCount: Int,
-        presentationTimeStamp: CMTime = .zero
+        presentationTimeStamp: CMTime = .zero,
+        channelLayout: Data? = nil
     ) throws -> CMSampleBuffer {
         let bytesPerSample = bitsPerChannel / 8
         let bytesPerFrame = channels * bytesPerSample
@@ -118,14 +236,18 @@ final class PCMSidecarTests: XCTestCase {
         )
 
         var formatDesc: CMAudioFormatDescription?
-        let formatStatus = CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            asbd: &asbd,
-            layoutSize: 0, layout: nil,
-            magicCookieSize: 0, magicCookie: nil,
-            extensions: nil,
-            formatDescriptionOut: &formatDesc
-        )
+        let layoutBytes = channelLayout ?? Data()
+        let formatStatus = layoutBytes.withUnsafeBytes { layout in
+            CMAudioFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault,
+                asbd: &asbd,
+                layoutSize: layout.count,
+                layout: layout.isEmpty ? nil : layout.baseAddress?.assumingMemoryBound(to: AudioChannelLayout.self),
+                magicCookieSize: 0, magicCookie: nil,
+                extensions: nil,
+                formatDescriptionOut: &formatDesc
+            )
+        }
         guard formatStatus == noErr, let formatDesc else {
             throw NSError(domain: "PCMSidecarTests", code: Int(formatStatus))
         }
@@ -426,6 +548,221 @@ final class PCMSidecarTests: XCTestCase {
             XCTAssertEqual(writer.status, .completed, "finishWriting: \(String(describing: writer.error))")
         }
         return writer
+    }
+
+    /// Write `buffers` through AVAssetWriter as the app writes a WAV, and
+    /// require the mix `normalizedMonoFloatSamples` makes of them to peak
+    /// where the file does.
+    private func assertMixMatchesWriter(
+        _ buffers: [CMSampleBuffer], fileName: String, context: String = "",
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let filePeak = try writerMonoPeak(of: buffers, fileName: fileName)
+        let mixPeak = buffers
+            .compactMap { PCMSidecar.normalizedMonoFloatSamples(from: $0) }
+            .map { LevelMeter.peakLinear(in: $0) }
+            .max() ?? 0
+        guard filePeak > 1e-4 else {
+            XCTAssertLessThan(
+                mixPeak, 1e-4, "\(context): the writer dropped the tone and the mix kept \(mixPeak)",
+                file: file, line: line
+            )
+            return
+        }
+        XCTAssertEqual(
+            20 * log10f(mixPeak / filePeak), 0, accuracy: 0.1,
+            "\(context): the file peaks at \(filePeak) and the mix at \(mixPeak)",
+            file: file, line: line
+        )
+    }
+
+    /// Peak of the mono WAV AVAssetWriter makes of `buffers`, written with the
+    /// app's WAV settings (`AudioEngine.startRecording`, at the source rate the
+    /// capture delegate fills in) and the first buffer's format as the
+    /// `sourceFormatHint`, as the capture delegate builds its writer input.
+    private func writerMonoPeak(of buffers: [CMSampleBuffer], fileName: String) throws -> Float {
+        let first = try XCTUnwrap(buffers.first)
+        let formatDesc = try XCTUnwrap(CMSampleBufferGetFormatDescription(first))
+        let rate = try XCTUnwrap(
+            CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee.mSampleRate
+        )
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate,
+            AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 24,
+            AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        let url = tempDir.appendingPathComponent(fileName)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .wav)
+        let input = AVAssetWriterInput(
+            mediaType: .audio, outputSettings: settings, sourceFormatHint: formatDesc
+        )
+        input.expectsMediaDataInRealTime = true
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "PCMSidecarTests", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "The writer refused the input"])
+        }
+        writer.add(input)
+        XCTAssertTrue(writer.startWriting(), "startWriting: \(String(describing: writer.error))")
+        writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(first))
+        for buffer in buffers {
+            let deadline = Date().addingTimeInterval(5)
+            while !input.isReadyForMoreMediaData && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            XCTAssertTrue(input.append(buffer), "append: \(String(describing: writer.error))")
+        }
+        input.markAsFinished()
+        let done = expectation(description: "finishWriting")
+        writer.finishWriting { done.fulfill() }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(writer.status, .completed, "finishWriting: \(String(describing: writer.error))")
+
+        let audioFile = try AVAudioFile(forReading: url)
+        XCTAssertEqual(audioFile.fileFormat.channelCount, 1)
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: audioFile.processingFormat,
+            frameCapacity: AVAudioFrameCount(audioFile.length)
+        ))
+        try audioFile.read(into: pcm)
+        let samples = try XCTUnwrap(pcm.floatChannelData?[0])
+        return LevelMeter.peakLinear(in: Array(UnsafeBufferPointer(start: samples, count: Int(pcm.frameLength))))
+    }
+
+    /// One second of a 1 kHz tone as 48 kHz interleaved Int24, the shape a USB
+    /// interface delivers, peaking on each channel at the matching entry of
+    /// `peaks`. `layout`, if given, labels the channels.
+    private func interleavedToneBuffers(
+        peaks: [Double], layout: Data? = nil
+    ) throws -> [CMSampleBuffer] {
+        let rate = 48_000
+        let frameStride = peaks.count * 3
+        var buffers: [CMSampleBuffer] = []
+        var written = 0
+        while written < rate {
+            let n = min(1024, rate - written)
+            var bytes = [UInt8](repeating: 0, count: n * frameStride)
+            for i in 0..<n {
+                let s = sin(2 * Double.pi * 1_000 * Double(written + i) / Double(rate))
+                for (channel, peak) in peaks.enumerated() {
+                    let v = Int32((s * peak * 8_388_607).rounded())
+                    let offset = i * frameStride + channel * 3
+                    bytes[offset] = UInt8(truncatingIfNeeded: v)
+                    bytes[offset + 1] = UInt8(truncatingIfNeeded: v >> 8)
+                    bytes[offset + 2] = UInt8(truncatingIfNeeded: v >> 16)
+                }
+            }
+            buffers.append(try makePCMSampleBuffer(
+                bytes: bytes, channels: UInt32(peaks.count), bitsPerChannel: 24, frameCount: n,
+                presentationTimeStamp: CMTime(value: CMTimeValue(written), timescale: 48_000),
+                channelLayout: layout
+            ))
+            written += n
+        }
+        return buffers
+    }
+
+    /// An AudioChannelLayout's bytes, for a format description: `tag`, and
+    /// one channel description per entry of `labels` (for
+    /// `kAudioChannelLayoutTag_UseChannelDescriptions`).
+    private func channelLayout(
+        tag: AudioChannelLayoutTag, labels: [AudioChannelLabel] = [],
+        bitmap: AudioChannelBitmap = []
+    ) -> Data {
+        let descriptionsOffset = MemoryLayout<AudioChannelLayout>
+            .offset(of: \AudioChannelLayout.mChannelDescriptions) ?? 12
+        let descriptionSize = MemoryLayout<AudioChannelDescription>.stride
+        let size = max(
+            MemoryLayout<AudioChannelLayout>.size,
+            descriptionsOffset + labels.count * descriptionSize
+        )
+        var data = Data(count: size)
+        data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            let layout = base.assumingMemoryBound(to: AudioChannelLayout.self)
+            layout.pointee.mChannelLayoutTag = tag
+            layout.pointee.mChannelBitmap = bitmap
+            layout.pointee.mNumberChannelDescriptions = UInt32(labels.count)
+            for (i, label) in labels.enumerated() {
+                (base + descriptionsOffset + i * descriptionSize).storeBytes(
+                    of: AudioChannelDescription(
+                        mChannelLabel: label, mChannelFlags: [], mCoordinates: (0, 0, 0)
+                    ),
+                    as: AudioChannelDescription.self
+                )
+            }
+        }
+        return data
+    }
+
+    /// The same tone as two-channel planar Float32, CoreAudio's own layout.
+    private func planarToneBuffers(left: Float, right: Float) throws -> [CMSampleBuffer] {
+        let rate = 48_000
+        var buffers: [CMSampleBuffer] = []
+        var written = 0
+        while written < rate {
+            let n = min(1024, rate - written)
+            let tone = (0..<n).map { i in
+                Float(sin(2 * Double.pi * 1_000 * Double(written + i) / Double(rate)))
+            }
+            buffers.append(try makePlanarFloatSampleBuffer(
+                channels: [tone.map { $0 * left }, tone.map { $0 * right }],
+                presentationTimeStamp: CMTime(value: CMTimeValue(written), timescale: 48_000)
+            ))
+            written += n
+        }
+        return buffers
+    }
+
+    /// Build a 48 kHz planar Float32 CMSampleBuffer, one plane per channel,
+    /// from an AVAudioPCMBuffer, as CoreAudio lays planar audio out.
+    private func makePlanarFloatSampleBuffer(
+        channels: [[Float]], presentationTimeStamp: CMTime = .zero
+    ) throws -> CMSampleBuffer {
+        let frameCount = try XCTUnwrap(channels.first?.count)
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+            channels: AVAudioChannelCount(channels.count), interleaved: false
+        ))
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)
+        ))
+        pcm.frameLength = AVAudioFrameCount(frameCount)
+        let planes = try XCTUnwrap(pcm.floatChannelData)
+        for (channel, samples) in channels.enumerated() {
+            for (i, sample) in samples.enumerated() { planes[channel][i] = sample }
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 48_000),
+            presentationTimeStamp: presentationTimeStamp,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let createStatus = CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+            makeDataReadyCallback: nil, refcon: nil,
+            formatDescription: format.formatDescription,
+            sampleCount: CMItemCount(frameCount),
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard createStatus == noErr, let sampleBuffer else {
+            throw NSError(domain: "PCMSidecarTests", code: Int(createStatus))
+        }
+        let dataStatus = CMSampleBufferSetDataBufferFromAudioBufferList(
+            sampleBuffer, blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault, flags: 0,
+            bufferList: pcm.audioBufferList
+        )
+        guard dataStatus == noErr else {
+            throw NSError(domain: "PCMSidecarTests", code: Int(dataStatus))
+        }
+        if !CMSampleBufferDataIsReady(sampleBuffer) {
+            CMSampleBufferSetDataReady(sampleBuffer)
+        }
+        return sampleBuffer
     }
 
     private func fileSize(_ url: URL) throws -> Int64 {

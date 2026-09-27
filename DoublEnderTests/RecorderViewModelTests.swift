@@ -94,3 +94,85 @@ final class RecorderDefaultsTests: XCTestCase {
                        "The output format is sticky and must survive a launch")
     }
 }
+
+/// What the user is told when a stop fails, decided from the files on disk
+/// rather than a capture session.
+final class StopFailureMessageTests: XCTestCase {
+    private var folder: URL!
+    private let reason = "Recording stopped: AVAssetWriter rejected the configured input"
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("doublender-stop-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let folder { try? FileManager.default.removeItem(at: folder) }
+        try super.tearDownWithError()
+    }
+
+    /// A writer torn down on its first buffer leaves the sidecar holding only
+    /// its header, and launch recovery deletes that without a word. This said
+    /// the audio was safe and asked the user to relaunch to recover it.
+    func testHeaderOnlySidecarMeansNoAudioWasCaptured() throws {
+        let main = folder.appendingPathComponent("Take.m4a")
+        let sidecar = try XCTUnwrap(PCMSidecar(mainOutput: main, sampleRate: 48_000, channels: 1))
+        sidecar.close()
+
+        XCTAssertEqual(
+            RecorderViewModel.stopFailureMessage(
+                for: RecordingError.noActiveRecording, mainOutput: main, disconnectReason: reason
+            ),
+            "\(reason). No audio was captured — try again with the built-in microphone."
+        )
+    }
+
+    /// The same words the no-samples stop (`.success(.none)`) uses.
+    func testNothingCapturedMatchesTheNoSamplesStop() {
+        let main = folder.appendingPathComponent("Take.m4a")
+        XCTAssertEqual(
+            RecorderViewModel.stopFailureMessage(
+                for: RecordingError.noActiveRecording, mainOutput: main, disconnectReason: reason
+            ),
+            RecorderViewModel.noAudioCapturedMessage(reason: reason)
+        )
+        XCTAssertEqual(
+            RecorderViewModel.stopFailureMessage(
+                for: RecordingError.noActiveRecording, mainOutput: main, disconnectReason: nil
+            ),
+            "No audio was captured — try again with the built-in microphone."
+        )
+    }
+
+    func testSidecarWithAudioIsSafe() throws {
+        let main = folder.appendingPathComponent("Take.m4a")
+        let sidecar = try XCTUnwrap(PCMSidecar(mainOutput: main, sampleRate: 48_000, channels: 1))
+        var sample: Float = 0.25
+        sidecar.append(&sample, frameCount: 1)
+        sidecar.close()
+
+        XCTAssertEqual(
+            RecorderViewModel.stopFailureMessage(
+                for: RecordingError.writerFinishedWithError("disk full"),
+                mainOutput: main, disconnectReason: nil
+            ),
+            "Recording was interrupted but your audio is safe. "
+                + "Quit and relaunch DoublEnder to recover it as a WAV file."
+        )
+    }
+
+    /// Audio went to the writer, which could not finish, and there is no
+    /// sidecar to fall back on: the error itself is the message.
+    func testFinalizeFailureWithNothingToRecoverReportsTheError() {
+        let main = folder.appendingPathComponent("Take.m4a")
+        XCTAssertEqual(
+            RecorderViewModel.stopFailureMessage(
+                for: RecordingError.writerFinishedWithError("disk full"),
+                mainOutput: main, disconnectReason: nil
+            ),
+            "Failed to finalize recording: Recording could not be finalized: disk full"
+        )
+    }
+}

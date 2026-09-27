@@ -153,7 +153,7 @@ The reason is `sourceFormatHint`. The `AVAssetWriterInput` initializer accepts a
 
 **AAC:** `AVFormatIDKey: kAudioFormatMPEG4AAC`, `AVSampleRateKey: 48_000`, `AVNumberOfChannelsKey: 1`, `AVEncoderBitRateKey: 256_000`. These are final — the writer downmixes multi-channel input and resamples to 48 kHz internally. Fixed rate is intentional: AAC is a delivery format for podcast production and 48 kHz is the broadcast-standard sample rate for voice.
 
-**WAV (LPCM):** `AVFormatIDKey: kAudioFormatLinearPCM`, `AVLinearPCMBitDepthKey: 24`, little-endian, interleaved. `AVSampleRateKey: 48_000` is written into `pendingOutputSettings` as a **placeholder**, and 48 kHz is never actually used for WAV output. (The code comment's reason, that LPCM settings without a sample rate make `canAddInput` return false, did not hold on macOS 26.7: the writer accepted them. The placeholder is harmless either way, and the explicit rate below is what counts.)
+**WAV (LPCM):** `AVFormatIDKey: kAudioFormatLinearPCM`, `AVLinearPCMBitDepthKey: 24`, little-endian, interleaved. `AVSampleRateKey: 48_000` is written into `pendingOutputSettings` as a **placeholder**, and 48 kHz is never actually used for WAV output. (The writer doesn't need it: on macOS 26.7 it accepted LPCM settings without a sample rate. The placeholder is harmless, and the explicit rate below is what counts.)
 
 In the first-buffer delegate path, when the pending format ID is `kAudioFormatLinearPCM`, the code replaces the placeholder with the device's actual sample rate extracted from the buffer's `CMFormatDescription`:
 
@@ -189,16 +189,32 @@ The sidecar flushes to disk via `FileHandle.synchronize()` every 512 KB of paylo
 
 ### Sidecar PCM normalization (Float32, Int16, Int24, Int32)
 
-`PCMSidecar.normalizedMonoFloatSamples(from:)` reads the CMSampleBuffer's `AudioStreamBasicDescription` to determine format and bit depth, then dispatches to one of four helpers:
+`PCMSidecar.normalizedMonoFloatSamples(from:)` reads the CMSampleBuffer's `AudioStreamBasicDescription` to determine format and bit depth, reads each channel through the buffer's `AudioBufferList` (so a planar channel is found wherever CoreMedia put it), decodes each sample to `Float`, and mixes the channels to mono as the writer mixes the main file (below). The four sample formats:
 
-- **Float32** (`kAudioFormatFlagIsFloat` + 32 bits): reinterpret memory as `Float`. Non-interleaved multi-channel: take channel 0 only. Interleaved multi-channel: average all channels per frame.
-- **Int16** (`kAudioFormatFlagIsSignedInteger` + 16 bits): divide by `32768.0`. Same interleaving logic.
+- **Float32** (`kAudioFormatFlagIsFloat` + 32 bits): used as is.
+- **Int16** (`kAudioFormatFlagIsSignedInteger` + 16 bits): divide by `32768.0`.
 - **Int24** (`kAudioFormatFlagIsSignedInteger` + 24 bits): 3 bytes per sample, little-endian on macOS. Read `b0, b1, b2` and sign-extend: `raw = (b2 << 16) | (b1 << 8) | b0`; if `raw & 0x800000 != 0`, set high byte to `0xFF`. Divide by `8388608.0` (2²³). This path covers interfaces that deliver 24-bit integer PCM.
 - **Int32** (`kAudioFormatFlagIsSignedInteger` + 32 bits): reinterpret as `Int32`, divide by `Float(Int32.max)`.
 
 Any other format (`mBitsPerChannel` not 16/24/32, or `mFormatFlags` not matching float or signed integer) returns nil and the sidecar gets no data for that buffer. The main writer still records normally.
 
-The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so it shows the same averaged-mono signal the sidecar records. That is not quite the signal in the main file: AVAssetWriter makes its own mono mix from multi-channel input, and for a two-channel source that mix is 3 dB hotter than the average the meter shows (see "Mono output" in §10).
+### The mono mix
+
+The output settings ask AVAssetWriter for one channel, and it makes the main file mono itself, with CoreAudio's downmix: each source channel is weighted by its label in the source format description's channel layout, and the results are summed. Measured on macOS 15 by writing each layout through the writer with the app's settings, and for an unlabelled pair on macOS 26.7 too:
+
+| Source channels | Weight in the mono mix |
+|---|---|
+| One channel, whatever its label | 1 |
+| A pair with no layout; Left, Right; tags Stereo, StereoHeadphones, Binaural | 0.707 each (−3 dB) |
+| LeftSurround, RightSurround (tag Quadraphonic is L R Ls Rs) | 0.5 each |
+| Center, Mono, Unknown | 1 each |
+| Tag MidSide | mid 1, side 0 |
+| Discrete channels (tag DiscreteInOrder, or Discrete_*n* labels) | Discrete_0 1, the rest 0 |
+| Unused | 0 |
+
+Discrete channels map to the writer's outputs by number, so with one output only the channel labelled Discrete_0 is heard: a mic on another input of such a device records nothing. `PCMSidecar.writerMixGains` returns those weights for a format description and `normalizedMonoFloatSamples` applies them, so the sidecar, and a WAV recovered from it, carry the file's mix. `PCMSidecarTests` writes every layout in the table through the writer on each CI run and requires the two to peak within 0.1 dB of each other, so a change in Apple's mix fails the build. A layout not in the table falls back: a pair mixes as left and right, and more channels as before this followed the writer (interleaved channels averaged, planar input's channel 0), which can differ from the file.
+
+The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so it shows the level the file records. Up to 2.5.6 every multi-channel source was averaged (interleaved) or reduced to channel 0 (planar), so for an ordinary two-channel source the meter read 3 dB under the file: a mic duplicated on both channels at −0.92 dBFS showed −0.92 on the meter while clipping the WAV at full scale and taking the AAC to +2.1 dBFS. The meter now reaches full scale when the file does. See "Mono output" in §10.
 
 ---
 
@@ -251,10 +267,10 @@ init()
 **Device disconnect during recording:**
 `audioEngine.onDisconnectedDuringRecording` fires on the main thread. RecorderViewModel sets `suppressIdleInputLossAlert`, stores `pendingDisconnectReason`, and calls `stopRecording`. The stop completes as normal — `finishWriting` is attempted — and the file is saved if possible. After the completion block, `presentDisconnectAlert` runs. `switchToFallbackInputAfterLoss` then rebuilds with the built-in mic.
 
-If the main file writer was in an error state at disconnect time, `stopRecording` receives `.failure`; if a PCM sidecar exists, `recoverSidecarIfNeeded` re-wraps it to WAV and presents that as the saved file instead.
+If the main file writer was in an error state at disconnect time, `stopRecording` receives `.failure`; if a PCM sidecar holds audio, `recoverSidecarIfNeeded` re-wraps it to WAV and presents that as the saved file instead. What the user is told otherwise is decided by `RecorderViewModel.stopFailureMessage`. A sidecar that holds audio but could not be re-wrapped gets "your audio is safe", with a relaunch to recover it. When the writer was torn down before any sample reached it (`canAdd` or `startWriting` failed on the first buffer), the engine has already dropped it and the stop comes back as `.noActiveRecording`, with a sidecar holding only its header: the user is told no audio was captured, in the same words as the no-samples stop above. Anything else reports the error. Up to 2.5.6 the check was only that a sidecar existed, so the torn-down case said the audio was safe, and the next launch deleted the empty sidecar without a word.
 
 **Session interruption (another app takes the mic):**
-`AVCaptureSessionWasInterrupted` fires. The interruption watchdog arms for 5 seconds. Meanwhile `sessionInterrupted = true` is published, and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers (either `AVCaptureSessionInterruptionEnded` or a successful sample buffer arriving), the watchdog is cancelled and the take continues. If 5 seconds pass without recovery, the watchdog fires `handleRecordingCaptureFailure` and the take is stopped and saved. In practice the take fails sooner: no buffers arrive during an interruption, so the data-flow watchdog, armed by the last buffer before it, fires 3 seconds after that buffer. An interruption therefore has to end within about 3 seconds to be survived.
+`AVCaptureSessionWasInterrupted` fires. No buffers arrive during an interruption, so the data-flow watchdog is cancelled and the interruption watchdog arms for 5 seconds in its place. Meanwhile `sessionInterrupted = true` is published, and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers (either `AVCaptureSessionInterruptionEnded` or a successful sample buffer arriving), the watchdog is cancelled and the take continues. When `AVCaptureSessionInterruptionEnded` arrives, the session is restarted if it stopped. If it is running again, a fresh 3-second data-flow deadline is armed, so a session that restarts but delivers nothing fails the take like any other stall; if it did not restart, the take fails at once. If 5 seconds pass without recovery, the watchdog fires `handleRecordingCaptureFailure` and the take is stopped and saved. Up to 2.5.6 the data-flow watchdog stayed armed through an interruption and failed the take 3 seconds after the last buffer, so the 5-second allowance never applied.
 
 **Data-flow stall (driver silently stops delivering):**
 The data-flow watchdog fires after 3 seconds with no successful `append`. This catches USB hub starvation, driver firmware hangs, and Bluetooth profile transitions that don't generate an `AVCaptureSessionWasInterrupted` notification. The path is identical to the interruption watchdog: `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording` → VM stop.
@@ -269,7 +285,7 @@ The first-buffer watchdog fires 5 seconds after record start if not a single buf
 If `AVAssetWriterInput.isReadyForMoreMediaData` returns false for 3 consecutive buffers (tens of milliseconds of dropped audio, depending on the device's buffer size), `tearDownWriterLocked` is called. If the writer has already received at least one sample (`didAppendAtLeastOneSample = true`), writer refs are left intact for `stopRecording` to finalize rather than cancelling. The VM then gets the same `onDisconnectedDuringRecording` path, but the `finishWriting` call in `stopRecording` may still succeed and produce a partial-but-valid file.
 
 **Disk full during recording:**
-`diskWatchTimer` fires every 5 seconds, calling `DiskSpaceChecker.recordingBlockedReason`. If it returns non-nil, `stopRecording()` is called immediately. Because the writer is still active (not in an error state), `finishWriting` usually succeeds and the file is saved, with the ordinary saved confirmation. Nothing tells the user the disk was the reason: this path does not set `pendingDisconnectReason`. The disk-space message appears only when the next RECORD is refused.
+`diskWatchTimer` fires every 5 seconds, calling `DiskSpaceChecker.recordingBlockedReason`. If it returns a reason, the view model keeps it in `diskStopReason` and calls `stopRecording()` immediately. Because the writer is still active (not in an error state), `finishWriting` usually succeeds and the file is saved. The saved confirmation then carries one more line, "Recording stopped early." followed by the DiskSpaceChecker message, so the user learns why when the take is confirmed, in the same dialog. In the Cloud build with upload on, the take goes to `.uploading` and the line rides on the upload's confirmation instead, whether the upload succeeds or fails, and only once: a later retry doesn't repeat it. In local-only mode it behaves as Local. If the stop saves nothing, the disk message is the error; if the writer could not finish, the message leads the error, or rides on the confirmation of a take recovered from the sidecar. The reason is kept apart from `pendingDisconnectReason`, which would add the microphone advice and the disconnect alert. Up to 2.5.6 nothing mentioned the disk: the take was saved with the ordinary confirmation, and the message appeared only when the next RECORD was refused.
 
 **Duplicate stop calls (race between disconnect, disk watcher, and user STOP):**
 `RecorderViewModel.isFinalizingRecording` is set true at the top of `stopRecording` and cleared when the engine's completion fires (success or real failure). A second `stopRecording` call that arrives while `isFinalizingRecording` is already true — and gets back `RecordingError.noActiveRecording` from AudioEngine (because the writer refs were cleared by the first call) — is silently swallowed as a no-op. A real `.noActiveRecording` (no finalize in flight) still surfaces as an error.
@@ -292,11 +308,9 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **What it covers:** `AVCaptureSessionWasInterrupted` indicates the session has lost the input to something else — another app or the system taking the audio hardware. It is treated as recoverable: a brief interruption ends and the session resumes.
 
-**Mechanism:** On `captureSessionWasInterrupted`, arm a `DispatchWorkItem` for 5 seconds. If the session recovers — either via `captureSessionInterruptionEnded` or a successful sample buffer arriving (whichever is first) — cancel the watchdog. If 5 seconds pass without recovery, the take is treated as a hard failure.
+**Mechanism:** On `captureSessionWasInterrupted` during a take, cancel the data-flow watchdog (no buffers flow during an interruption, so it would otherwise fire 3 seconds after the last one) and arm a `DispatchWorkItem` for 5 seconds. If the session recovers — either via `captureSessionInterruptionEnded` or a successful sample buffer arriving (whichever is first) — cancel the watchdog. If 5 seconds pass without recovery, the take is treated as a hard failure.
 
 **Cancellation points:** `captureSessionInterruptionEnded`, `markDataFlowing` (first successful buffer after interruption), all recording-stop and cancel paths. Its firing is guarded by `disconnectStopPending`, so it stands down if another path is already stopping the take.
-
-**In practice the data-flow watchdog fires first.** Arriving interruptions do not cancel the data-flow watchdog, and no buffers flow during one, so it fires 3 seconds after the last buffer — before this watchdog's 5 seconds are up. An interruption is survived only if it ends within about 3 seconds.
 
 **UI surface:** While the watchdog is running, `sessionInterrupted = true` is published. RecorderViewModel exposes this as `recordingWarning = "Input interrupted — reconnecting…"`, shown as a yellow badge in the viewport. The clock keeps running.
 
@@ -304,7 +318,7 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **What it covers:** "Session running but driver stopped delivering." This is distinct from an interruption — `AVCaptureSessionWasInterrupted` does not fire. Causes include USB hub power starvation (the device reports as connected but stops sending), driver firmware hangs, and certain Bluetooth profile transitions where the hardware silently switches to SCO mode without signalling the session.
 
-**Mechanism:** On every call to `markDataFlowing` (which is called from the delegate whenever `input.append` returns true), the existing watchdog is cancelled and a new `DispatchWorkItem` is created for 3 seconds. If 3 seconds pass without a successful append, the watchdog fires `handleRecordingCaptureFailure`. Because the watchdog is cancelled and re-armed on every successful buffer, it only fires when the data truly stops.
+**Mechanism:** `armDataFlowWatchdog` cancels the existing watchdog and creates a new `DispatchWorkItem` for 3 seconds. It runs on every call to `markDataFlowing` (which is called from the delegate whenever `input.append` returns true), and when an interruption ends with the session running again, so a restart that delivers nothing fails the take instead of recording silence. If 3 seconds pass without a successful append, the watchdog fires `handleRecordingCaptureFailure`. Because the watchdog is cancelled and re-armed on every successful buffer, it only fires when the data truly stops. An interruption cancels it when it begins, leaving the interruption watchdog's 5 seconds to govern until the session recovers.
 
 **Interaction with interruption watchdog:** If both fire in close proximity (a device disconnect that coincides with an interruption notification), `disconnectStopPending` and `didDispatchDisconnect` latches prevent duplicate teardowns. See "The disconnect latch chain" below.
 
@@ -322,9 +336,9 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **Cancellation points:** the first successful append in `markDataFlowing`, and every recording-stop / cancel / teardown path (`stopRecording`, `cancelRecording`, `abandonStaleRecordingState`, `clearStaleRecordingSessionIfNeeded`, both `tearDownWriterLocked` branches).
 
-**Deliberately NOT cancelled on `captureSessionInterruptionEnded`:** if an interruption ends but the restarted session still delivers nothing, this watchdog is the only remaining guard — and a genuinely healthy restart cancels it via `markDataFlowing` within milliseconds anyway. Do not "fix" this by adding that cancellation point.
+**Deliberately NOT cancelled on `captureSessionInterruptionEnded`:** a take whose first buffer never arrived keeps this deadline whatever an interruption did — and a genuinely healthy restart cancels it via `markDataFlowing` within milliseconds anyway. Do not "fix" this by adding that cancellation point.
 
-That guard covers only a take whose first buffer never arrived, since the first append cancels this watchdog. `captureSessionInterruptionEnded` also cancels the data-flow watchdog, which only the next successful append re-arms. So a mid-take interruption that ends with the session running but silent is left with no watchdog at all; the 1-second input-health poll checks only that the device is connected.
+That guard covers only a take whose first buffer never arrived, since the first append cancels this watchdog. A restart later in the take is guarded by the data-flow watchdog, which `captureSessionInterruptionEnded` arms afresh once the session is running again. Up to 2.5.6 it only cancelled the data-flow watchdog, so a mid-take interruption that ended with the session running but silent was left with no watchdog at all; the 1-second input-health poll checks only that the device is connected.
 
 ### The drop threshold (3 drops → take failure)
 
@@ -371,7 +385,7 @@ There is deliberately **no** "wait for the upload to finish" option, so a stalle
 
 At record start: if `DiskSpaceChecker.recordingBlockedReason` returns a non-nil reason, the state is set to `.error(reason)` and recording does not start. Thresholds: 50 MB for AAC, 200 MB for WAV. If `volumeAvailableCapacityForImportantUsage` cannot be queried (unusual filesystem, permission error), the function returns a blocking message — it does not allow recording. Fail-closed means a recording cannot start on a volume the app can't measure.
 
-During recording, the 5-second disk watch calls the same function. If it returns non-nil, `stopRecording()` is called immediately — the writer is still healthy at this point, so `finishWriting` usually succeeds and the file is saved.
+During recording, the 5-second disk watch calls the same function. If it returns non-nil, `stopRecording()` is called immediately — the writer is still healthy at this point, so `finishWriting` usually succeeds and the file is saved — and the take's confirmation says the disk stopped it, with the same message (§4).
 
 ---
 
@@ -433,7 +447,7 @@ In `AppDelegate.applicationDidFinishLaunching` → `runCrashRecoveryIfNeeded`:
 
 2. **Filter for sidecars.** `pathExtension == "pcmrec"`.
 
-3. **Discard empty sidecars.** `PCMSidecar.hasRecoverableContent` checks the file size against the 20-byte V2 header size. Sidecars that are header-only (a take that ended, by a crash or an engine tear-down, before any audio reached the sidecar; a failed `PCMSidecar.init` deletes its own file) are discarded. Their companion main files are checked:
+3. **Discard empty sidecars.** `PCMSidecar.hasRecoverableContent` checks the file size against the 20-byte V2 header size. Sidecars that are header-only (a take that ended, by a crash or an engine tear-down, before any audio reached the sidecar; a failed `PCMSidecar.init` deletes its own file) are discarded. An engine tear-down of that kind has already told the user, when the take stopped, that no audio was captured (§4). Their companion main files are checked:
    - Main file `> PCMSidecar.mainFileValidThresholdBytes` (8 KB) → treated as a valid finalized recording; keep it, log a warning that the sidecar was orphaned. (Size alone can't establish that — see below.)
    - Main file `≤ PCMSidecar.mainFileValidThresholdBytes` → stub/aborted container; delete both.
 
@@ -622,7 +636,7 @@ Version suffix conventions:
 
 ### No sandbox
 
-DoublEnder is unsandboxed. This is a deliberate choice: sandboxing would require either a security-scoped bookmark (complex, requires user interaction to establish) or a save panel to select the output directory. Both would add friction for guests who are asked to "just record and send the file." Unsandboxed, the app writes to the Desktop path (`FileManager.urls(for: .desktopDirectory)`) directly, with no bookmark or panel. macOS still guards the Desktop folder for every app, sandboxed or not (a Files and Folders privacy permission since macOS 10.15), so the first access, normally the launch-time crash-recovery scan, asks the user once. The app supplies no `NSDesktopFolderUsageDescription`, so that prompt carries no explanation of its own. `DoublEnder.entitlements` holds two entitlements: `com.apple.security.device.audio-input`, which the hardened runtime requires for microphone access, and `com.apple.security.network.client`, which only a sandboxed app needs. The microphone prompt's text is the `NSMicrophoneUsageDescription` key in Info.plist, not an entitlement. `ENABLE_HARDENED_RUNTIME: YES` is set, so the binary is notarization-eligible.
+DoublEnder is unsandboxed. This is a deliberate choice: sandboxing would require either a security-scoped bookmark (complex, requires user interaction to establish) or a save panel to select the output directory. Both would add friction for guests who are asked to "just record and send the file." Unsandboxed, the app writes to the Desktop path (`FileManager.urls(for: .desktopDirectory)`) directly, with no bookmark or panel. macOS still guards the Desktop folder for every app, sandboxed or not (a Files and Folders privacy permission since macOS 10.15), so the first access, normally the launch-time crash-recovery scan, asks the user once. The prompt's explanation is the `NSDesktopFolderUsageDescription` key in Info.plist: "DoublEnder saves recordings to your Desktop and checks it for recordings left by a crash." Up to 2.5.6 the app supplied none, so the prompt gave no reason. `DoublEnder.entitlements` holds two entitlements: `com.apple.security.device.audio-input`, which the hardened runtime requires for microphone access, and `com.apple.security.network.client`, which only a sandboxed app needs. The microphone prompt's text is the `NSMicrophoneUsageDescription` key in Info.plist, not an entitlement. `ENABLE_HARDENED_RUNTIME: YES` is set, so the binary is notarization-eligible.
 
 ### No save panel
 
@@ -632,7 +646,7 @@ The filename prefix is overridable from the settings popover (`filenameBase`), p
 
 ### Mono output
 
-All output is mono, but the main file and the sidecar are made mono by different code. The main file's mix is AVAssetWriter's own: the output settings ask for one channel and the writer downmixes whatever arrives. Measured on macOS 26.7 with a two-channel 24-bit source, it scales each channel by 0.707 (−3 dB) and sums them. A tone on one channel only lands 3 dB lower in the file, and the same signal on both channels lands 3 dB higher, so a device that duplicates a mono mic onto two channels clips the main file at any peak above −3 dBFS. The sidecar and the meter instead average interleaved channels (and take channel 0 of planar input; see §3), which puts them 3 dB below the main file for any two-channel source, so the meter can show headroom that the file doesn't have. The rationale for mono: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
+All output is mono. The main file's mix is AVAssetWriter's own: the output settings ask for one channel and the writer downmixes whatever arrives, weighting each channel by its label (§3, "The mono mix"). For a two-channel source with no channel layout or a stereo one, it scales each channel by 0.707 (−3 dB) and sums them. A tone on one channel only lands 3 dB lower in the file, and the same signal on both channels lands 3 dB higher, so a device that duplicates a mono mic onto two channels clips the main file at any peak above −3 dBFS. A device whose channels are labelled discrete gives the file its first channel only. The sidecar and the meter apply the same weights, so the meter shows what the file records; only a channel layout the tests haven't measured can still differ. The rationale for mono: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
 
 ### AAC as default format
 
