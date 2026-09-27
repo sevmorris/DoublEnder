@@ -1,6 +1,6 @@
 # DoublEnder — Theory of Operation
 
-**Version:** 2.5.5lr · Last updated: 2026-08-14
+**Version:** 2.5.5lr · Last updated: 2026-09-26
 
 ---
 
@@ -51,7 +51,7 @@ The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     DoublEnderApp (AppDelegate)              │
-│  window chrome · quit intercept · crash recovery scan       │
+│  recorder window · quit intercept · crash recovery scan     │
 └───────────────────────────┬─────────────────────────────────┘
                             │ @NSApplicationDelegateAdaptor
                             ▼
@@ -74,7 +74,7 @@ The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. 
 
 ### Layer responsibilities
 
-**AppDelegate** owns three things the WindowGroup lifecycle can't: borderless window configuration (done before first paint to avoid chrome flash), the quit intercept (`applicationShouldTerminate`), and the crash-recovery scan that must run before the main window appears.
+**AppDelegate** owns what SwiftUI's scenes can't: the recorder window itself (`FaceplateWindow`, borderless yet able to become key, on screen before SwiftUI's launch pass; see §10), the quit intercept (`applicationShouldTerminate`, which ⌘W reaches too), and the crash-recovery scan, which hides the recorder until every recovered take is dealt with.
 
 **RecorderViewModel** is the single source of truth. It holds `AppState`, all timers, the `selectedInputDeviceID`, and user preferences. It mediates between AppDelegate's event-driven callbacks (quit, crash-recovery) and AudioEngine's completion handlers. It is a singleton (`shared`) because AppDelegate needs access independently of SwiftUI's view hierarchy.
 
@@ -626,11 +626,21 @@ WAV is provided for guests who are instructed specifically to record lossless (p
 
 `LevelMeter.dbFloor = -36`. The choice is deliberate: the meter is an activity indicator, not a precision metering tool. The 36 dB range from floor to 0 covers the range that matters for "is audio coming in?" A quiet room with ambient noise sits around −25 to −30 dBFS; speech peaks around −12 to −6 dBFS. The bottom 24 dB (−60 to −36) is below ambient room noise for any practical recording environment — showing it would display a perpetually-lit floor segment with no useful information. The 1 dB deadzone above `dbMin` in the meter rendering prevents the leftmost segment from staying lit at idle due to ambient noise resting just above the clamped floor.
 
-### The borderless-window/canBecomeKey pattern
+### The main window is the app's, not SwiftUI's
 
-SwiftUI's `WindowGroup` creates a stock `NSWindow`. After `configureMainWindow` sets `styleMask = [.borderless]`, AppKit's default `canBecomeKey` implementation returns false for borderless windows, which means clicks on the window while the app is backgrounded fail to bring the app to the front. The fix uses `object_setClass` to re-class the SwiftUI-owned instance to `KeyableBorderlessWindow` (a subclass that overrides `canBecomeKey` and `canBecomeMain` to return true).
+The recorder window is a `FaceplateWindow`, an `NSWindow` subclass that `AppDelegate` builds and shows in `applicationWillFinishLaunching`, with the faceplate in an `NSHostingView`. SwiftUI keeps the Help window and the menus: the app's body is an empty `Settings` scene that carries the `.commands`, then the Help `Window`.
 
-The class swap **must** happen after `setStyleMask`. SwiftUI's `NSHostingView.viewWillMove(toWindow:)` registers KVO observers keyed on the window class. If the class is swapped before `setStyleMask`, the subsequent `removeObserver:forKeyPath:` call fails to find the observer in the class-keyed table and crashes. After all window mutations are complete, no SwiftUI path triggers another KVO cleanup, so the swap is safe.
+The window has to be borderless and still become key, so that a click from another app activates the recorder and the keyboard reaches it. SwiftUI can't provide that. Its window class, `SwiftUI.AppKitWindow`, answers false to `canBecomeKey` once the window is borderless, and so does the `.plain` window style added in macOS 15. In a `.plain` window a click makes a text field first responder but typing goes nowhere, and the window has no shadow. No SwiftUI API changes either. `FaceplateWindow` overrides `canBecomeKey` and `canBecomeMain`, as `RecoveryWindow` and `UploadConfirmationWindow` already do.
+
+Up to 2.5.x the recorder was SwiftUI's `WindowGroup` window, made borderless in `applicationDidFinishLaunching` and then re-classed with `object_setClass` to an `NSWindow` subclass that could become key. This section called that safe. It wasn't. The window is a `SwiftUI.AppKitWindow`, not a stock `NSWindow`, and by `applicationDidFinishLaunching` it is already observed: its class is `NSKVONotifying_SwiftUI.AppKitWindow`, with observers from SwiftUI and from AppKit's views on `movableByWindowBackground`, `opaque`, `firstResponder`, `backgroundColor` and more. The swap dropped SwiftUI's overrides (`canBecomeKeyWindow`, `saveFrameUsingName:`, `constrainFrameRect:toScreen:` and `supplementalTargetForAction:sender:` among them) and the notifying setters. An observer registered before the swap heard nothing afterwards, and removing one threw `NSRangeException` ("Cannot remove an observer … because it is not registered as an observer"), the crash dbb549e hit when the swap ran first. The same code replaced SwiftUI's own window delegate, `SwiftUI.AppKitWindowController`, with `AppDelegate`. It also left three bugs. ⌘W did nothing, because AppKit disables File ▸ Close for a window with no close button. File ▸ New Window (⌘N) opened a second faceplate, titled and unconfigured. A Dock click while the recorder was hidden did the same.
+
+Three details keep the app's own window working:
+
+- **SwiftUI's launch pass.** At launch SwiftUI presents the app's first scene if no window is on screen by then. On macOS 26 that includes a `Settings` scene, which shows up as an empty Settings window. So `AppDelegate` puts the recorder on screen in `applicationWillFinishLaunching`: before that pass, and after `eraseSessionDefaults`, since the content view brings up the view model. A window created there but kept hidden doesn't count. The empty `Settings` scene comes first so that Help never is, and `CommandGroup(replacing: .appSettings)` removes its Settings… item. `applicationShouldHandleReopen` returns false, so a Dock click brings back the recorder rather than a SwiftUI scene.
+- **⌘W.** With no `WindowGroup`, SwiftUI builds no File menu. `CommandGroup(replacing: .saveItem)` supplies Close (⌘W), which sends `performClose` to the key window. Help closes as usual. The recorder overrides `performClose`, since AppKit's version asks the delegate only when the window has a close button, so ⌘W reaches `windowShouldClose`. That calls `NSApp.terminate`, so ⌘W meets the same recording and upload checks as ⌘Q (§5).
+- **Frame autosave.** The frame is saved as `NSWindow Frame Faceplate`. SwiftUI saved it under a name made from the root view's type, such as `DoublEnder.ContentView-1-AppWindow-1` or `DoublEnder_Cloud.CloudContentView-1-AppWindow-1`. `FaceplateWindow` reads that name once, when its own is missing, so the first launch after the update opens where the last one left off. Because the window can't be resized, only the position is taken from a saved frame, never the size. A drag moves the window with `setFrameOrigin`, which saves like any other move (see "Moving the window").
+
+The window is `[.borderless]`, clear and non-opaque from `init`, so there is no title bar to strip and nothing to flash on first paint. The layer-clearing pass over `NSThemeFrame` that the old code needed goes with it: a borderless window's frame view is `NSNextStepFrame`, with nothing beside the hosting view. The test host (`TestHostApp`) has no app delegate, so a test run never builds the window.
 
 ### Moving the window
 
