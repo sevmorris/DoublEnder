@@ -138,6 +138,7 @@ struct HelpView: View {
                     definition("Connection status", "The blue LED marked CLOUD indicates cloud readiness: solid blue when the network is reachable and the embedded credential is present, off otherwise. You can still record offline — uploads will be retried with the same file when the connection returns.")
                     definition("Local backup", "Your file is saved to the Desktop first, then uploaded. The local copy is never deleted automatically — keep or remove it as you prefer.")
                     definition("Pending uploads", "If an upload fails or is interrupted (network drop, app quit, retries exhausted), the next launch offers to retry it. The original file always stays on your Desktop until the upload succeeds.")
+                    definition("Session status", "While you record, and for a few minutes after, your producer's dashboard shows how the session is going: the name you entered, whether you're recording or uploading, the app version, your Mac's model and macOS version, what kind of microphone you use and its audio format, and how your last take ended. It never gets your Mac's or account's name, your file names, or the name of a Bluetooth headset or iPhone. Switching cloud features off stops it.")
                 }
                 #endif
 

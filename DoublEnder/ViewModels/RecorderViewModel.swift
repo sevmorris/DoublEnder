@@ -19,6 +19,23 @@ enum AppState {
     case error(String)
 }
 
+extension AppState {
+    /// The state's name without its payload, for diagnostics: an error's
+    /// message can name a device, and a failed upload's file a guest.
+    var diagnosticName: String {
+        switch self {
+        case .selectingMic: return "selectingMic"
+        case .ready: return "ready"
+        case .recording: return "recording"
+        #if GCS_ENABLED
+        case .uploading: return "uploading"
+        case .uploadFailed: return "uploadFailed"
+        #endif
+        case .error: return "error"
+        }
+    }
+}
+
 /// User-selectable output format. The picker in the settings popover binds
 /// to this; AudioEngine consumes it when starting a recording.
 enum OutputFormat: String, CaseIterable, Identifiable {
@@ -114,6 +131,10 @@ class RecorderViewModel: ObservableObject {
     }
     #if GCS_ENABLED
     @Published var uploadProgress: Double = 0
+    /// Why the current or last upload's latest attempt failed, as its
+    /// diagnostics category and HTTP status ("network:-1009", "server 403"),
+    /// for the heartbeat. Cleared when an upload starts and when one succeeds.
+    private var lastUploadError: String?
     #endif
 
     @Published var selectedInputDeviceID: String = "" {
@@ -347,6 +368,8 @@ class RecorderViewModel: ObservableObject {
     /// DiskSpaceChecker message. `stopRecording` tells the user with whatever
     /// confirms the take, once, and clears it.
     private var diskStopReason: String?
+    /// How the last take ended, for the heartbeat's diagnostics.
+    private(set) var lastTake: SessionDiagnostics.TakeInfo?
     /// Suppresses the idle input-loss alert while a recording-disconnect
     /// handler is already showing one and switching to the built-in mic.
     private var suppressIdleInputLossAlert = false
@@ -447,6 +470,9 @@ class RecorderViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        SessionHeartbeat.shared.diagnostics = { [weak self] in
+            self?.sessionDiagnostics() ?? [:]
+        }
         #endif
 
         audioEngine.$lastError
@@ -761,6 +787,14 @@ class RecorderViewModel: ObservableObject {
         timer?.cancel()
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()
+        // How the take went, for the heartbeat's lastTake, read before the
+        // engine's stop clears its per-take flags.
+        let takeSeconds = Int(recordingTime)
+        let takeDroppedFrames = audioEngine.droppedFrameWarning
+        let takeCrashBackup = SessionDiagnostics.crashBackupState(
+            unavailable: audioEngine.sidecarUnavailable,
+            failed: audioEngine.sidecarFailedDuringRecording
+        )
 
         audioEngine.stopRecording { [weak self] result in
             guard let self = self else {
@@ -786,6 +820,21 @@ class RecorderViewModel: ObservableObject {
             let diskReason = self.diskStopReason
             let diskNote = diskReason.map { Self.diskStopNote(reason: $0) }
             self.diskStopReason = nil
+            // Recorded before any confirmation, which is modal: the heartbeat
+            // keeps beating while it is up.
+            let sidecarHasAudio = Self.hasRecoverableSidecar(for: self.recordedFileURL)
+            self.lastTake = SessionDiagnostics.TakeInfo(
+                end: SessionDiagnostics.takeEnd(result: result, sidecarHasAudio: sidecarHasAudio),
+                cause: SessionDiagnostics.takeCause(
+                    diskStop: diskReason != nil,
+                    engineStop: self.pendingDisconnectReason != nil,
+                    failure: self.audioEngine.lastCaptureFailure
+                ),
+                seconds: takeSeconds,
+                droppedFrames: takeDroppedFrames,
+                interruptions: self.audioEngine.interruptionsThisTake,
+                crashBackup: takeCrashBackup
+            )
             switch result {
             case .success(.some(let url)):
                 // Notify the user that the recording is on disk — fires for both
@@ -856,6 +905,10 @@ class RecorderViewModel: ObservableObject {
                     self.state = .ready
                     #endif
                 } else {
+                    if sidecarHasAudio {
+                        // The re-wrap failed; the next launch tries again.
+                        self.lastTake?.end = .recoverAtLaunch
+                    }
                     let message = Self.stopFailureMessage(
                         for: error,
                         mainOutput: self.recordedFileURL,
@@ -867,6 +920,49 @@ class RecorderViewModel: ObservableObject {
             self.pendingDisconnectReason = nil
             completion?()
         }
+    }
+
+    /// What the Cloud heartbeat sends with each beat, to troubleshoot a
+    /// session from the dashboard: this Mac, the input, the take in progress
+    /// or the last one, the app's state and the Desktop's free space. See
+    /// `SessionDiagnostics` for what is sent and what never is. Main thread.
+    func sessionDiagnostics() -> [String: Any] {
+        var payload: [String: Any] = [
+            "system": SessionDiagnostics.SystemInfo.current.json,
+            "appState": state.diagnosticName,
+            "format": outputFormat.rawValue,
+        ]
+        if let input = audioEngine.inputDiagnostics() {
+            payload["input"] = input.json
+        }
+        if isCurrentlyRecording {
+            payload["take"] = [
+                "seconds": Int(recordingTime),
+                "writing": isWritingData,
+                "interrupted": audioEngine.sessionInterrupted,
+                "interruptions": audioEngine.interruptionsThisTake,
+                "droppedFrames": audioEngine.droppedFrameWarning,
+                "crashBackup": SessionDiagnostics.crashBackupState(
+                    unavailable: audioEngine.sidecarUnavailable,
+                    failed: audioEngine.sidecarFailedDuringRecording
+                ),
+            ] as [String: Any]
+        }
+        if let lastTake {
+            payload["lastTake"] = lastTake.json
+        }
+        if let freeMB = DiskSpaceChecker.availableMegabytes(at: Self.recordingsDirectory) {
+            payload["freeDiskMB"] = freeMB
+        }
+        #if GCS_ENABLED
+        if case .uploading = state, uploadProgress.isFinite {
+            payload["uploadProgress"] = (uploadProgress * 100).rounded() / 100
+        }
+        if let lastUploadError {
+            payload["lastUploadError"] = lastUploadError
+        }
+        #endif
+        return payload
     }
 
     /// Told to the user when a take ends with nothing written, after `reason`
@@ -1198,6 +1294,7 @@ class RecorderViewModel: ObservableObject {
 
         let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
         var attempt = 0
+        await MainActor.run { self.lastUploadError = nil }
 
         while true {
             await MainActor.run { self.state = .uploading }
@@ -1229,6 +1326,7 @@ class RecorderViewModel: ObservableObject {
 
                 self.clearPendingUpload()
                 await MainActor.run {
+                    self.lastUploadError = nil
                     self.recordingTime = 0
                     self.state = .ready
                     // Persistent, app-controlled confirmation — blocks until
@@ -1246,6 +1344,9 @@ class RecorderViewModel: ObservableObject {
                 let summary = Self.uploadErrorSummary(error)
                 let statusText = summary.status.map(String.init) ?? "—"
                 let elapsedText = String(format: "%.1fs", Date().timeIntervalSince(attemptStart))
+                // The same sanitized summary is all the heartbeat reports.
+                let uploadError = summary.status.map { "\(summary.label) \($0)" } ?? summary.label
+                await MainActor.run { self.lastUploadError = uploadError }
                 // Deterministic failures (integrity mismatch, credential/signing)
                 // won't fix by re-sending — fail now, keep the local file.
                 let nonRetryable = (error as? Uploader.UploaderError)?.isNonRetryable ?? false

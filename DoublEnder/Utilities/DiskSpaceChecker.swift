@@ -27,6 +27,12 @@ enum DiskSpaceChecker {
         return "Not enough disk space on Desktop (\(mb) MB free). Free at least \(requiredMB) MB before recording."
     }
 
+    /// Free space for recordings at `directory`, in whole MB, or nil if the
+    /// volume can't be queried. For diagnostics.
+    static func availableMegabytes(at directory: URL) -> Int? {
+        availableBytes(at: directory).map { Int($0 / (1024 * 1024)) }
+    }
+
     private static func availableBytes(at url: URL) -> Int64? {
         guard let values = try? url.resourceValues(forKeys: [
             .volumeAvailableCapacityForImportantUsageKey
