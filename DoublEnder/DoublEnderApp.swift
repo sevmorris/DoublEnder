@@ -60,23 +60,31 @@ extension UserDefaults {
 }
 
 struct DoublEnderApp: App {
-    // AppDelegate owns window chrome, quit intercept, and crash recovery so
-    // the window is fully borderless/transparent before its first paint —
-    // eliminating the chrome flash an earlier post-paint cleanup pass produced.
+    // The recorder window is AppDelegate's own (FaceplateWindow), along with
+    // the quit intercept and crash recovery. SwiftUI keeps the Help window
+    // and the menus.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup {
-            #if GCS_ENABLED
-            CloudContentView()
-            #else
-            ContentView()
-            #endif
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)   // fixed-size: content frame enforces 504×430
+        // SwiftUI presents an app's first scene at launch when no window is
+        // on screen by then — on macOS 26 even a Settings scene. AppDelegate
+        // has the recorder on screen before that point, so nothing is
+        // presented. This empty scene is first so that Help never is, and
+        // it carries the menus.
+        Settings { EmptyView() }
         .commands {
+            // There is no settings window, so no Settings… (⌘,) item.
+            CommandGroup(replacing: .appSettings) {}
+
+            // With no WindowGroup, SwiftUI builds no File menu and nothing
+            // answers ⌘W. Close goes to the key window: Help closes, and the
+            // recorder asks to quit (FaceplateWindow.performClose).
+            CommandGroup(replacing: .saveItem) {
+                Button("Close") { NSApp.keyWindow?.performClose(nil) }
+                    .keyboardShortcut("w")
+            }
+
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
                     Task { await checkForUpdates() }
@@ -127,9 +135,10 @@ struct DoublEnderApp: App {
 // MARK: - App Delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private weak var mainWindow: NSWindow?
+    private var mainWindow: FaceplateWindow?
 
-    /// Side-effect-free setup that should run before any window appears.
+    /// Setup that must come before SwiftUI's launch pass, ending with the
+    /// recorder on screen.
     func applicationWillFinishLaunching(_ notification: Notification) {
         registerBundledFonts()
         NotificationService.shared.configure()
@@ -137,12 +146,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // is initialised — this is the only reliable path that also runs after
         // a crash or force-quit, where applicationWillTerminate never fires.
         RecorderViewModel.eraseSessionDefaults()
+        // After the erase, because the content view brings up the VM. Before
+        // SwiftUI's launch pass, because with no window on screen by then
+        // SwiftUI would present the empty Settings scene.
+        showMainWindow()
     }
 
-    /// Windows exist but haven't been ordered front yet — configure the main
-    /// window here so it's borderless/transparent on first paint.
     func applicationDidFinishLaunching(_ notification: Notification) {
-        configureMainWindow()
         runCrashRecoveryIfNeeded()
         #if GCS_ENABLED
         runPendingUploadCheckIfNeeded()
@@ -151,10 +161,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        // Borderless windows can lose key status when backgrounded; reclaim
-        // focus so click-to-activate stays reliable without relying solely
-        // on object_setClass (see KeyableBorderlessWindow).
-        mainWindow?.makeKeyAndOrderFront(nil)
+        // The recorder can become key, so AppKit restores the key window on
+        // activation by itself. Reclaim focus only if nothing has it: doing
+        // it every time would take key from Help whenever the app is
+        // activated with Help in front.
+        if NSApp.keyWindow == nil {
+            mainWindow?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// A Dock click with nothing on screen brings the recorder back —
+    /// except while a launch prompt is keeping it hidden. Answering false
+    /// keeps SwiftUI from presenting a scene of its own.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag && NSApp.modalWindow == nil {
+            mainWindow?.makeKeyAndOrderFront(nil)
+        }
+        return false
     }
 
     /// Single-window app — closing the only window should quit (and route
@@ -190,107 +213,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return .terminateNow
     }
 
-    /// ⌘W on the borderless window routes through here. We re-route to
-    /// `terminate` so there's a single quit confirmation path.
+    /// ⌘W on the recorder routes through here (FaceplateWindow.performClose).
+    /// We re-route to `terminate` so there's a single quit confirmation path.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         NSApp.terminate(nil)
         return false
     }
 
-    // MARK: - Main window configuration
+    // MARK: - Main window
 
-    private func configureMainWindow() {
-        // The help window is created lazily on first open, so at launch the
-        // first (and only) window is the main content window.
-        let candidate = NSApp.windows.first { $0.identifier?.rawValue != "help" && $0.contentView != nil }
-        guard let window = candidate ?? NSApp.windows.first else {
-            logger.error("configureMainWindow: no window found — window chrome and delegate not applied")
-            return
-        }
-
-        mainWindow = window
-        window.delegate = self
-        // .fullSizeContentView is only meaningful for titled windows; on a
-        // borderless window it is a no-op but has been observed to leave a
-        // stale chrome layer active in some builds — drop it.
-        // titlebarAppearsTransparent is also redundant for .borderless.
-        window.styleMask = [.borderless]
-        // The faceplate moves the window itself (WindowDragArea), so AppKit's
-        // background drag stays off. On macOS 27 it no longer moves a window
-        // of SwiftUI content, and left on elsewhere it would make which of
-        // the two handles a drag depend on the macOS version.
-        window.isMovableByWindowBackground = false
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = true
-
-        // ── 1. Hosting-view layer ────────────────────────────────────────────
-        // Cast explicitly to the concrete NSHostingView generic so we are certain
-        // we are clearing the SwiftUI hosting view's own CALayer, not a wrapper.
-        // SwiftUI sometimes initialises this layer with a non-zero fill colour
-        // which shows through wherever the frame image has transparent pixels
-        // (the rounded outer corners), most visibly in the bottom-right.
-        // The cast target differs by build: CloudContentView for GCS_ENABLED,
-        // ContentView for the public app.
+    private func showMainWindow() {
         #if GCS_ENABLED
-        let hostingViewCleared = (window.contentView as? NSHostingView<CloudContentView>)
-            .map { hv -> Bool in
-                hv.wantsLayer = true
-                hv.layer?.backgroundColor = CGColor.clear
-                hv.layer?.isOpaque = false
-                return true
-            } ?? false
+        let window = FaceplateWindow(rootView: CloudContentView())
         #else
-        let hostingViewCleared = (window.contentView as? NSHostingView<ContentView>)
-            .map { hv -> Bool in
-                hv.wantsLayer = true
-                hv.layer?.backgroundColor = CGColor.clear
-                hv.layer?.isOpaque = false
-                return true
-            } ?? false
+        let window = FaceplateWindow(rootView: ContentView())
         #endif
-        if !hostingViewCleared {
-            // Fallback for any build variant where the generic cast fails.
-            window.contentView?.wantsLayer = true
-            window.contentView?.layer?.backgroundColor = CGColor.clear
-            window.contentView?.layer?.isOpaque = false
-        }
-
-        // ── 2. NSThemeFrame chrome layers ────────────────────────────────────
-        // The NSThemeFrame (superview of contentView) and any sibling views
-        // macOS injects alongside the hosting view can carry opaque CALayers.
-        // Walk every view in that layer — skipping the hosting view itself,
-        // which SwiftUI manages — and force their layers clear.
-        if let frameView = window.contentView?.superview {
-            frameView.wantsLayer = true
-            frameView.layer?.backgroundColor = CGColor.clear
-            frameView.layer?.isOpaque = false
-            for sub in frameView.subviews where sub !== window.contentView {
-                sub.wantsLayer = true
-                sub.layer?.backgroundColor = CGColor.clear
-                sub.layer?.isOpaque = false
-            }
-        }
-
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
-
-        // Re-class the SwiftUI-created NSWindow instance to a subclass that
-        // overrides canBecomeKey / canBecomeMain → true. Stock NSWindow with
-        // styleMask == [.borderless] returns canBecomeKey = false by default
-        // (Apple's documented behavior), which means clicks on the window
-        // while the app is in the background fail to activate the app.
-        //
-        // CRITICAL: this MUST run AFTER setStyleMask. setStyleMask triggers
-        // SwiftUI's NSHostingView.viewWillMove(toWindow:) cleanup, which
-        // calls removeObserver:forKeyPath: on the window. KVO bookkeeping is
-        // class-keyed; swapping the class BEFORE setStyleMask makes the
-        // observer table un-findable and crashes with
-        //   "Cannot remove an observer … is not registered as an observer".
-        // After all window mutations are complete, no further code path on
-        // our side triggers a KVO cleanup, so the swap is safe.
-        object_setClass(window, KeyableBorderlessWindow.self)
+        window.delegate = self
+        mainWindow = window
+        // AppKit lists only titled windows in the Window menu by itself.
+        NSApp.addWindowsItem(window, title: window.title, filename: false)
+        window.makeKeyAndOrderFront(nil)
     }
 
     // MARK: - Quit-during-recording alert
@@ -509,15 +451,59 @@ final class RecoveryWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-// MARK: - Main window class (key-capable borderless)
+// MARK: - Main window
 
-/// SwiftUI's WindowGroup creates a stock NSWindow. After we set its style
-/// mask to [.borderless] in AppDelegate, the AppKit default for
-/// canBecomeKey returns false — which means clicks on the window while the
-/// app is backgrounded fail to activate it. AppDelegate `object_setClass`-es
-/// the SwiftUI-created instance to this subclass so the OS reads
-/// canBecomeKey = true and click-to-activate works from any state.
-final class KeyableBorderlessWindow: NSWindow {
+/// The recorder's window: borderless and clear, with the faceplate art as its
+/// only frame.
+///
+/// The app builds it rather than taking SwiftUI's. SwiftUI's window class,
+/// `SwiftUI.AppKitWindow`, answers false to `canBecomeKey` once the window is
+/// borderless, and so does its `.plain` style — so a click from another app
+/// could not activate the recorder and it could not take the keyboard. Up to
+/// 2.5.x the app re-classed SwiftUI's window to get round that, which cut the
+/// window off from SwiftUI's KVO observers and its own overrides (see
+/// THEORY_OF_OPERATION §10). Built here, the window is borderless from its
+/// first frame, so there is no chrome to strip either.
+final class FaceplateWindow: NSWindow {
+    private static let autosaveName = "Faceplate"
+
+    init<Content: View>(rootView: Content) {
+        let hostingView = NSHostingView(rootView: rootView)
+        super.init(contentRect: NSRect(origin: .zero, size: hostingView.fittingSize),
+                   styleMask: [.borderless], backing: .buffered, defer: false)
+        contentView = hostingView
+        title = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "DoublEnder"
+        isReleasedWhenClosed = false
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        // WindowDragArea moves the window; AppKit's background drag stays off
+        // (THEORY_OF_OPERATION §10, "Moving the window").
+        isMovableByWindowBackground = false
+        collectionBehavior = [.primary, .fullScreenNone]
+        restoreFrame(swiftUIName: "\(String(reflecting: Content.self))-1-AppWindow-1")
+    }
+
+    /// Up to 2.5.x the window was SwiftUI's, which saved its frame under a
+    /// name made from the root view's type ("DoublEnder.ContentView-1-AppWindow-1").
+    /// That is read once, so the first launch after the update opens where
+    /// the last one left off; from then on the frame is saved under our own
+    /// name. A window that can't be resized takes only the position from it.
+    private func restoreFrame(swiftUIName: String) {
+        if !setFrameUsingName(Self.autosaveName) && !setFrameUsingName(swiftUIName) {
+            center()
+        }
+        setFrameAutosaveName(Self.autosaveName)
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// AppKit's performClose asks the delegate only when the window has a
+    /// close button, and a borderless one has none, so ⌘W would end there.
+    override func performClose(_ sender: Any?) {
+        if delegate?.windowShouldClose?(self) ?? true {
+            close()
+        }
+    }
 }

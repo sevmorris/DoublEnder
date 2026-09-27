@@ -562,8 +562,8 @@ class RecorderViewModel: ObservableObject {
         alert.addButton(withTitle: "Keep Current")      // .alertSecondButtonReturn
 
         // App-modal runModal() rather than beginSheetModal(for:) — the
-        // DoublEnder main window is borderless ([.borderless] styleMask in
-        // AppDelegate.configureMainWindow) and AppKit's sheet machinery
+        // DoublEnder main window is borderless (FaceplateWindow, in
+        // DoublEnderApp.swift) and AppKit's sheet machinery
         // expects a titled parent to route button-click events to the
         // response handler. On a borderless parent the sheet renders but
         // never delivers clicks, leaving the alert visible but unresponsive
