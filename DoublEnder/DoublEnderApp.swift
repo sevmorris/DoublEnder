@@ -466,10 +466,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Fonts
 
     private func registerBundledFonts() {
-        guard let url = Bundle.main.url(forResource: "DSEG7Classic-Regular", withExtension: "ttf") else {
-            return
+        for name in ["DSEG7Classic-Regular", "Saira-Regular"] {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else { continue }
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
-        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
     }
 }
 

@@ -149,18 +149,21 @@ struct RecorderMainPanel: View {
                     .fill(isRecordingState ? FaceplateDesign.stopFill : FaceplateDesign.recordIdleFill)
                 // Both labels share one size so the type doesn't jump when the
                 // button toggles. "PRESS TO RECORD" is the longer string and
-                // sets the ceiling: it needs ~384pt at the old 41pt inside a
-                // 295pt button, and 27pt is the largest size that fits.
+                // sets the ceiling: in Saira at 27pt it measures ~286pt of the
+                // 295pt button.
                 //
                 // Two stacked lines were measured and are WORSE, not better —
                 // the 72pt button height constrains stacked text (25pt max)
                 // harder than the width constrains a single line (27pt).
                 // Bigger type here means a taller button, not more lines.
                 //
-                // lineLimit + minimumScaleFactor guard the font fallback: a Mac
-                // without Eurostile resolves panelFont to system-bold, which
-                // renders these strings ~8% wider and would otherwise wrap or
-                // clip on a guest's machine.
+                // lineLimit + minimumScaleFactor guard the font fallback: if
+                // the bundled Saira failed to register, panelFont resolves to
+                // system bold, which is wider and would otherwise wrap or clip.
+                //
+                // No vertical nudge: Saira's line box centres its capitals
+                // (measured 0.5pt high). The s(4) nudge this once had was for
+                // Eurostile, whose line box sets capitals ~5pt high.
                 Text(isRecordingState ? "PRESS TO STOP" : "PRESS TO RECORD")
                     .font(FaceplateDesign.panelFont(size: FaceplateDesign.s(27)))
                     .tracking(FaceplateDesign.s(3))
@@ -169,8 +172,6 @@ struct RecorderMainPanel: View {
                     .foregroundColor(isRecordingState ? .white : FaceplateDesign.recordAccent)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .multilineTextAlignment(.center)
-                    // Cap-only text sits optically high; nudge to compensate.
-                    .offset(y: FaceplateDesign.s(4))
             }
             .frame(width: FaceplateDesign.vpContentWidth, height: FaceplateDesign.s(72))
             .background(FaceplateDesign.vpSurface)

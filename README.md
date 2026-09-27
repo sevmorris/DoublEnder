@@ -88,4 +88,4 @@ If DoublEnder saves you time, [buy me a coffee](https://ko-fi.com/sevmo). Free f
 Copyright © 2026 Seven Morris.
 Distributed under the [MIT License](LICENSE).
 
-Bundled font: [DSEG7 Classic](https://github.com/keshikan/DSEG) by keshikan, licensed under the SIL Open Font License 1.1.
+Bundled fonts, both licensed under the SIL Open Font License 1.1: [DSEG7 Classic](https://github.com/keshikan/DSEG) by keshikan, and [Saira](https://github.com/Omnibus-Type/Saira) by The Saira Project Authors (licence text in `DoublEnder/Resources/Fonts/Saira-OFL.txt`).
