@@ -39,6 +39,9 @@ private struct ThemedConfirmationView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
+        // Above the fill, which would take the click itself, so a drag on
+        // the dialog's empty area moves it.
+        .background(WindowDragArea())
         .background(dlgBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -128,7 +131,6 @@ private enum ThemedConfirmation {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
         window.level = .modalPanel
         centerOnAppScreen(window)
 
@@ -208,6 +210,9 @@ struct PendingUploadView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
+        // Above the fill, which would take the click itself, so a drag on
+        // the dialog's empty area moves it.
+        .background(WindowDragArea())
         .background(dlgBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -296,7 +301,6 @@ enum PendingUploadPrompt {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
         window.level = .modalPanel
         UploadConfirmation.centerOnAppScreen(window)
 

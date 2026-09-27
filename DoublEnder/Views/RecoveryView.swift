@@ -118,6 +118,9 @@ struct RecoveryView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
+        // Above the fill, which would take the click itself, so a drag on
+        // the dialog's empty area moves it.
+        .background(WindowDragArea())
         .background(recBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(

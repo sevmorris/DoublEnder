@@ -215,7 +215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // stale chrome layer active in some builds — drop it.
         // titlebarAppearsTransparent is also redundant for .borderless.
         window.styleMask = [.borderless]
-        window.isMovableByWindowBackground = true
+        // The faceplate moves the window itself (WindowDragArea), so AppKit's
+        // background drag stays off. On macOS 27 it no longer moves a window
+        // of SwiftUI content, and left on elsewhere it would make which of
+        // the two handles a drag depend on the macOS version.
+        window.isMovableByWindowBackground = false
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
@@ -448,7 +452,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
         window.level = .modalPanel
         centerModal(window)
 
