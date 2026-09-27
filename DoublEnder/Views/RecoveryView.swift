@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 
 // Warm amber palette — matches UploadConfirmationView so every themed dialog
 // in the app shares the same chassis-screen aesthetic.
@@ -36,13 +37,18 @@ final class RecoveryModel: ObservableObject {
 
     let sidecarURL: URL
     let mainFileURL: URL
-    /// True when the main file at `mainFileURL` already exists and is large
-    /// enough (>8 KB) to be a real finalized recording. Happens when the
-    /// app dies in the tiny window between `writer.finishWriting` completing
-    /// and `sidecar.discard()` running — m4a is fine, sidecar is leftover.
-    /// When true, the prompt offers a "Keep Saved" option so the user
-    /// doesn't lose a valid recording by recovering or deleting. Threshold
-    /// matches the launch-cleanup logic in `DoublEnderApp.runCrashRecoveryIfNeeded`.
+    /// True when the main file at `mainFileURL` is a finished recording.
+    /// Happens when the app dies in the tiny window between
+    /// `writer.finishWriting` completing and `sidecar.discard()` running —
+    /// the main file is fine, the sidecar is leftover. When true, the prompt
+    /// offers a "Keep Saved" option so the user doesn't lose a valid
+    /// recording by recovering or deleting.
+    ///
+    /// Decided by `isFinishedRecording`, not by size. Up to 2.5.6 this used
+    /// the 8 KB threshold, which a crashed take passes within a third of
+    /// a second, so almost every crash offered "Keep Saved" for a file that
+    /// would not play — and keeping it deleted the sidecar, the only copy
+    /// that could be recovered.
     let hasValidMainFile: Bool
 
     /// Invoked when this sidecar is fully handled (recovered, deleted, or
@@ -53,9 +59,18 @@ final class RecoveryModel: ObservableObject {
         self.sidecarURL = sidecarURL
         let main = PCMSidecar.mainOutputURL(for: sidecarURL)
         self.mainFileURL = main
-        let attrs = try? FileManager.default.attributesOfItem(atPath: main.path)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-        self.hasValidMainFile = size > PCMSidecar.mainFileValidThresholdBytes
+        self.hasValidMainFile = Self.isFinishedRecording(at: main)
+    }
+
+    /// True when `url` opens as audio and holds at least one frame, which a
+    /// take only does once its writer has run `finishWriting`. AVAssetWriter
+    /// writes the audio into the file as it records, so a crashed take is as
+    /// large as a finished one; but a crashed M4A has no moov atom and does
+    /// not open, and a crashed WAV's header still records a data size of
+    /// zero, so it opens with no frames.
+    static func isFinishedRecording(at url: URL) -> Bool {
+        guard let file = try? AVAudioFile(forReading: url) else { return false }
+        return file.length > 0
     }
 
     var fileName: String { mainFileURL.lastPathComponent }

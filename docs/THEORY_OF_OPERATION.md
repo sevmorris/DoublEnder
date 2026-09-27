@@ -452,6 +452,8 @@ In `AppDelegate.applicationDidFinishLaunching` → `runCrashRecoveryIfNeeded`:
 
 AVAssetWriter writes the audio into the file as it records and adds the M4A's moov atom only at `finishWriting`, so a crashed M4A has all its audio but no index, and does not open. A crashed WAV has all its audio too, but its header records a data size of zero, so it reads as empty. Either way the file passes 8 KB within about a third of a second of recording, so exceeding the threshold means only that something was written, not that the file was finalized. `cancelWriting()` removes the file rather than leaving a stub.
 
+The threshold is therefore used only where keeping the file is the safe side: launch cleanup, next to an empty sidecar, where a file over 8 KB holds the only audio there is. The recovery dialog asks a different question (below).
+
 ### RecoveryModel and RecoveryView
 
 `RecoveryModel` is an `ObservableObject` that drives the recovery dialog through four phases:
@@ -460,7 +462,7 @@ AVAssetWriter writes the audio into the file as it records and adds the M4A's mo
 - `.success(URL)` — the recovered WAV path
 - `.failure(String)` — error message; the sidecar is left in place
 
-`hasValidMainFile` is computed at init by checking whether the companion main file (`.m4a` or `.wav`) exists and exceeds `PCMSidecar.mainFileValidThresholdBytes`. It is meant to catch the race window where `finishWriting` completed but `sidecar.discard()` hadn't run before the crash — a valid recording on disk alongside a now-redundant sidecar. Given the measurements above, it is also true after almost any crash mid-take, when the main file is not valid; the dialog then offers KEEP SAVED for a file that won't play, and choosing it deletes the sidecar, the only recoverable copy.
+`hasValidMainFile` is computed at init by `RecoveryModel.isFinishedRecording`: the companion main file (`.m4a` or `.wav`) must open with `AVAudioFile` and hold at least one frame. That is true of a finished take of any length and false of a crashed one — a crashed M4A has no moov atom and does not open, and a crashed WAV opens with no frames because its header records a data size of zero. It catches the race window where `finishWriting` completed but `sidecar.discard()` hadn't run before the crash — a valid recording on disk alongside a now-redundant sidecar. Up to 2.5.6 this check was the 8 KB threshold, which a crashed take passes within a third of a second, so almost every crash offered KEEP SAVED for a file that would not play, and keeping it deleted the sidecar, the only recoverable copy. `PCMSidecarTests` writes finished and unfinished takes in both formats with the app's own writer settings and checks both outcomes.
 
 **Prompt options:**
 

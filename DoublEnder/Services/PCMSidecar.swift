@@ -19,9 +19,13 @@ final class PCMSidecar {
     /// Extension appended to the main output path: `Recording.m4a.pcmrec`.
     static let pathExtension = "pcmrec"
 
-    /// Minimum main-file size (bytes) to treat a companion `.m4a`/`.wav` as
-    /// successfully finalized rather than a stub container. Used by launch-
-    /// time recovery cleanup and `RecoveryModel.hasValidMainFile`.
+    /// Main-file size (bytes) at or below which launch-time cleanup treats a
+    /// companion `.m4a`/`.wav` next to an empty sidecar as a stub, and deletes
+    /// both. Above it the file is kept. That is not proof it was finalized — a
+    /// crashed take passes 8 KB within a third of a second — but with an empty
+    /// sidecar it holds the only audio there is, so keeping it is the safe
+    /// side. The recovery dialog does not use this: see
+    /// `RecoveryModel.isFinishedRecording`.
     static let mainFileValidThresholdBytes: Int64 = 8 * 1024
 
     /// v1 header: magic + sample rate + channels (legacy, still recovered).

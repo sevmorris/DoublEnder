@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import CoreMedia
 import CoreAudio
 @testable import DoublEnder
@@ -98,7 +99,8 @@ final class PCMSidecarTests: XCTestCase {
         bytes: [UInt8],
         channels: UInt32,
         bitsPerChannel: UInt32,
-        frameCount: Int
+        frameCount: Int,
+        presentationTimeStamp: CMTime = .zero
     ) throws -> CMSampleBuffer {
         let bytesPerSample = bitsPerChannel / 8
         let bytesPerFrame = channels * bytesPerSample
@@ -161,7 +163,7 @@ final class PCMSidecarTests: XCTestCase {
             dataBuffer: blockBuffer,
             formatDescription: formatDesc,
             sampleCount: CMItemCount(frameCount),
-            presentationTimeStamp: .zero,
+            presentationTimeStamp: presentationTimeStamp,
             packetDescriptions: nil,
             sampleBufferOut: &sampleBuffer
         )
@@ -300,12 +302,144 @@ final class PCMSidecarTests: XCTestCase {
     func testRecoveryModelDetectsValidMainFile() throws {
         let mainURL = tempDir.appendingPathComponent("saved.m4a")
         let sidecarURL = tempDir.appendingPathComponent("saved.m4a.pcmrec")
-        let payload = Data(repeating: 0, count: Int(PCMSidecar.mainFileValidThresholdBytes) + 1)
-        try payload.write(to: mainURL)
+        try writeTake(to: mainURL, format: .aac, seconds: 1, finish: true)
         try Data("DEP2".utf8).write(to: sidecarURL)
 
         let model = RecoveryModel(sidecarURL: sidecarURL)
         XCTAssertTrue(model.hasValidMainFile)
+    }
+
+    /// The case the size threshold got backwards: a crashed take is well over
+    /// 8 KB, so the dialog offered "Keep Saved" for a file that won't play,
+    /// and keeping it deleted the only recoverable copy.
+    func testRecoveryModelRejectsCrashedMainFile() throws {
+        let mainURL = tempDir.appendingPathComponent("crashed.m4a")
+        let sidecarURL = tempDir.appendingPathComponent("crashed.m4a.pcmrec")
+        let writer = try writeTake(to: mainURL, format: .aac, seconds: 2, finish: false)
+        defer { writer.cancelWriting() }
+        try waitUntilLargerThanThreshold(mainURL)
+        try Data("DEP2".utf8).write(to: sidecarURL)
+
+        let model = RecoveryModel(sidecarURL: sidecarURL)
+        XCTAssertFalse(model.hasValidMainFile)
+    }
+
+    func testRecoveryModelRejectsMissingMainFile() throws {
+        let sidecarURL = tempDir.appendingPathComponent("gone.m4a.pcmrec")
+        try Data("DEP2".utf8).write(to: sidecarURL)
+
+        let model = RecoveryModel(sidecarURL: sidecarURL)
+        XCTAssertFalse(model.hasValidMainFile)
+    }
+
+    // MARK: - Finished vs. crashed main files
+
+    func testFinishedShortAACIsFinishedRecordingDespiteSize() throws {
+        // A finished 0.1 s take is under 8 KB, so size called it a stub.
+        let url = tempDir.appendingPathComponent("short.m4a")
+        try writeTake(to: url, format: .aac, seconds: 0.1, finish: true)
+        XCTAssertLessThan(try fileSize(url), PCMSidecar.mainFileValidThresholdBytes)
+        XCTAssertTrue(RecoveryModel.isFinishedRecording(at: url))
+    }
+
+    func testCrashedAACIsNotFinishedRecording() throws {
+        let url = tempDir.appendingPathComponent("crash.m4a")
+        let writer = try writeTake(to: url, format: .aac, seconds: 2, finish: false)
+        defer { writer.cancelWriting() }
+        try waitUntilLargerThanThreshold(url)
+        XCTAssertFalse(RecoveryModel.isFinishedRecording(at: url))
+    }
+
+    func testFinishedWAVIsFinishedRecording() throws {
+        let url = tempDir.appendingPathComponent("done.wav")
+        try writeTake(to: url, format: .wav, seconds: 0.5, finish: true)
+        XCTAssertTrue(RecoveryModel.isFinishedRecording(at: url))
+    }
+
+    func testCrashedWAVIsNotFinishedRecording() throws {
+        // All the audio is in the file, but the header still says zero bytes.
+        let url = tempDir.appendingPathComponent("crash.wav")
+        let writer = try writeTake(to: url, format: .wav, seconds: 1, finish: false)
+        defer { writer.cancelWriting() }
+        try waitUntilLargerThanThreshold(url)
+        XCTAssertFalse(RecoveryModel.isFinishedRecording(at: url))
+    }
+
+    func testZeroFilledFileIsNotFinishedRecording() throws {
+        let url = tempDir.appendingPathComponent("zeros.m4a")
+        try Data(repeating: 0, count: Int(PCMSidecar.mainFileValidThresholdBytes) + 1).write(to: url)
+        XCTAssertFalse(RecoveryModel.isFinishedRecording(at: url))
+    }
+
+    /// Write `seconds` of a 440 Hz tone as 48 kHz mono Int24 — the shape a USB
+    /// interface delivers — through AVAssetWriter with the app's own output
+    /// settings (`AudioEngine.startRecording`). Unless `finish` is set the
+    /// writer is left open, which is the state a crash leaves the file in.
+    @discardableResult
+    private func writeTake(to url: URL, format: OutputFormat, seconds: Double,
+                           finish: Bool) throws -> AVAssetWriter {
+        let rate = 48_000.0
+        let settings: [String: Any] = format == .aac
+            ? [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000,
+               AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 256_000]
+            : [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate,
+               AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 24,
+               AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsFloatKey: false,
+               AVLinearPCMIsNonInterleaved: false]
+        let writer = try AVAssetWriter(outputURL: url, fileType: format == .aac ? .m4a : .wav)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        input.expectsMediaDataInRealTime = true
+        writer.add(input)
+        XCTAssertTrue(writer.startWriting(), "startWriting: \(String(describing: writer.error))")
+        writer.startSession(atSourceTime: .zero)
+
+        let total = Int(seconds * rate)
+        var written = 0
+        var phase = 0.0
+        while written < total {
+            let n = min(1024, total - written)
+            var bytes = [UInt8](repeating: 0, count: n * 3)
+            for i in 0..<n {
+                let v = Int32(sin(phase) * 0.25 * 8_388_607)
+                phase += 2 * .pi * 440 / rate
+                bytes[i * 3] = UInt8(truncatingIfNeeded: v)
+                bytes[i * 3 + 1] = UInt8(truncatingIfNeeded: v >> 8)
+                bytes[i * 3 + 2] = UInt8(truncatingIfNeeded: v >> 16)
+            }
+            let buffer = try makePCMSampleBuffer(
+                bytes: bytes, channels: 1, bitsPerChannel: 24, frameCount: n,
+                presentationTimeStamp: CMTime(value: CMTimeValue(written), timescale: 48_000)
+            )
+            let deadline = Date().addingTimeInterval(5)
+            while !input.isReadyForMoreMediaData && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            XCTAssertTrue(input.append(buffer), "append: \(String(describing: writer.error))")
+            written += n
+        }
+
+        if finish {
+            input.markAsFinished()
+            let done = expectation(description: "finishWriting")
+            writer.finishWriting { done.fulfill() }
+            wait(for: [done], timeout: 10)
+            XCTAssertEqual(writer.status, .completed, "finishWriting: \(String(describing: writer.error))")
+        }
+        return writer
+    }
+
+    private func fileSize(_ url: URL) throws -> Int64 {
+        try (FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    /// An open writer flushes on its own schedule. Waiting for the file to
+    /// pass the old threshold proves the test covers the case size misjudged.
+    private func waitUntilLargerThanThreshold(_ url: URL) throws {
+        let deadline = Date().addingTimeInterval(5)
+        while (try? fileSize(url)) ?? 0 <= PCMSidecar.mainFileValidThresholdBytes && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertGreaterThan(try fileSize(url), PCMSidecar.mainFileValidThresholdBytes)
     }
 
     func testRecoveryModelRejectsStubMainFile() throws {
