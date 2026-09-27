@@ -217,7 +217,6 @@ final class SessionDiagnosticsTests: XCTestCase {
         code.utf8.reduce(0) { $0 << 8 | UInt32($1) }
     }
 
-    /// A 48 kHz linear PCM format description, labelled by `layout` if given.
     /// The format's stream description, copied out while the format is still
     /// alive: the pointer CoreMedia returns points into the format itself.
     private func streamDescription(_ format: CMAudioFormatDescription) throws -> AudioStreamBasicDescription {
@@ -226,6 +225,7 @@ final class SessionDiagnosticsTests: XCTestCase {
         }
     }
 
+    /// A 48 kHz linear PCM format description, labelled by `layout` if given.
     private func makeFormat(
         channels: UInt32, bits: UInt32, float: Bool = false, planar: Bool = false, layout: Data?
     ) throws -> CMAudioFormatDescription {
