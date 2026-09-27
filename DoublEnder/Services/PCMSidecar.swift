@@ -40,8 +40,9 @@ final class PCMSidecar {
     /// Payload samples are always float32 mono.
     private static let payloadFormatFloat32: UInt32 = 1
     private static let bytesPerSample = MemoryLayout<Float>.size
-    /// Flush the sidecar to disk every 512 KB so a power loss loses at
-    /// most the last fraction of a second rather than seconds of buffer.
+    /// Flush the sidecar to disk every 512 KB of payload, so a power loss
+    /// loses about the last interval: 2.7 s at 48 kHz mono Float32
+    /// (192 KB/s), 1.4 s at 96 kHz.
     private static let syncIntervalBytes = 512 * 1024
 
     private static let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "PCMSidecar")

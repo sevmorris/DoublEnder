@@ -126,17 +126,20 @@ class AudioEngine: NSObject, ObservableObject {
     /// by the delegate when it builds the writer input on first sample.
     /// Cleared on stop / cancel.
     private var pendingOutputSettings: [String: Any]?
-    /// Destination URL for the take. Held so the delegate can pass it to
-    /// PCMSidecar.init once the source format description is known.
+    /// Destination URL for the take, set with the writer in startRecording
+    /// and cleared with it. Nothing reads it now: the sidecar is created in
+    /// startRecording, before the first buffer, not by the delegate.
     private var pendingFileURL: URL?
     private let writerLock = NSLock()
     /// uniqueID → kind, rebuilt on each device refresh so the picker
     /// doesn't re-query CoreAudio on every SwiftUI render.
     private var deviceKindCache: [String: InputDeviceKind] = [:]
     private var consecutiveWriteErrors = 0
-    // 3 consecutive drops ≈ 30 ms of silence before failing the take.
-    // Lowered from 5 (≈50 ms) — 30 ms is already audible on a word boundary;
-    // failing sooner triggers the sidecar recovery path before more audio is lost.
+    // 3 consecutive drops before failing the take: tens of milliseconds of
+    // lost audio, depending on the device's buffer size (30 ms at 10 ms
+    // buffers). Lowered from 5 — that much is already audible on a word
+    // boundary; failing sooner triggers the sidecar recovery path before more
+    // audio is lost.
     private let writeErrorThreshold = 3
     /// Consecutive sample buffers dropped because the writer wasn't ready.
     /// Sustained backpressure means audio is being lost — treat like a
@@ -259,9 +262,9 @@ class AudioEngine: NSObject, ObservableObject {
         super.init()
         refreshDevices()
         // Refresh the device list whenever the system wakes or the app comes
-        // to front — devices plugged in while DoublEnder was in the background
-        // otherwise stay hidden in the picker until something else triggers a
-        // config-change notification.
+        // to front, in case a device that changed while DoublEnder was asleep
+        // or in the background went unreported. These overlap the CoreAudio
+        // listener below on purpose.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleRefreshTrigger),
@@ -290,7 +293,8 @@ class AudioEngine: NSObject, ObservableObject {
     /// `refreshDevices` runs whenever any audio device is added or removed
     /// anywhere on the system. The listener block dispatches to the main
     /// queue before touching engine state, matching every other entry into
-    /// `refreshDevices` (notification observers, engine config change).
+    /// `refreshDevices` (the wake and app-activation observers, and the view
+    /// model's own calls).
     private func installDeviceListListener() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async { self?.refreshDevices() }
@@ -347,10 +351,12 @@ class AudioEngine: NSObject, ObservableObject {
     /// AVCaptureDevice.default(for: .audio) returns).
     ///
     /// Caller is responsible for `setSystemDefaultInputDevice` if it wants
-    /// to redirect the system default before invoking this. We re-read the
-    /// system default after the session is running so silent CoreAudio
-    /// rejections (some virtual devices) still surface as `selectedDeviceUsable`
-    /// false.
+    /// to redirect the system default before invoking this. Once the session
+    /// is running, `intendedDeviceID` (when given) is resolved back to an
+    /// AVCaptureDevice and compared with the bound input; a mismatch publishes
+    /// `selectedDeviceUsable` false. The system default is not re-read, so a
+    /// silent CoreAudio rejection of the default change goes unnoticed — and
+    /// doesn't matter, since the session binds the device directly.
     ///
     /// Always called from main; callers rely on `isRebuilding` (set
     /// synchronously before dispatch) and `canStartRecording` to gate
@@ -620,15 +626,15 @@ class AudioEngine: NSObject, ObservableObject {
         // callbacks — launch-time device population is not a "new arrival"
         // from the user's perspective and is handled by the VM's USB-on-
         // launch policy separately. Subsequent refreshes (from the CoreAudio
-        // listener, app activation, system wake, or engine config change)
-        // fire onNewUSBDeviceDetected for any USB UID that wasn't there before.
+        // listener, app activation, system wake, or the view model's own
+        // calls) fire onNewUSBDeviceDetected for any USB UID that wasn't there
+        // before.
         //
         // Order matters: update `knownInputDeviceUIDs` BEFORE firing the
         // callback. The VM's handler runs an app-modal NSAlert which spins a
         // nested event loop, and any re-entrant refreshDevices that lands
-        // during that loop (app activation, another hot-plug, engine config
-        // change) would otherwise see the same UID as "new" again and stack
-        // duplicate prompts.
+        // during that loop (app activation, another hot-plug) would otherwise
+        // see the same UID as "new" again and stack duplicate prompts.
         // Diff against the filtered list — we don't want to fire the
         // hot-plug callback for macOS-internal aggregates appearing
         // (which happens every time CoreAudio rebuilds them under us).
@@ -938,12 +944,12 @@ class AudioEngine: NSObject, ObservableObject {
         //   rate is intentional: AAC is a delivery format.
         //
         // WAV (LPCM): mono int24. AVSampleRateKey: 48_000 is a placeholder
-        //   only — kAudioFormatLinearPCM requires an explicit rate key or
-        //   canAddInput returns false, but the actual value used is patched
-        //   in the first-buffer delegate path once the device's real rate is
-        //   known from the CMSampleBuffer format description. This ensures
-        //   the WAV is written at the hardware's native rate rather than
-        //   always resampling to 48 kHz.
+        //   only: the value used is patched in the first-buffer delegate path
+        //   once the device's real rate is known from the CMSampleBuffer
+        //   format description. This ensures the WAV is written at the
+        //   hardware's native rate rather than always resampling to 48 kHz.
+        //   The writer doesn't need the placeholder — on macOS 26.7 it
+        //   accepted these settings without a rate — but it is harmless.
         let outputSettings: [String: Any]
         switch format {
         case .aac:

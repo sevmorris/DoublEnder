@@ -153,7 +153,7 @@ The reason is `sourceFormatHint`. The `AVAssetWriterInput` initializer accepts a
 
 **AAC:** `AVFormatIDKey: kAudioFormatMPEG4AAC`, `AVSampleRateKey: 48_000`, `AVNumberOfChannelsKey: 1`, `AVEncoderBitRateKey: 256_000`. These are final — the writer downmixes multi-channel input and resamples to 48 kHz internally. Fixed rate is intentional: AAC is a delivery format for podcast production and 48 kHz is the broadcast-standard sample rate for voice.
 
-**WAV (LPCM):** `AVFormatIDKey: kAudioFormatLinearPCM`, `AVLinearPCMBitDepthKey: 24`, little-endian, interleaved. `AVSampleRateKey: 48_000` is written into `pendingOutputSettings` as a **placeholder**, and 48 kHz is never actually used for WAV output. (The code comment's reason, that LPCM settings without a sample rate make `canAddInput` return false, did not hold on macOS 26.7: the writer accepted them. The placeholder is harmless either way, and the explicit rate below is what counts.)
+**WAV (LPCM):** `AVFormatIDKey: kAudioFormatLinearPCM`, `AVLinearPCMBitDepthKey: 24`, little-endian, interleaved. `AVSampleRateKey: 48_000` is written into `pendingOutputSettings` as a **placeholder**, and 48 kHz is never actually used for WAV output. (The writer doesn't need it: on macOS 26.7 it accepted LPCM settings without a sample rate. The placeholder is harmless, and the explicit rate below is what counts.)
 
 In the first-buffer delegate path, when the pending format ID is `kAudioFormatLinearPCM`, the code replaces the placeholder with the device's actual sample rate extracted from the buffer's `CMFormatDescription`:
 

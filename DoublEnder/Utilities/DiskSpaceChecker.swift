@@ -4,7 +4,8 @@ enum DiskSpaceChecker {
 
     /// Minimum free space before starting an AAC recording (~50 MB).
     private static let minimumFreeBytesAAC: Int64 = 50 * 1024 * 1024
-    /// WAV is ~6 MB/min at 48 kHz mono int24 — require more headroom up front.
+    /// WAV is ~8.6 MB/min at 48 kHz mono int24 (48,000 × 3 bytes × 60 s), and
+    /// more at a higher native rate — require more headroom up front.
     private static let minimumFreeBytesWAV: Int64 = 200 * 1024 * 1024
 
     static func minimumFreeBytes(for format: OutputFormat) -> Int64 {
