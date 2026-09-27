@@ -41,3 +41,37 @@ jobs:
             -configuration Debug \
             -destination 'platform=macOS,arch=arm64' \
             test
+
+      - name: Type-check the Cloud-only code (TEMPORARY, remove before merge)
+        if: always()
+        run: |
+          cat > "$RUNNER_TEMP/CloudStubs.swift" <<'EOF'
+          import Foundation
+          import SwiftUI
+          import Combine
+          // Stands in for the private Cloud overlay's Uploader, as RecorderViewModel uses it.
+          final class Uploader: ObservableObject {
+              @Published var progress: Double = 0
+              struct Began { let sessionURI: URL; let crc32c: String }
+              enum UploaderError: Error {
+                  case server(Int, String)
+                  case missingKeyFile, malformedKeyFile, invalidPrivateKey, signingFailed
+                  case integrityMismatch, integrityUnverified
+                  var isNonRetryable: Bool { false }
+              }
+              func beginUpload(fileURL: URL) async throws -> Began { throw UploaderError.missingKeyFile }
+              func continueUpload(fileURL: URL, sessionURI: URL, crc32cBase64: String) async throws {}
+          }
+          extension UserDefaults { static let app = UserDefaults.standard }
+          struct WindowDragArea: View { var body: some View { Color.clear } }
+          EOF
+          xcrun swiftc -typecheck -parse-as-library -swift-version 5 -D GCS_ENABLED \
+            -target arm64-apple-macos13.0 -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            DoublEnder/ViewModels/RecorderViewModel.swift \
+            DoublEnder/Services/AudioEngine.swift \
+            DoublEnder/Services/PCMSidecar.swift \
+            DoublEnder/Services/NotificationService.swift \
+            DoublEnder/Services/SessionHeartbeat.swift \
+            DoublEnder/Utilities/*.swift \
+            DoublEnder/Views/UploadConfirmationView.swift \
+            "$RUNNER_TEMP/CloudStubs.swift"
