@@ -8,12 +8,19 @@
 # DoublEnder Cloud at the matching numeric version so in-app updaters prompt
 # across both flavours.
 #
-# Requires: xcodebuild, xcodegen, hdiutil, gh (GitHub CLI), git, xcrun
-# Cloud step also requires: gcloud (see scripts/release-cloud-from-local.sh)
+# Requires: xcodebuild, xcodegen, hdiutil, gh (GitHub CLI), git, codesign, xcrun,
+#   python3 with dmgbuild, and gcloud signed in with access to the download
+#   bucket; preflight checks each. prune-deployments (mrk's bin/) is used, when
+#   on PATH, to prune the Pages deployments.
+# The Cloud step has its own requirements (see scripts/release-cloud-from-local.sh).
 
 set -euo pipefail
 
 REPO="sevmorris/DoublEnder"
+# The Local download permalink: the file the in-app Download button fetches,
+# overwritten by every release.
+PERMALINK_BUCKET="gs://doublender-downloads"
+PERMALINK="$PERMALINK_BUCKET/DoublEnder.dmg"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 # One positional argument (the version) plus optional flags in any position.
@@ -91,7 +98,7 @@ trap cleanup EXIT
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 step "Preflight checks"
-for cmd in xcodebuild xcodegen hdiutil gh git codesign xcrun python3; do
+for cmd in xcodebuild xcodegen hdiutil gh git codesign xcrun python3 gcloud; do
     command -v $cmd &>/dev/null || fail "'$cmd' not found in PATH"
 done
 python3 -c "import dmgbuild" 2>/dev/null \
@@ -131,6 +138,16 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" &>/dev/null; 
     fail "notarytool profile '$NOTARY_PROFILE' is missing, rejected or unreachable — create it with: xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <email> --team-id T9RLNAXPWU"
 fi
 ok "notarytool profile '$NOTARY_PROFILE' works"
+
+# The permalink is written after the GitHub release is public, so a gcloud that
+# is signed out, expired or signed in as another account would fail there: the
+# release would be on GitHub, telling every copy of the app to update, while the
+# permalink its Download button fetches still served the previous build, and
+# neither the Cloud release nor the pruning would run. Describing the bucket
+# costs one API call and proves the credentials reach it.
+gcloud storage buckets describe "$PERMALINK_BUCKET" --format='value(name)' &>/dev/null \
+    || fail "gcloud cannot reach $PERMALINK_BUCKET — check the account in 'gcloud auth list', or sign in with: gcloud auth login"
+ok "gcloud reaches $PERMALINK_BUCKET"
 
 cd "$PROJECT_DIR"
 
@@ -505,9 +522,9 @@ step "Publishing GCS download permalink"
 # pushes the object off Google's fast media-serving path and anonymous
 # downloads crawl at ~150 KB/s (~130x slower; the DMG looks hung). Verified
 # empirically 2026-07-10 by A/B on the same object.
-gcloud storage cp "$DMG" gs://doublender-downloads/DoublEnder.dmg \
+gcloud storage cp "$DMG" "$PERMALINK" \
     --cache-control="public, max-age=60"
-gcloud storage objects update gs://doublender-downloads/DoublEnder.dmg \
+gcloud storage objects update "$PERMALINK" \
     --add-acl-grant=entity=AllUsers,role=READER
 ok "GCS permalink updated → DoublEnder.dmg (max-age=60)"
 
@@ -541,21 +558,21 @@ else
 fi
 
 # ── Remove old Pages deployments ─────────────────────────────────────────────
+# Delegated to prune-deployments (mrk's bin/, on PATH) rather than kept as a
+# copy here, as mrk-push does. The copy this replaced deleted every deployment
+# but the newest, which is wrong precisely when this runs: the push above has
+# just started a Pages deployment, so the newest can still be queued, building
+# or failed while the one serving the site is the older, successful one it then
+# deleted — taking the published pages offline until the new build finished, or
+# indefinitely if it failed. prune-deployments always protects the most recent
+# successful deployment and keeps ten, as the repo-standards skill asks. The
+# release is published by now, so a missing tool or a failed prune is reported
+# rather than failing the run.
 step "Removing old Pages deployments"
-ALL_DEPLOY_IDS=$(gh api "repos/$REPO/deployments?environment=github-pages&per_page=100" \
-    --jq '.[].id')
-OLD_DEPLOY_IDS=$(echo "$ALL_DEPLOY_IDS" | tail -n +2)
-if [[ -z "$OLD_DEPLOY_IDS" ]]; then
-    ok "No old deployments to remove"
-else
-    COUNT=0
-    while IFS= read -r deploy_id; do
-        gh api -X POST "repos/$REPO/deployments/${deploy_id}/statuses" \
-            -f state=inactive --silent 2>/dev/null || true
-        gh api -X DELETE "repos/$REPO/deployments/${deploy_id}" --silent 2>/dev/null || true
-        COUNT=$((COUNT + 1))
-    done <<< "$OLD_DEPLOY_IDS"
-    ok "Removed $COUNT old deployment(s)"
+if ! command -v prune-deployments &>/dev/null; then
+    warn "prune-deployments is not on PATH (it ships in mrk's bin/) — Pages deployments were not pruned"
+elif ! prune-deployments --repo "$REPO" --keep 10; then
+    warn "Pruning Pages deployments reported errors — the release itself is published"
 fi
 
 # ── Clean up temp files ───────────────────────────────────────────────────────

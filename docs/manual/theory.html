@@ -914,7 +914,7 @@
 
     <h3>release.sh Pipeline</h3>
     <ol>
-      <li>Preflight: check tools; <code>python3</code> can import <code>dmgbuild</code> and start a subprocess (a Python built against an SDK newer than the running macOS imports it, then segfaults on dmgbuild's <code>hdiutil</code> call); the notarytool keychain profile (<code>notarytool</code>, overridable with <code>NOTARY_PROFILE</code>) works, with a hint when a locked screen is what hides it; working tree clean; <code>git fetch --tags</code> from the remote, so every published tag is seen; tag available; HEAD contains the remote branch</li>
+      <li>Preflight: check tools; <code>python3</code> can import <code>dmgbuild</code> and start a subprocess (a Python built against an SDK newer than the running macOS imports it, then segfaults on dmgbuild's <code>hdiutil</code> call); the notarytool keychain profile (<code>notarytool</code>, overridable with <code>NOTARY_PROFILE</code>) works, with a hint when a locked screen is what hides it; <code>gcloud</code> can reach the download bucket, since the permalink is written only after the GitHub release is public; working tree clean; <code>git fetch --tags</code> from the remote, so every published tag is seen; tag available; HEAD contains the remote branch</li>
       <li>Version ordering: refuse a version that sorts below the highest <code>v*</code> tag, which would leave GitHub serving an older build as latest and clients on the newer one reporting themselves up to date; <code>ALLOW_DOWNGRADE=1</code> overrides</li>
       <li>Shared files: <code>scripts/check-shared.sh</code> fails the release if a file shared verbatim with the sibling app repos, such as the DMG tooling in <code>tools/dmg/</code>, differs from their copies</li>
       <li>Release notes: <code>release-notes/vX.Y.Zlr.md</code> must exist unless <code>--generated-notes</code> is passed; checked here because the notes are read only after the push, where a failure would strand a pushed tag with no release</li>
@@ -932,7 +932,7 @@
       <li>GCS permalink: <code>gcloud storage cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: public, max-age=60</code>, then re-assert public-read. (Distinct from the Cloud <em>update manifest</em> <code>cloud-latest.json</code>, which is uploaded with <code>Cache-Control: no-cache</code> — update checks must read fresh; the 60-second cap on the DMG merely keeps a just-published build from being masked by an older cached copy.)</li>
       <li>Cloud release: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
       <li>Prune old releases: keep the 5 most recent GitHub releases; delete older release pages and their assets, never the git tags</li>
-      <li>Prune old Pages deployments: mark all but the newest <code>github-pages</code> deployment inactive and delete them via the GitHub API</li>
+      <li>Prune old Pages deployments: <code>prune-deployments --keep 10</code> (mrk's <code>bin/</code>) keeps the ten newest <code>github-pages</code> deployments and always the one serving the site, and deletes the rest via the GitHub API; skipped with a warning if the tool is missing</li>
       <li>Clean up: remove temp build dirs and the DMG, then open the release page. An <code>EXIT</code> trap does the same cleanup when the script stops early, and <code>INT</code>/<code>TERM</code> traps cover Ctrl-C and a closed terminal, since zsh runs no <code>EXIT</code> trap on a signal</li>
     </ol>
   </section>
