@@ -11,12 +11,12 @@ import Accelerate
 /// ## Design intent: signal indicator, not a production meter
 ///
 /// The meter answers one question: "Is audio coming in?" `AudioEngine`
-/// feeds it the mono-downmixed signal from `PCMSidecar.normalizedMonoFloatSamples`,
-/// so it reflects approximately the same content as the recorded file.
-/// It has no gain control and is not intended as a mix reference — the
-/// ballistics (instant attack, ~250 ms release) are tuned for a guest who
-/// needs to confirm their mic is working, not for a producer setting
-/// record levels.
+/// feeds it the mono mix from `PCMSidecar.normalizedMonoFloatSamples`, which
+/// follows the mix AVAssetWriter makes of the recorded file, so it shows the
+/// level the file records. It has no gain control and is not intended as a
+/// mix reference — the ballistics (instant attack, ~250 ms release) are tuned
+/// for a guest who needs to confirm their mic is working, not for a producer
+/// setting record levels.
 enum LevelMeter {
     static let dbFloor: Float = -36
     static let dbCeiling: Float = 0

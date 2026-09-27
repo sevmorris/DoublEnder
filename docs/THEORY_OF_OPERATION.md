@@ -189,16 +189,32 @@ The sidecar flushes to disk via `FileHandle.synchronize()` every 512 KB of paylo
 
 ### Sidecar PCM normalization (Float32, Int16, Int24, Int32)
 
-`PCMSidecar.normalizedMonoFloatSamples(from:)` reads the CMSampleBuffer's `AudioStreamBasicDescription` to determine format and bit depth, then dispatches to one of four helpers:
+`PCMSidecar.normalizedMonoFloatSamples(from:)` reads the CMSampleBuffer's `AudioStreamBasicDescription` to determine format and bit depth, reads each channel through the buffer's `AudioBufferList` (so a planar channel is found wherever CoreMedia put it), decodes each sample to `Float`, and mixes the channels to mono as the writer mixes the main file (below). The four sample formats:
 
-- **Float32** (`kAudioFormatFlagIsFloat` + 32 bits): reinterpret memory as `Float`. Non-interleaved multi-channel: take channel 0 only. Interleaved multi-channel: average all channels per frame.
-- **Int16** (`kAudioFormatFlagIsSignedInteger` + 16 bits): divide by `32768.0`. Same interleaving logic.
+- **Float32** (`kAudioFormatFlagIsFloat` + 32 bits): used as is.
+- **Int16** (`kAudioFormatFlagIsSignedInteger` + 16 bits): divide by `32768.0`.
 - **Int24** (`kAudioFormatFlagIsSignedInteger` + 24 bits): 3 bytes per sample, little-endian on macOS. Read `b0, b1, b2` and sign-extend: `raw = (b2 << 16) | (b1 << 8) | b0`; if `raw & 0x800000 != 0`, set high byte to `0xFF`. Divide by `8388608.0` (2²³). This path covers interfaces that deliver 24-bit integer PCM.
 - **Int32** (`kAudioFormatFlagIsSignedInteger` + 32 bits): reinterpret as `Int32`, divide by `Float(Int32.max)`.
 
 Any other format (`mBitsPerChannel` not 16/24/32, or `mFormatFlags` not matching float or signed integer) returns nil and the sidecar gets no data for that buffer. The main writer still records normally.
 
-The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so it shows the same averaged-mono signal the sidecar records. That is not quite the signal in the main file: AVAssetWriter makes its own mono mix from multi-channel input, and for a two-channel source that mix is 3 dB hotter than the average the meter shows (see "Mono output" in §10).
+### The mono mix
+
+The output settings ask AVAssetWriter for one channel, and it makes the main file mono itself, with CoreAudio's downmix: each source channel is weighted by its label in the source format description's channel layout, and the results are summed. Measured on macOS 15 by writing each layout through the writer with the app's settings, and for an unlabelled pair on macOS 26.7 too:
+
+| Source channels | Weight in the mono mix |
+|---|---|
+| One channel, whatever its label | 1 |
+| A pair with no layout; Left, Right; tags Stereo, StereoHeadphones, Binaural | 0.707 each (−3 dB) |
+| LeftSurround, RightSurround (tag Quadraphonic is L R Ls Rs) | 0.5 each |
+| Center, Mono, Unknown | 1 each |
+| Tag MidSide | mid 1, side 0 |
+| Discrete channels (tag DiscreteInOrder, or Discrete_*n* labels) | Discrete_0 1, the rest 0 |
+| Unused | 0 |
+
+Discrete channels map to the writer's outputs by number, so with one output only the channel labelled Discrete_0 is heard: a mic on another input of such a device records nothing. `PCMSidecar.writerMixGains` returns those weights for a format description and `normalizedMonoFloatSamples` applies them, so the sidecar, and a WAV recovered from it, carry the file's mix. `PCMSidecarTests` writes every layout in the table through the writer on each CI run and requires the two to peak within 0.1 dB of each other, so a change in Apple's mix fails the build. A layout not in the table falls back: a pair mixes as left and right, and more channels as before this followed the writer (interleaved channels averaged, planar input's channel 0), which can differ from the file.
+
+The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so it shows the level the file records. Up to 2.5.6 every multi-channel source was averaged (interleaved) or reduced to channel 0 (planar), so for an ordinary two-channel source the meter read 3 dB under the file: a mic duplicated on both channels at −0.92 dBFS showed −0.92 on the meter while clipping the WAV at full scale and taking the AAC to +2.1 dBFS. The meter now reaches full scale when the file does. See "Mono output" in §10.
 
 ---
 
@@ -632,7 +648,7 @@ The filename prefix is overridable from the settings popover (`filenameBase`), p
 
 ### Mono output
 
-All output is mono, but the main file and the sidecar are made mono by different code. The main file's mix is AVAssetWriter's own: the output settings ask for one channel and the writer downmixes whatever arrives. Measured on macOS 26.7 with a two-channel 24-bit source, it scales each channel by 0.707 (−3 dB) and sums them. A tone on one channel only lands 3 dB lower in the file, and the same signal on both channels lands 3 dB higher, so a device that duplicates a mono mic onto two channels clips the main file at any peak above −3 dBFS. The sidecar and the meter instead average interleaved channels (and take channel 0 of planar input; see §3), which puts them 3 dB below the main file for any two-channel source, so the meter can show headroom that the file doesn't have. The rationale for mono: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
+All output is mono. The main file's mix is AVAssetWriter's own: the output settings ask for one channel and the writer downmixes whatever arrives, weighting each channel by its label (§3, "The mono mix"). For a two-channel source with no channel layout or a stereo one, it scales each channel by 0.707 (−3 dB) and sums them. A tone on one channel only lands 3 dB lower in the file, and the same signal on both channels lands 3 dB higher, so a device that duplicates a mono mic onto two channels clips the main file at any peak above −3 dBFS. A device whose channels are labelled discrete gives the file its first channel only. The sidecar and the meter apply the same weights, so the meter shows what the file records; only a channel layout the tests haven't measured can still differ. The rationale for mono: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
 
 ### AAC as default format
 

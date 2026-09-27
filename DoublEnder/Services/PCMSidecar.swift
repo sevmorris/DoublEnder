@@ -1,4 +1,5 @@
 import Foundation
+import CoreAudio
 import CoreMedia
 import OSLog
 
@@ -13,8 +14,10 @@ import OSLog
 /// at next launch.
 ///
 /// Payload is always IEEE Float32 mono regardless of capture format — Int16
-/// and other PCM layouts are normalized on append. Recovered WAVs are
-/// written as 32-bit float for the same reason.
+/// and other PCM layouts are normalized on append, and the channels are mixed
+/// to mono the way AVAssetWriter mixes the main file (see
+/// `normalizedMonoFloatSamples`). Recovered WAVs are written as 32-bit float
+/// for the same reason.
 final class PCMSidecar {
     /// Extension appended to the main output path: `Recording.m4a.pcmrec`.
     static let pathExtension = "pcmrec"
@@ -138,8 +141,8 @@ final class PCMSidecar {
         }
     }
 
-    /// Append a CMSampleBuffer, normalizing any supported PCM layout to
-    /// mono Float32 before writing.
+    /// Append a CMSampleBuffer, mixing any supported PCM layout to mono
+    /// Float32 (`normalizedMonoFloatSamples`) before writing.
     func append(sampleBuffer: CMSampleBuffer) {
         guard let mono = Self.normalizedMonoFloatSamples(from: sampleBuffer), !mono.isEmpty else {
             return
@@ -150,204 +153,245 @@ final class PCMSidecar {
         }
     }
 
-    /// Normalize capture PCM to mono Float32 for the sidecar payload.
+    /// Gain AVAssetWriter gives each channel of a left/right pair, or of an
+    /// unlabelled pair, when it mixes the source to the mono main file: 1/√2
+    /// (0.707, −3 dB), the two summed. Measured on macOS 26.7 and on macOS 15.
+    static let stereoPairGain: Float = 1 / Float(2).squareRoot()
+
+    /// Mix capture PCM to mono Float32 the way AVAssetWriter mixes the main
+    /// file, for the sidecar payload and the level meter, so the meter shows
+    /// the level the file records and a recovered WAV matches the file.
+    ///
+    /// The output settings ask the writer for one channel, and it makes the
+    /// main file mono itself, weighting each source channel by its label in
+    /// the format description's channel layout (`writerMixGains`). A layout
+    /// whose mix hasn't been measured falls back to `stereoPairGain` for a
+    /// pair and, for more channels, to what this did before it followed the
+    /// writer: interleaved channels averaged, planar input's channel 0. There
+    /// the meter and the file can differ.
     static func normalizedMonoFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer),
-              let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
             return nil
         }
-        let channels = max(Int(asbd.mChannelsPerFrame), 1)
-        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard frameCount > 0 else { return nil }
-
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        var length = 0
-        guard CMBlockBufferGetDataPointer(
-            blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
-            totalLengthOut: &length, dataPointerOut: &dataPointer
-        ) == kCMBlockBufferNoErr, let ptr = dataPointer else { return nil }
-
         let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
         let isInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
         let isNonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
 
+        let encoding: SampleEncoding
         if isFloat, asbd.mBitsPerChannel == 32 {
-            return monoFromFloat32(
-                ptr: ptr, length: length, channels: channels,
-                frameCount: frameCount, isNonInterleaved: isNonInterleaved
-            )
+            encoding = .float32
+        } else if isInt, asbd.mBitsPerChannel == 16 {
+            encoding = .int16
+        } else if isInt, asbd.mBitsPerChannel == 24 {
+            encoding = .int24
+        } else if isInt, asbd.mBitsPerChannel == 32 {
+            encoding = .int32
+        } else {
+            return nil
         }
 
-        if isInt, asbd.mBitsPerChannel == 16 {
-            return monoFromInt16(
-                ptr: ptr, length: length, channels: channels,
-                frameCount: frameCount, isNonInterleaved: isNonInterleaved
-            )
-        }
+        let channels = max(Int(asbd.mChannelsPerFrame), 1)
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frameCount > 0 else { return nil }
 
-        if isInt, asbd.mBitsPerChannel == 24 {
-            return monoFromInt24(
-                ptr: ptr, length: length, channels: channels,
-                frameCount: frameCount, isNonInterleaved: isNonInterleaved
-            )
-        }
-
-        if isInt, asbd.mBitsPerChannel == 32 {
-            return monoFromInt32(
-                ptr: ptr, length: length, channels: channels,
-                frameCount: frameCount, isNonInterleaved: isNonInterleaved
-            )
-        }
-
-        return nil
-    }
-
-    private static func monoFromFloat32(
-        ptr: UnsafeMutablePointer<Int8>,
-        length: Int,
-        channels: Int,
-        frameCount: Int,
-        isNonInterleaved: Bool
-    ) -> [Float]? {
-        if isNonInterleaved && channels > 1 {
-            let bytesPerChannel = frameCount * MemoryLayout<Float>.size
-            guard length >= bytesPerChannel else { return nil }
-            return Array(UnsafeBufferPointer(
-                start: ptr.withMemoryRebound(to: Float.self, capacity: frameCount) { $0 },
-                count: frameCount
-            ))
-        }
-
-        let floatCount = length / MemoryLayout<Float>.size
-        guard floatCount > 0 else { return nil }
-
-        if channels == 1 {
-            return Array(UnsafeBufferPointer(
-                start: ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 },
-                count: floatCount
-            ))
-        }
-
-        let frames = floatCount / channels
-        guard frames > 0 else { return nil }
-        let floats = ptr.withMemoryRebound(to: Float.self, capacity: floatCount) { $0 }
-        return (0..<frames).map { f in
-            var sum: Float = 0
-            for ch in 0..<channels { sum += floats[f * channels + ch] }
-            return sum / Float(channels)
-        }
-    }
-
-    private static func monoFromInt16(
-        ptr: UnsafeMutablePointer<Int8>,
-        length: Int,
-        channels: Int,
-        frameCount: Int,
-        isNonInterleaved: Bool
-    ) -> [Float]? {
-        if isNonInterleaved && channels > 1 {
-            let bytesPerChannel = frameCount * MemoryLayout<Int16>.size
-            guard length >= bytesPerChannel else { return nil }
-            let ints = ptr.withMemoryRebound(to: Int16.self, capacity: frameCount) { $0 }
-            return (0..<frameCount).map { Float(ints[$0]) / 32768.0 }
-        }
-
-        let intCount = length / MemoryLayout<Int16>.size
-        guard intCount > 0 else { return nil }
-        let ints = ptr.withMemoryRebound(to: Int16.self, capacity: intCount) { $0 }
-
-        if channels == 1 {
-            return (0..<intCount).map { Float(ints[$0]) / 32768.0 }
-        }
-
-        let frames = intCount / channels
-        guard frames > 0 else { return nil }
-        return (0..<frames).map { f in
-            var sum: Float = 0
-            for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / 32768.0 }
-            return sum / Float(channels)
-        }
-    }
-
-    private static func monoFromInt24(
-        ptr: UnsafeMutablePointer<Int8>,
-        length: Int,
-        channels: Int,
-        frameCount: Int,
-        isNonInterleaved: Bool
-    ) -> [Float]? {
-        let bytesPerSample = 3
-        let bytes = UnsafeBufferPointer(
-            start: ptr.withMemoryRebound(to: UInt8.self, capacity: length) { $0 },
-            count: length
+        // The AudioBufferList gives each planar channel its own pointer:
+        // CoreMedia need not store the planes back to back.
+        var listSize = 0
+        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: &listSize, bufferListOut: nil,
+            bufferListSize: 0, blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
+            flags: 0, blockBufferOut: nil
+        ) == noErr, listSize > 0 else { return nil }
+        let listMemory = UnsafeMutableRawPointer.allocate(
+            byteCount: listSize, alignment: MemoryLayout<AudioBufferList>.alignment
         )
-        let divisor: Float = 8_388_608.0  // 2^23
+        defer { listMemory.deallocate() }
+        let list = listMemory.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var retainedBlock: CMBlockBuffer?
+        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: nil, bufferListOut: list,
+            bufferListSize: listSize, blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
+            flags: 0, blockBufferOut: &retainedBlock
+        ) == noErr else { return nil }
 
-        // Sign-extend a little-endian 24-bit sample at `offset` into Int32.
-        func sample(at offset: Int) -> Float {
-            let b0 = Int32(bytes[offset])
-            let b1 = Int32(bytes[offset + 1])
-            let b2 = Int32(bytes[offset + 2])
-            var raw = (b2 << 16) | (b1 << 8) | b0
-            if raw & 0x800000 != 0 { raw |= Int32(bitPattern: 0xFF000000) }
-            return Float(raw) / divisor
-        }
+        // The list points into `retainedBlock`, which must outlive the reads.
+        return withExtendedLifetime(retainedBlock) { () -> [Float]? in
+            let buffers = UnsafeMutableAudioBufferListPointer(list)
+            let bytesPerSample = encoding.bytesPerSample
 
-        if isNonInterleaved && channels > 1 {
-            let bytesPerChannel = frameCount * bytesPerSample
-            guard length >= bytesPerChannel else { return nil }
-            return (0..<frameCount).map { sample(at: $0 * bytesPerSample) }
-        }
-
-        let frameStride = channels * bytesPerSample
-        guard frameStride > 0 else { return nil }
-        let frames = length / frameStride
-        guard frames > 0 else { return nil }
-
-        if channels == 1 {
-            return (0..<frames).map { sample(at: $0 * bytesPerSample) }
-        }
-
-        return (0..<frames).map { f in
-            var sum: Float = 0
-            for ch in 0..<channels {
-                sum += sample(at: f * frameStride + ch * bytesPerSample)
+            // Where each channel's samples start, and the bytes between them.
+            var planes: [(start: UnsafeRawPointer, stride: Int)] = []
+            var frames = frameCount
+            if isNonInterleaved {
+                for buffer in buffers {
+                    guard let data = buffer.mData else { return nil }
+                    planes.append((start: UnsafeRawPointer(data), stride: bytesPerSample))
+                    frames = min(frames, Int(buffer.mDataByteSize) / bytesPerSample)
+                }
+            } else {
+                guard let buffer = buffers.first, let data = buffer.mData else { return nil }
+                let frameStride = channels * bytesPerSample
+                for channel in 0..<channels {
+                    planes.append((
+                        start: UnsafeRawPointer(data) + channel * bytesPerSample,
+                        stride: frameStride
+                    ))
+                }
+                frames = min(frames, Int(buffer.mDataByteSize) / frameStride)
             }
-            return sum / Float(channels)
+            guard frames > 0, !planes.isEmpty else { return nil }
+
+            let gains = Self.writerMixGains(for: formatDesc, channels: planes.count)
+                ?? Self.unmeasuredMixGains(channels: planes.count, planar: isNonInterleaved)
+            var mono = [Float](repeating: 0, count: frames)
+            for (plane, gain) in zip(planes, gains) where gain != 0 {
+                for frame in 0..<frames {
+                    mono[frame] += gain * encoding.decode(plane.start + frame * plane.stride)
+                }
+            }
+            return mono
         }
     }
 
-    private static func monoFromInt32(
-        ptr: UnsafeMutablePointer<Int8>,
-        length: Int,
-        channels: Int,
-        frameCount: Int,
-        isNonInterleaved: Bool
-    ) -> [Float]? {
-        let divisor = Float(Int32.max)
+    /// The gain AVAssetWriter's mono mix gives each channel of a source with
+    /// this format description, or nil if that layout's mix hasn't been
+    /// measured.
+    ///
+    /// The writer applies CoreAudio's downmix by channel label. Measured on
+    /// macOS 15 by writing each layout through it with the app's settings —
+    /// `PCMSidecarTests` repeats that on every CI run, so a change in the
+    /// writer fails the build — and the stereo pair on macOS 26.7 too:
+    ///
+    ///   - One channel passes through, whatever its label.
+    ///   - No layout on a pair: mixed as left and right.
+    ///   - Left, Right: 0.707 each. Tags Stereo, StereoHeadphones and
+    ///     Binaural mix the same way.
+    ///   - LeftSurround, RightSurround: 0.5. Tag Quadraphonic is L R Ls Rs.
+    ///   - Center, Mono, Unknown: 1.
+    ///   - Tag MidSide: the mid channel, at 1; the side channel is dropped.
+    ///   - Discrete channels map to outputs by number, so only Discrete_0
+    ///     reaches the one output channel, at 1. A mic on any other input
+    ///     of a device with discrete channels records nothing.
+    ///   - Unused: dropped.
+    static func writerMixGains(for formatDesc: CMFormatDescription, channels: Int) -> [Float]? {
+        guard channels > 1 else { return channels == 1 ? [1] : nil }
+        var layoutSize = 0
+        guard let layout = CMAudioFormatDescriptionGetChannelLayout(
+            formatDesc, sizeOut: &layoutSize
+        ) else {
+            return channels == 2 ? [stereoPairGain, stereoPairGain] : nil
+        }
+        let tag = layout.pointee.mChannelLayoutTag
+        let gains: [Float]?
+        switch tag {
+        case kAudioChannelLayoutTag_UseChannelDescriptions:
+            let count = Int(layout.pointee.mNumberChannelDescriptions)
+            let offset = MemoryLayout<AudioChannelLayout>
+                .offset(of: \AudioChannelLayout.mChannelDescriptions) ?? 12
+            let stride = MemoryLayout<AudioChannelDescription>.stride
+            guard layoutSize >= offset + count * stride else { return nil }
+            let descriptions = UnsafeRawPointer(layout) + offset
+            let labels = (0..<count).map { index in
+                descriptions.load(fromByteOffset: index * stride, as: AudioChannelDescription.self)
+                    .mChannelLabel
+            }
+            gains = labelGains(labels)
+        case kAudioChannelLayoutTag_UseChannelBitmap:
+            // Bit n of the bitmap is label n + 1, in label order.
+            let bits = layout.pointee.mChannelBitmap.rawValue
+            gains = labelGains((0..<32).filter { bits & (1 << $0) != 0 }.map { AudioChannelLabel($0 + 1) })
+        case kAudioChannelLayoutTag_Stereo,
+             kAudioChannelLayoutTag_StereoHeadphones,
+             kAudioChannelLayoutTag_Binaural:
+            gains = [stereoPairGain, stereoPairGain]
+        case kAudioChannelLayoutTag_Quadraphonic:
+            gains = [stereoPairGain, stereoPairGain, 0.5, 0.5]
+        case kAudioChannelLayoutTag_MidSide:
+            gains = [1, 0]
+        default:
+            if tag & 0xFFFF_0000 == kAudioChannelLayoutTag_DiscreteInOrder, tag & 0xFFFF > 0 {
+                gains = [1] + [Float](repeating: 0, count: Int(tag & 0xFFFF) - 1)
+            } else {
+                gains = nil
+            }
+        }
+        return gains?.count == channels ? gains : nil
+    }
 
-        if isNonInterleaved && channels > 1 {
-            let bytesPerChannel = frameCount * MemoryLayout<Int32>.size
-            guard length >= bytesPerChannel else { return nil }
-            let ints = ptr.withMemoryRebound(to: Int32.self, capacity: frameCount) { $0 }
-            return (0..<frameCount).map { Float(ints[$0]) / divisor }
+    /// `writerMixGains` for a layout given as channel labels, or nil if any
+    /// label's gain hasn't been measured.
+    private static func labelGains(_ labels: [AudioChannelLabel]) -> [Float]? {
+        var gains: [Float] = []
+        for label in labels {
+            switch label {
+            case kAudioChannelLabel_Left, kAudioChannelLabel_Right:
+                gains.append(stereoPairGain)
+            case kAudioChannelLabel_LeftSurround, kAudioChannelLabel_RightSurround:
+                gains.append(0.5)
+            case kAudioChannelLabel_Center, kAudioChannelLabel_Mono, kAudioChannelLabel_Unknown:
+                gains.append(1)
+            case kAudioChannelLabel_Unused:
+                gains.append(0)
+            case kAudioChannelLabel_Discrete_0:
+                gains.append(1)
+            default:
+                // Discrete_1 and up: kAudioChannelLabel_Discrete_0 | n.
+                guard label & 0xFFFF_0000 == kAudioChannelLabel_Discrete_0 else { return nil }
+                gains.append(0)
+            }
+        }
+        return gains
+    }
+
+    /// Gains for a layout whose writer mix hasn't been measured: a pair as
+    /// left and right; more channels as before this followed the writer.
+    private static func unmeasuredMixGains(channels: Int, planar: Bool) -> [Float] {
+        switch channels {
+        case 1:
+            return [1]
+        case 2:
+            return [stereoPairGain, stereoPairGain]
+        default:
+            return planar
+                ? [1] + [Float](repeating: 0, count: channels - 1)
+                : [Float](repeating: 1 / Float(channels), count: channels)
+        }
+    }
+
+    /// Capture PCM sample formats the mixer reads, little-endian as on macOS.
+    private enum SampleEncoding {
+        case float32
+        case int16
+        case int24
+        case int32
+
+        var bytesPerSample: Int {
+            switch self {
+            case .float32, .int32: return 4
+            case .int16: return 2
+            case .int24: return 3
+            }
         }
 
-        let intCount = length / MemoryLayout<Int32>.size
-        guard intCount > 0 else { return nil }
-        let ints = ptr.withMemoryRebound(to: Int32.self, capacity: intCount) { $0 }
-
-        if channels == 1 {
-            return (0..<intCount).map { Float(ints[$0]) / divisor }
-        }
-
-        let frames = intCount / channels
-        guard frames > 0 else { return nil }
-        return (0..<frames).map { f in
-            var sum: Float = 0
-            for ch in 0..<channels { sum += Float(ints[f * channels + ch]) / divisor }
-            return sum / Float(channels)
+        /// The sample at `pointer` as a Float, full scale ±1.
+        func decode(_ pointer: UnsafeRawPointer) -> Float {
+            switch self {
+            case .float32:
+                return pointer.loadUnaligned(as: Float.self)
+            case .int16:
+                return Float(pointer.loadUnaligned(as: Int16.self)) / 32768.0
+            case .int24:
+                // Sign-extend a packed little-endian 24-bit sample.
+                let b0 = Int32(pointer.load(fromByteOffset: 0, as: UInt8.self))
+                let b1 = Int32(pointer.load(fromByteOffset: 1, as: UInt8.self))
+                let b2 = Int32(pointer.load(fromByteOffset: 2, as: UInt8.self))
+                var raw = (b2 << 16) | (b1 << 8) | b0
+                if raw & 0x800000 != 0 { raw |= Int32(bitPattern: 0xFF000000) }
+                return Float(raw) / 8_388_608.0  // 2^23
+            case .int32:
+                return Float(pointer.loadUnaligned(as: Int32.self)) / Float(Int32.max)
+            }
         }
     }
 

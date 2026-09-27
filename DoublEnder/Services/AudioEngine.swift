@@ -1584,11 +1584,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         }
     }
 
-    /// Peak of the mono-downmixed signal from a CMSampleBuffer (0…1).
+    /// Peak of the buffer mixed to mono (0…1, or above 1 when the mix clips).
     ///
-    /// Delegates to `PCMSidecar.normalizedMonoFloatSamples` for the channel
-    /// conversion so the meter reads the same averaged mono signal that ends
-    /// up in the recorded file. Returns 0 for unsupported PCM formats.
+    /// Mixes through `PCMSidecar.normalizedMonoFloatSamples`, the mix the
+    /// sidecar records, which is the writer's own mix of the main file for
+    /// every channel layout whose writer mix has been measured, so the meter
+    /// shows the level the file records. Other layouts can differ (see that
+    /// function). Returns 0 for unsupported PCM formats.
     private func peakLinear(from sampleBuffer: CMSampleBuffer) -> Float {
         guard let mono = PCMSidecar.normalizedMonoFloatSamples(from: sampleBuffer) else { return 0 }
         return LevelMeter.peakLinear(in: mono)
