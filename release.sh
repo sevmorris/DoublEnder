@@ -197,7 +197,7 @@ ok "HEAD contains everything on $REMOTE/$BRANCH"
 # commits would ship code the overlay's remote doesn't have. Only tracked files
 # count: every public file is untracked from the overlay's side.
 if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
-    OVERLAY_GIT_DIR="${DECLOUD_GIT_DIR:-$HOME/DoublEnder-cloud.git}"
+    OVERLAY_GIT_DIR="${DECLOUD_GIT_DIR:-$HOME/Projects/DoublEnder-cloud.git}"
     if [[ ! -d "$OVERLAY_GIT_DIR" ]]; then
         warn "No overlay repo at ${OVERLAY_GIT_DIR/#$HOME/~} — the Cloud overlay's state can't be checked"
     else
