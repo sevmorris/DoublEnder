@@ -255,6 +255,30 @@ else
     fail "No curated notes for $TAG — write that file, or re-run with --generated-notes"
 fi
 
+# ── Cloud release-notes gate ──────────────────────────────────────────────────
+# With the private overlay present, this run also publishes DoublEnder Cloud at
+# the same numeric version (1.6.30lr → 1.6.30cr), the derivation the Cloud
+# library makes. Its notes live in the overlay, at
+# DoublEnderCloud/release-notes/v<cloud version>.md: what differs for Cloud,
+# plus a pointer to the Local notes. Nothing publishes them — a Cloud release
+# is a DMG and a version manifest — so they are the only record of what each
+# Cloud build changed, and a record left for later tends not to get written.
+# The Cloud step runs after this release is public, so a check there would come
+# too late; this one runs before anything is built or pushed. --generated-notes
+# waives it along with the Local file.
+if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
+    CLOUD_VERSION="${${VERSION#v}%%[^0-9.]*}cr"
+    CLOUD_NOTES="DoublEnderCloud/release-notes/v${CLOUD_VERSION}.md"
+    if [[ -f "$PROJECT_DIR/$CLOUD_NOTES" ]]; then
+        ok "Cloud notes present: $CLOUD_NOTES"
+    elif (( ALLOW_GENERATED_NOTES )); then
+        warn "--generated-notes — releasing v${CLOUD_VERSION} without Cloud notes ($CLOUD_NOTES)"
+    else
+        echo "      expected:  $CLOUD_NOTES (private overlay)" >&2
+        fail "No Cloud notes for v${CLOUD_VERSION} — write that file in the overlay, or re-run with --generated-notes"
+    fi
+fi
+
 # ── Version bump ──────────────────────────────────────────────────────────────
 step "Bumping version to $VERSION"
 CURRENT=$(awk -F'"' '/^[[:space:]]+MARKETING_VERSION:/ {print $2; exit}' "$PROJECT_DIR/project.yml")
