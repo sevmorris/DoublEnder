@@ -23,6 +23,8 @@ private struct ThemedConfirmationView: View {
     let title: String
     let message: String
     let fileName: String
+    /// An extra line under the file name, such as why the take stopped.
+    let note: String?
     let onAcknowledge: () -> Void
 
     var body: some View {
@@ -32,13 +34,19 @@ private struct ThemedConfirmationView: View {
             titleText(title)
             bodyText(message)
             fileNameText(fileName)
+            if let note {
+                bodyText(note)
+            }
             pillButton("OK") { onAcknowledge() }
                 .padding(.top, 2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
-        .frame(width: 380, height: 240)
+        // 240 tall, or taller when a note needs the room: the window is sized
+        // to fit (centerOnAppScreen).
+        .frame(width: 380)
+        .frame(minHeight: 240)
         // Above the fill, which would take the click itself, so a drag on
         // the dialog's empty area moves it.
         .background(WindowDragArea())
@@ -110,7 +118,9 @@ final class UploadConfirmationWindow: NSWindow {
 
 /// Presents a blocking themed confirmation on the main thread.
 private enum ThemedConfirmation {
-    static func present(iconName: String, title: String, message: String, fileName: String) {
+    static func present(
+        iconName: String, title: String, message: String, fileName: String, note: String? = nil
+    ) {
         let window = UploadConfirmationWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 240),
             styleMask: [.borderless],
@@ -121,7 +131,8 @@ private enum ThemedConfirmation {
             iconName: iconName,
             title: title,
             message: message,
-            fileName: fileName
+            fileName: fileName,
+            note: note
         ) { [weak window] in
             NSApp.stopModal()
             window?.orderOut(nil)
@@ -162,12 +173,15 @@ private enum ThemedConfirmation {
 /// Local recording-save confirmation — same app-controlled modal as Cloud so
 /// success is always visible even when notification permissions are denied.
 enum RecordingSavedConfirmation {
-    static func present(fileName: String) {
+    /// `note`, when given, is shown under the file name: why the take
+    /// stopped, when the app rather than the user stopped it.
+    static func present(fileName: String, note: String? = nil) {
         ThemedConfirmation.present(
             iconName: "checkmark.circle.fill",
             title: "DoublEnder",
             message: "Recording saved to Desktop.",
-            fileName: fileName
+            fileName: fileName,
+            note: note
         )
     }
 }
@@ -175,14 +189,16 @@ enum RecordingSavedConfirmation {
 #if GCS_ENABLED
 /// Upload-result confirmation for the DoublEnder Cloud build.
 enum UploadConfirmation {
-    static func present(success: Bool, fileName: String) {
+    /// `note` as for `RecordingSavedConfirmation`.
+    static func present(success: Bool, fileName: String, note: String? = nil) {
         ThemedConfirmation.present(
             iconName: success ? "checkmark.icloud.fill" : "exclamationmark.icloud.fill",
             title: "DoublEnder Cloud",
             message: success
                 ? "Saved to Desktop and uploaded."
                 : "Saved to Desktop. Upload failed.",
-            fileName: fileName
+            fileName: fileName,
+            note: note
         )
     }
 
