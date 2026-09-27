@@ -155,28 +155,20 @@ enum FaceplateDesign {
         return .system(size: size, weight: .bold, design: .monospaced)
     }
 
-    /// Clean panel font — Eurostile Bold or SF Pro — for the RECORD/STOP button
-    /// and any other viewport label that should NOT render as seven-segment.
+    /// Saira Regular — clean panel font for the RECORD/STOP button and any
+    /// other viewport label that should NOT render as seven-segment.
+    /// Registered at launch from the bundled TTF in Resources/Fonts/.
+    ///
+    /// Bundled rather than looked up among installed fonts, because the lookup
+    /// made the button differ from Mac to Mac: Eurostile where the user had
+    /// installed it, Bank Gothic on macOS 15 (wider, and clipped the label),
+    /// system bold elsewhere. Saira is an OFL stand-in for Eurostile, which
+    /// is commercial and can't ship in this repo.
     static func panelFont(size: CGFloat) -> Font {
-        let candidates = [
-            "EurostileLTStd-Bold", "Eurostile-Bold", "Eurostile",
-            "BankGothicBT-Medium", "BankGothic-Medium", "Bank Gothic"
-        ]
-        for name in candidates where NSFont(name: name, size: size) != nil {
-            return .custom(name, size: size)
+        if NSFont(name: "Saira-Regular", size: size) != nil {
+            return .custom("Saira-Regular", size: size)
         }
         return .system(size: size, weight: .bold, design: .default)
-    }
-
-    /// Handel Gothic — futuristic technical display font used for the version overlay.
-    /// Falls back to Eurostile Bold Condensed then DIN Condensed then system heavy.
-    static func handelFont(size: CGFloat) -> Font {
-        let candidates = ["HandelGothicBT-Regular", "Handel Gothic",
-                          "EurostileLTStd-BoldCn", "DINCondensed-Bold"]
-        for name in candidates where NSFont(name: name, size: size) != nil {
-            return .custom(name, size: size)
-        }
-        return .system(size: size, weight: .light, design: .default)
     }
 
     /// Split a version string into its numeric prefix and trailing letter suffix.

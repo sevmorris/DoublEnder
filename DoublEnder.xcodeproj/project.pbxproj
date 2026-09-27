@@ -13,6 +13,7 @@
 		0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */; };
 		0FBC87E4BA9DEEA32AF58343 /* RecorderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */; };
 		11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */; };
+		144D0ED26FE67B34771CFD94 /* Saira-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = A2C44036438AE9A6FC75EC29 /* Saira-OFL.txt */; };
 		1AF67E7E0C25924B21B6F378 /* SharedAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */; };
 		2060C7480B61F1F8CB1634C5 /* DoublEnderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A664098C4701B731F134D15A /* DoublEnderApp.swift */; };
 		3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */; };
@@ -21,6 +22,7 @@
 		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
+		8E601DF8702C2656E0AD1D93 /* Saira-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */; };
 		9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
 		98D7CBA7118AD909811A08D7 /* VersionFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */; };
 		A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */; };
@@ -60,6 +62,7 @@
 		3D49F00ABC34260F57521983 /* View+Compat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "View+Compat.swift"; sourceTree = "<group>"; };
 		4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskSpaceChecker.swift; sourceTree = "<group>"; };
 		5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderMainPanel.swift; sourceTree = "<group>"; };
+		64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Saira-Regular.ttf"; sourceTree = "<group>"; };
 		839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMSidecarTests.swift; sourceTree = "<group>"; };
 		87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceplateDesign.swift; sourceTree = "<group>"; };
 		8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderViewModelTests.swift; sourceTree = "<group>"; };
@@ -67,6 +70,7 @@
 		93F681091F6D4AD00C951A0C /* SessionHeartbeat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHeartbeat.swift; sourceTree = "<group>"; };
 		9AC710282351ED2B87482FED /* UploadConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadConfirmationView.swift; sourceTree = "<group>"; };
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
+		A2C44036438AE9A6FC75EC29 /* Saira-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Saira-OFL.txt"; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C757981FB56F560204E52311 /* CRC32CTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32CTests.swift; sourceTree = "<group>"; };
@@ -97,6 +101,8 @@
 			isa = PBXGroup;
 			children = (
 				06752EA9DBBABCB91FEF26D3 /* DSEG7Classic-Regular.ttf */,
+				A2C44036438AE9A6FC75EC29 /* Saira-OFL.txt */,
+				64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */,
 			);
 			path = Fonts;
 			sourceTree = "<group>";
@@ -284,6 +290,8 @@
 			files = (
 				DF7E5277F967AA00454980E9 /* Assets.xcassets in Resources */,
 				03D43A8193DEA5E27FE3E0A1 /* DSEG7Classic-Regular.ttf in Resources */,
+				144D0ED26FE67B34771CFD94 /* Saira-OFL.txt in Resources */,
+				8E601DF8702C2656E0AD1D93 /* Saira-Regular.ttf in Resources */,
 				1AF67E7E0C25924B21B6F378 /* SharedAssets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
