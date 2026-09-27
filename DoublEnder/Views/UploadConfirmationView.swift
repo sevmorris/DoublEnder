@@ -39,6 +39,9 @@ private struct ThemedConfirmationView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
+        // Above the fill, which would take the click itself, so a drag on
+        // the dialog's empty area moves it.
+        .background(WindowDragArea())
         .background(dlgBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -128,7 +131,6 @@ private enum ThemedConfirmation {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
         window.level = .modalPanel
         centerOnAppScreen(window)
 
@@ -136,9 +138,17 @@ private enum ThemedConfirmation {
         NSApp.runModal(for: window)
     }
 
-    /// Centre `window` on the same screen that the main app window occupies,
-    /// falling back to the primary screen (m17 — multi-monitor placement).
+    /// Size `window` to its content and centre it on the same screen that the
+    /// main app window occupies, falling back to the primary screen (m17 —
+    /// multi-monitor placement).
     fileprivate static func centerOnAppScreen(_ window: NSWindow) {
+        // Taking the hosting controller left the window the size of the
+        // controller's view, which SwiftUI hasn't laid out yet: 0×0. It grows
+        // to fit only after the first layout, from its bottom-left corner, so
+        // centring it as it is put that corner in the middle of the screen.
+        if let content = window.contentViewController?.view {
+            window.setContentSize(content.fittingSize)
+        }
         let screen = NSApp.windows
             .first(where: { !$0.isMiniaturized && $0.isVisible && $0 !== window })?.screen
             ?? NSScreen.main
@@ -208,6 +218,9 @@ struct PendingUploadView: View {
         .padding(.horizontal, 26)
         .padding(.vertical, 22)
         .frame(width: 380, height: 240)
+        // Above the fill, which would take the click itself, so a drag on
+        // the dialog's empty area moves it.
+        .background(WindowDragArea())
         .background(dlgBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -296,7 +309,6 @@ enum PendingUploadPrompt {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
         window.level = .modalPanel
         UploadConfirmation.centerOnAppScreen(window)
 

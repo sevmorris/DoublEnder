@@ -215,7 +215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // stale chrome layer active in some builds — drop it.
         // titlebarAppearsTransparent is also redundant for .borderless.
         window.styleMask = [.borderless]
-        window.isMovableByWindowBackground = true
+        // The faceplate moves the window itself (WindowDragArea), so AppKit's
+        // background drag stays off. On macOS 27 it no longer moves a window
+        // of SwiftUI content, and left on elsewhere it would make which of
+        // the two handles a drag depend on the macOS version.
+        window.isMovableByWindowBackground = false
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
@@ -448,7 +452,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
         window.level = .modalPanel
         centerModal(window)
 
@@ -464,11 +467,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Modal placement
 
-    /// Centre `window` on the same screen as the main window, falling back to
-    /// the primary screen if neither can be determined. `NSWindow.center()`
-    /// always targets the primary screen, which is wrong on multi-monitor rigs
-    /// where the user runs DoublEnder on a secondary display (m17).
+    /// Size `window` to its content and centre it on the same screen as the
+    /// main window, falling back to the primary screen if neither can be
+    /// determined. `NSWindow.center()` always targets the primary screen,
+    /// which is wrong on multi-monitor rigs where the user runs DoublEnder on
+    /// a secondary display (m17).
     private func centerModal(_ window: NSWindow) {
+        // Taking the hosting controller left the window the size of the
+        // controller's view, which SwiftUI hasn't laid out yet: 0×0. It grows
+        // to fit only after the first layout, from its bottom-left corner, so
+        // centring it as it is put that corner in the middle of the screen.
+        if let content = window.contentViewController?.view {
+            window.setContentSize(content.fittingSize)
+        }
         let screen = mainWindow?.screen ?? NSScreen.main
         guard let screen else { window.center(); return }
         let sf = screen.visibleFrame

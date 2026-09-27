@@ -4,7 +4,9 @@ import AppKit
 
 // MARK: - Viewport shell
 
-/// Near-black warm surface with scanlines and radial vignette.
+/// Near-black warm surface with scanlines and radial vignette. It takes no
+/// clicks, so a drag on the screen between the controls falls through to the
+/// `WindowDragArea` beneath and moves the window.
 struct FaceplateViewportBackground: View {
     var body: some View {
         ZStack {
@@ -20,11 +22,10 @@ struct FaceplateViewportBackground: View {
                     y += lineSpacing
                 }
             }
-            .allowsHitTesting(false)
             RadialGradient(colors: [.clear, .black.opacity(0.52)],
                            center: .center, startRadius: 80, endRadius: 215)
-            .allowsHitTesting(false)
         }
+        .allowsHitTesting(false)
     }
 }
 
@@ -262,6 +263,60 @@ struct ViewAnchor: NSViewRepresentable {
         }
 
         override var mouseDownCanMoveWindow: Bool { false }
+    }
+}
+
+// MARK: - Window drag
+
+/// A layer that moves its window when it is dragged. The faceplate puts it
+/// beneath everything else, where nothing above it takes a click on the bezel
+/// or on the screen between the controls. The themed dialogs put it between
+/// their content and their opaque fill.
+///
+/// AppKit's own background drag can't be relied on for this. On macOS 27 it
+/// no longer moves a window whose content is SwiftUI, so with
+/// `isMovableByWindowBackground` alone the main window stayed where it first
+/// opened, in the middle of the screen. The layer moves the window itself, on
+/// every macOS version, and none of these windows turns AppKit's drag on.
+///
+/// The window follows the pointer's position on screen, not the drag's
+/// translation: once the window moves with the pointer, the pointer hardly
+/// moves within it. `setFrameOrigin` still posts `windowDidMove`, so the
+/// frame autosave keeps the new position for the next launch.
+struct WindowDragArea: View {
+    /// Holds the anchor view without making SwiftUI re-render. It is set
+    /// from `viewDidMoveToWindow`, which can arrive in the middle of an update.
+    private final class Anchor {
+        weak var view: NSView?
+    }
+
+    @State private var anchor = Anchor()
+
+    var body: some View {
+        // Not quite clear: SwiftUI passes clicks straight through a clear
+        // colour, and this layer has to take them.
+        let area = Color.black.opacity(0.001)
+            .background(ViewAnchor { anchor.view = $0 })
+            .gesture(DragGesture(minimumDistance: 2).onChanged { moveWindow(with: $0) })
+        if #available(macOS 15.0, *) {
+            // The click that brings the app forward can start the drag too,
+            // as it can on a title bar. Scoped to this layer: the buttons
+            // still ignore a click that only activates the window.
+            area.allowsWindowActivationEvents(true)
+        } else {
+            area
+        }
+    }
+
+    private func moveWindow(with drag: DragGesture.Value) {
+        guard let view = anchor.view, let window = view.window else { return }
+        // Where the drag began, in window coordinates. The anchor view has
+        // this layer's frame, but its y axis runs up unless it is flipped.
+        let y = view.isFlipped ? drag.startLocation.y : view.bounds.height - drag.startLocation.y
+        let grab = view.convert(NSPoint(x: drag.startLocation.x, y: y), to: nil)
+        // Keep that point under the pointer.
+        let pointer = NSEvent.mouseLocation
+        window.setFrameOrigin(NSPoint(x: pointer.x - grab.x, y: pointer.y - grab.y))
     }
 }
 
