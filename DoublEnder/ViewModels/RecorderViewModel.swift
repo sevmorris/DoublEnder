@@ -835,9 +835,26 @@ class RecorderViewModel: ObservableObject {
                 }
             case .failure(let error):
                 self.recordingTime = 0
-                if self.recoverSidecarIfNeeded(from: self.recordedFileURL, note: diskNote) {
+                if let recovered = self.recoverSidecarIfNeeded(from: self.recordedFileURL, note: diskNote) {
+                    #if GCS_ENABLED
+                    if self.cloudUploadEnabled {
+                        // The recovered WAV is the take now: upload it like one
+                        // that finalized. The upload's confirmation carries the
+                        // disk note, and performUpload records the file before
+                        // it starts, so a quit mid-upload is offered next launch.
+                        self.recordedFileURL = recovered
+                        self.uploadProgress = 0
+                        self.state = .uploading
+                        Task { await self.performUpload(note: diskNote) }
+                    } else {
+                        self.recordedFileURL = nil
+                        self.state = .ready
+                    }
+                    #else
+                    _ = recovered
                     self.recordedFileURL = nil
                     self.state = .ready
+                    #endif
                 } else {
                     let message = Self.stopFailureMessage(
                         for: error,
@@ -885,32 +902,34 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
-    /// finalize — returns true when a recovered file was saved and presented.
-    /// `note` goes on the saved confirmation, as for a finalized take.
-    private func recoverSidecarIfNeeded(from mainOutput: URL?, note: String? = nil) -> Bool {
-        guard let mainOutput else { return false }
+    /// finalize — returns the recovered file, or nil when nothing was
+    /// recovered. `note` goes on the saved confirmation, as for a finalized
+    /// take. With cloud upload on, the caller uploads the file and the
+    /// upload's confirmation takes the note instead.
+    private func recoverSidecarIfNeeded(from mainOutput: URL?, note: String? = nil) -> URL? {
+        guard let mainOutput else { return nil }
         let sidecarURL = PCMSidecar.url(for: mainOutput)
-        guard PCMSidecar.hasRecoverableContent(at: sidecarURL) else { return false }
+        guard PCMSidecar.hasRecoverableContent(at: sidecarURL) else { return nil }
         do {
             let recovered = try PCMSidecar.recoverToWAV(sidecarURL: sidecarURL)
             try? FileManager.default.removeItem(at: sidecarURL)
             try? FileManager.default.removeItem(at: mainOutput)
             Task { await NotificationService.shared.postRecordingSaved(fileURL: recovered) }
             #if GCS_ENABLED
-            // Local-only mode mirrors the Local build's confirmation; with
-            // cloud on, the upload flow owns the user-facing confirmation.
-            // A note has nowhere else to go, so it brings the confirmation.
-            if !cloudUploadEnabled || note != nil {
+            // Local-only mode mirrors the Local build's confirmation. With
+            // cloud on, the caller uploads the file, and the upload's own
+            // confirmation (with the note) is the one the user sees.
+            if !cloudUploadEnabled {
                 RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
             }
             #else
             RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
             #endif
-            return true
+            return recovered
         } catch {
             logger.error("Sidecar recovery failed: \(error.localizedDescription, privacy: .public)")
             state = .error("The recording couldn't be recovered: \(error.localizedDescription). The recovery file is still on disk — check disk space and permissions, then relaunch to retry.")
-            return false
+            return nil
         }
     }
 

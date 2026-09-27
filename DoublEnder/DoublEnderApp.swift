@@ -153,9 +153,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        runCrashRecoveryIfNeeded()
         #if GCS_ENABLED
+        let recovered = runCrashRecoveryIfNeeded()
         runPendingUploadCheckIfNeeded()
+        offerUploadOfRecoveredTake(recovered)
+        #else
+        runCrashRecoveryIfNeeded()
         #endif
         Task { await checkForUpdates(silent: true) }
     }
@@ -293,7 +296,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// A PCM sidecar on disk means a previous recording never finalized —
     /// the matching .m4a (if any) is unplayable. Present a themed dialog
     /// per sidecar that re-wraps it into a valid WAV off the main thread.
-    private func runCrashRecoveryIfNeeded() {
+    /// Returns the WAVs the user recovered.
+    @discardableResult
+    private func runCrashRecoveryIfNeeded() -> [URL] {
         let fm = FileManager.default
         let dir = RecorderViewModel.recordingsDirectory
 
@@ -315,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.informativeText = "DoublEnder couldn't check the Desktop for recordings from a previous session: \(error.localizedDescription). Check that the Desktop is accessible and relaunch to retry."
             alert.addButton(withTitle: "OK")
             alert.runModal()
-            return
+            return []
         }
 
         let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
@@ -333,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let recoverable = sidecars.filter { PCMSidecar.hasRecoverableContent(at: $0) }
-        guard !recoverable.isEmpty else { return }
+        guard !recoverable.isEmpty else { return [] }
 
         // Recovery is a gate the user must clear before using the app — keep
         // the main recorder window hidden until every sidecar is resolved,
@@ -341,10 +346,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the normal launch path has no flicker.
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.orderOut(nil)
-        for sidecar in recoverable {
-            presentRecoveryDialog(for: sidecar)
-        }
+        let recovered = recoverable.compactMap { presentRecoveryDialog(for: $0) }
         mainWindow?.makeKeyAndOrderFront(nil)
+        return recovered
     }
 
     #if GCS_ENABLED
@@ -374,12 +378,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             vm.clearPendingUpload()
         }
     }
+
+    /// A take recovered at launch never reached the cloud: its session ended
+    /// before the upload could start. Offer it with the same prompt as an
+    /// interrupted upload ("A recording wasn't uploaded last session"); Skip
+    /// leaves the WAV on the Desktop, as before. Only one upload runs at a
+    /// time, so when an interrupted upload was resumed a moment ago this
+    /// offers nothing, and the recovered WAV stays on the Desktop. Launch
+    /// recovery finds one sidecar per crashed session, so there is in
+    /// practice a single take to offer.
+    private func offerUploadOfRecoveredTake(_ recovered: [URL]) {
+        let vm = RecorderViewModel.shared
+        guard vm.cloudUploadEnabled, !vm.isCurrentlyUploading,
+              let url = recovered.first(where: { FileManager.default.fileExists(atPath: $0.path) })
+        else { return }
+
+        mainWindow?.orderOut(nil)
+        let shouldUpload = PendingUploadPrompt.present(fileName: url.lastPathComponent)
+        mainWindow?.makeKeyAndOrderFront(nil)
+
+        if shouldUpload {
+            vm.resumePendingUpload(fileURL: url)
+        }
+    }
     #endif
 
     /// Runs a modal session for one sidecar. The modal run loop keeps the
     /// window — and its spinner — responsive while `RecoveryModel` does the
-    /// conversion on a background queue.
-    private func presentRecoveryDialog(for sidecar: URL) {
+    /// conversion on a background queue. Returns the recovered WAV, if the
+    /// user recovered one.
+    private func presentRecoveryDialog(for sidecar: URL) -> URL? {
         let model = RecoveryModel(sidecarURL: sidecar)
         let hosting = NSHostingController(rootView: RecoveryView(model: model))
 
@@ -405,6 +433,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         NSApp.runModal(for: window)
+
+        if case .success(let url) = model.phase { return url }
+        return nil
     }
 
     // MARK: - Modal placement
