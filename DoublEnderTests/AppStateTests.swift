@@ -150,14 +150,16 @@ final class SessionDiagnosticsTests: XCTestCase {
     }
 
     func testSampleFormatNames() throws {
-        let planar = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(
-            try makeFormat(channels: 2, bits: 32, float: true, planar: true, layout: nil)
-        )?.pointee)
-        XCTAssertEqual(SessionDiagnostics.sampleFormat(planar), "float32 planar")
-        let int16 = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(
-            try makeFormat(channels: 1, bits: 16, layout: nil)
-        )?.pointee)
-        XCTAssertEqual(SessionDiagnostics.sampleFormat(int16), "int16")
+        XCTAssertEqual(
+            SessionDiagnostics.sampleFormat(try streamDescription(
+                makeFormat(channels: 2, bits: 32, float: true, planar: true, layout: nil)
+            )),
+            "float32 planar"
+        )
+        XCTAssertEqual(
+            SessionDiagnostics.sampleFormat(try streamDescription(makeFormat(channels: 1, bits: 16, layout: nil))),
+            "int16"
+        )
         var aac = AudioStreamBasicDescription()
         aac.mFormatID = kAudioFormatMPEG4AAC
         XCTAssertEqual(SessionDiagnostics.sampleFormat(aac), "aac ")
@@ -216,6 +218,14 @@ final class SessionDiagnosticsTests: XCTestCase {
     }
 
     /// A 48 kHz linear PCM format description, labelled by `layout` if given.
+    /// The format's stream description, copied out while the format is still
+    /// alive: the pointer CoreMedia returns points into the format itself.
+    private func streamDescription(_ format: CMAudioFormatDescription) throws -> AudioStreamBasicDescription {
+        try withExtendedLifetime(format) {
+            try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee)
+        }
+    }
+
     private func makeFormat(
         channels: UInt32, bits: UInt32, float: Bool = false, planar: Bool = false, layout: Data?
     ) throws -> CMAudioFormatDescription {
