@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Crop a full-canvas faceplate overlay to its ink and emit its geometry.
 
-The faceplate overlays (variant badges, the engraved CLOUD label) are authored
-as full-canvas 5480x4680 transparent PNGs so they register with the plate
+Faceplate overlays (today, only the Cloud build's engraved CLOUD label) are
+authored as full-canvas 5480x4680 transparent PNGs so they register with the plate
 exactly, with no position to measure by hand. Shipping them that way is very
 expensive: the system decodes an overlay at full resolution regardless of how
 little of it is ink, costing ~98 MB of resident memory EACH (measured: removing
@@ -17,7 +17,7 @@ Usage:
     python3 tools/crop-overlay.py <in.png> [more.png ...] [--out DIR] [--union]
 
 --union crops every input to their combined bounds, so variants of the same
-artwork (e.g. the red and blue badges) share one set of constants.
+artwork share one set of constants.
 """
 import argparse, os, sys
 from PIL import Image
