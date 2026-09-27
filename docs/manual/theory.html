@@ -914,24 +914,26 @@
 
     <h3>release.sh Pipeline</h3>
     <ol>
-      <li>Preflight: check tools, working tree clean, tag available</li>
-      <li>Version bump: rewrite <code>MARKETING_VERSION</code> in <code>project.yml</code>, update README + <code>docs/index.html</code> DMG URL patterns</li>
-      <li>Build number bump: increment <code>CURRENT_PROJECT_VERSION</code></li>
-      <li><code>xcodegen generate</code>: regenerate <code>.xcodeproj</code></li>
+      <li>Preflight: check tools; <code>python3</code> can import <code>dmgbuild</code> and start a subprocess (a Python built against an SDK newer than the running macOS imports it, then segfaults on dmgbuild's <code>hdiutil</code> call); the notarytool keychain profile (<code>notarytool</code>, overridable with <code>NOTARY_PROFILE</code>) works, with a hint when a locked screen is what hides it; working tree clean; <code>git fetch --tags</code> from the remote, so every published tag is seen; tag available; HEAD contains the remote branch</li>
+      <li>Version ordering: refuse a version that sorts below the highest <code>v*</code> tag, which would leave GitHub serving an older build as latest and clients on the newer one reporting themselves up to date; <code>ALLOW_DOWNGRADE=1</code> overrides</li>
+      <li>Shared files: <code>scripts/check-shared.sh</code> fails the release if a file shared verbatim with the sibling app repos, such as the DMG tooling in <code>tools/dmg/</code>, differs from their copies</li>
+      <li>Release notes: <code>release-notes/vX.Y.Zlr.md</code> must exist unless <code>--generated-notes</code> is passed; checked here because the notes are read only after the push, where a failure would strand a pushed tag with no release</li>
+      <li>Version bump: rewrite <code>MARKETING_VERSION</code> in <code>project.yml</code>; update the version line in README and <code>THEORY_OF_OPERATION.md</code>, the DMG filename in README + <code>docs/index.html</code>, and the Download label in <code>docs/index.html</code>; <code>xcodegen generate</code>; commit</li>
+      <li>Build number bump: increment <code>CURRENT_PROJECT_VERSION</code>, <code>xcodegen generate</code>, commit. Both bumps are committed before the build, so a later failure leaves nothing uncommitted</li>
       <li><code>xcodebuild -configuration Release -destination 'generic/platform=macOS'</code> — the destination flag is <strong>load-bearing</strong>: without it xcodebuild auto-selects the first matching destination (<code>{platform:macOS, arch:arm64}</code> on an Apple Silicon Mac) and narrows the build to that single arch, silently overriding <code>ARCHS = "arm64 x86_64"</code>. That shipped an arm64-only binary for several releases while the README promised Intel support, and an Intel Mac cannot launch such a build at all (Rosetta translates x86_64 to arm64, never the reverse). Both release scripts now assert <code>lipo -archs</code> contains arm64 <em>and</em> x86_64, and fail the release if not.</li>
-      <li>Codesign: <code>codesign --force --options runtime --entitlements … --sign "Developer ID Application: Seven Morris (T9RLNAXPWU)"</code></li>
+      <li>Codesign: <code>codesign --force --options runtime --entitlements … --sign "Developer ID Application: Seven Morris (T9RLNAXPWU)"</code>, then <code>codesign --verify --deep --strict</code></li>
       <li>Verify version: <code>defaults read</code> on built app's Info.plist</li>
-      <li>Stage DMG: copy <code>.app</code> + <code>/Applications</code> symlink</li>
-      <li>Create DMG: <code>hdiutil create -format UDZO</code></li>
-      <li>Notarize: <code>xcrun notarytool submit --wait --keychain-profile WoWoNotary</code> + <code>xcrun stapler staple</code></li>
-      <li>Verify DMG: mount, read version, unmount</li>
-      <li>Tag and push: <code>git tag vX.Y.Zlr</code>, push branch and tag</li>
-      <li>GitHub release: <code>gh release create</code> with DMG attached; release notes generated from commits since previous tag</li>
-      <li>Bump Homebrew cask: <code>shasum</code> the DMG, clone <code>sevmorris/homebrew-tap</code> into a temp dir, rewrite <code>version</code> + <code>sha256</code> in <code>Casks/doublender.rb</code>, verify both replacements landed, push <code>Bump doublender to X.Y.Zlr</code></li>
-      <li>GCS permalink: <code>gcloud storage cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: public, max-age=60</code>. (Distinct from the Cloud <em>update manifest</em> <code>cloud-latest.json</code>, which is uploaded with <code>Cache-Control: no-cache</code> — update checks must read fresh; the 60-second cap on the DMG merely keeps a just-published build from being masked by an older cached copy.)</li>
+      <li>Notarize app: <code>ditto</code> zip, <code>xcrun notarytool submit --wait --keychain-profile notarytool</code>, then <code>xcrun stapler staple</code> + <code>xcrun stapler validate</code> on the app, so it carries its own ticket once dragged out of the DMG</li>
+      <li>Create DMG: <code>dmgbuild</code> with <code>tools/dmg/dmg-settings.py</code> and the background art; dmgbuild lays out the installer window by writing its <code>.DS_Store</code> directly. A dmgbuild failure fails the release: there is deliberately no fallback to bare <code>hdiutil</code>, since a DMG without its installer window is a failed release</li>
+      <li>Sign and notarize DMG: <code>codesign --timestamp</code> the image itself, since an unsigned DMG reports "no usable signature" to <code>spctl</code> even with a valid ticket stapled; then <code>xcrun notarytool submit --wait</code> + <code>xcrun stapler staple</code></li>
+      <li>Verify DMG: mount, read version, <code>stapler validate</code> the enclosed app, check for the installer window's <code>.DS_Store</code> and <code>.background.*</code>, unmount</li>
+      <li>Tag and push: <code>git tag vX.Y.Zlr</code>, then one <code>git push --atomic</code> of branch and tag, so they land together or not at all; if it fails, the local tag is deleted</li>
+      <li>GitHub release: <code>gh release create</code> with DMG attached and <code>release-notes/vX.Y.Zlr.md</code> as the notes; notes are generated from commits since the previous tag only under <code>--generated-notes</code></li>
+      <li>GCS permalink: <code>gcloud storage cp</code> to <code>gs://doublender-downloads/DoublEnder.dmg</code> with <code>Cache-Control: public, max-age=60</code>, then re-assert public-read. (Distinct from the Cloud <em>update manifest</em> <code>cloud-latest.json</code>, which is uploaded with <code>Cache-Control: no-cache</code> — update checks must read fresh; the 60-second cap on the DMG merely keeps a just-published build from being masked by an older cached copy.)</li>
       <li>Cloud release: if <code>project.cloud.yml</code> is present, run <code>release-cloud-from-local.sh</code></li>
-      <li>Prune old releases: keep the 5 most recent GitHub releases; delete older tags and assets</li>
+      <li>Prune old releases: keep the 5 most recent GitHub releases; delete older release pages and their assets, never the git tags</li>
       <li>Prune old Pages deployments: mark all but the newest <code>github-pages</code> deployment inactive and delete them via the GitHub API</li>
+      <li>Clean up: remove temp build dirs and the DMG, then open the release page. An <code>EXIT</code> trap does the same cleanup when the script stops early, and <code>INT</code>/<code>TERM</code> traps cover Ctrl-C and a closed terminal, since zsh runs no <code>EXIT</code> trap on a signal</li>
     </ol>
   </section>
 
