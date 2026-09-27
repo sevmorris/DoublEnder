@@ -29,6 +29,28 @@ enum RecordingError: LocalizedError {
     }
 }
 
+/// Why the engine ended a take on its own, as a category for diagnostics.
+/// The reason text that goes to the user can carry a device's name; this
+/// never does, so the Cloud heartbeat reports this instead.
+enum CaptureFailure: String {
+    /// The input was unplugged or vanished from the device list.
+    case inputLost
+    /// An interruption lasted past the interruption watchdog's 5 s.
+    case interrupted
+    /// An interruption ended, but the session did not start again.
+    case restartFailed
+    /// Buffers stopped arriving for the data-flow watchdog's 3 s.
+    case dataStalled
+    /// Not one buffer arrived within 5 s of record start.
+    case noFirstBuffer
+    /// AVCaptureSession reported a runtime error.
+    case runtimeError
+    /// The writer refused its input, failed to start, or failed appends.
+    case writerFailed
+    /// The writer fell behind and buffers were dropped.
+    case audioDropped
+}
+
 /// Hardware mic vs. aggregate/virtual device, decided by CoreAudio
 /// transport type rather than fragile name matching.
 private enum InputDeviceKind {
@@ -228,6 +250,19 @@ class AudioEngine: NSObject, ObservableObject {
     /// tear-down race close together. The VM would otherwise see a stacked
     /// stopRecording / alert pair. Reset in `startRecording` for each new take.
     private var didDispatchDisconnect = false
+    /// Why the engine ended the current or last take on its own, or nil if
+    /// it didn't. Set by the path that wins `dispatchDisconnectIfNeeded`,
+    /// reset in `startRecording`. Main thread.
+    private(set) var lastCaptureFailure: CaptureFailure?
+    /// Interruptions begun during the current or last take. Reset in
+    /// `startRecording`. Main thread.
+    private(set) var interruptionsThisTake = 0
+    /// Format description of the most recent capture buffer, for
+    /// diagnostics. Written on `writerQueue`, read on main, both under
+    /// `inputFormatLock`; writerQueue's own unlocked comparison is safe
+    /// because only writerQueue writes it.
+    private var lastInputFormat: CMFormatDescription?
+    private let inputFormatLock = NSLock()
 
     /// Called on the main thread when a device disconnects mid-recording.
     /// The string is a user-facing reason (device name + "disconnected").
@@ -390,7 +425,12 @@ class AudioEngine: NSObject, ObservableObject {
             self.captureSession = nil
             self.currentInput = nil
             self.audioOutput = nil
-            self.writerQueue.sync { self.smoothedPeakLevel = LevelMeter.dbFloor }
+            self.writerQueue.sync {
+                self.smoothedPeakLevel = LevelMeter.dbFloor
+                self.inputFormatLock.lock()
+                self.lastInputFormat = nil
+                self.inputFormatLock.unlock()
+            }
             DispatchQueue.main.async {
                 self.meterLevel = LevelMeter.dbFloor
             }
@@ -579,7 +619,9 @@ class AudioEngine: NSObject, ObservableObject {
             logger.warning("Data-flow watchdog fired — no buffers for \(Int(Self.dataFlowTimeoutSeconds), privacy: .public) s")
             self.dataFlowWatchdog = nil
             self.disconnectStopPending = true
-            self.handleRecordingCaptureFailure(reason: "Microphone stopped delivering audio")
+            self.handleRecordingCaptureFailure(
+                reason: "Microphone stopped delivering audio", kind: .dataStalled
+            )
         }
         dataFlowWatchdog = watchdog
         DispatchQueue.main.asyncAfter(
@@ -703,7 +745,7 @@ class AudioEngine: NSObject, ObservableObject {
         guard isRecording, !disconnectStopPending else { return }
         disconnectStopPending = true
         logger.warning("Recording input disconnected: \(reason, privacy: .public)")
-        handleRecordingCaptureFailure(reason: reason)
+        handleRecordingCaptureFailure(reason: reason, kind: .inputLost)
     }
 
     /// When idle, rebuild if the bound input is gone so the user isn't left
@@ -726,11 +768,11 @@ class AudioEngine: NSObject, ObservableObject {
 
     /// Unified path for disconnect, runtime error, and unrecoverable interruption
     /// during an active take — delegates stop/finalize to RecorderViewModel.
-    private func handleRecordingCaptureFailure(reason: String) {
+    private func handleRecordingCaptureFailure(reason: String, kind: CaptureFailure) {
         guard isRecording, disconnectStopPending else { return }
         logger.warning("Recording capture failure: \(reason, privacy: .public)")
         DispatchQueue.main.async { [weak self] in
-            self?.dispatchDisconnectIfNeeded(reason)
+            self?.dispatchDisconnectIfNeeded(reason, kind: kind)
         }
     }
 
@@ -738,10 +780,12 @@ class AudioEngine: NSObject, ObservableObject {
     /// firing twice when the interruption watchdog, data-flow watchdog, and
     /// writer tear-down race close together. Whoever lands here first wins;
     /// later callers see the latch set and bail. The latch is reset in
-    /// `startRecording` for each new take.
-    private func dispatchDisconnectIfNeeded(_ reason: String) {
+    /// `startRecording` for each new take. The winner's `kind` is kept in
+    /// `lastCaptureFailure`.
+    private func dispatchDisconnectIfNeeded(_ reason: String, kind: CaptureFailure) {
         guard !didDispatchDisconnect else { return }
         didDispatchDisconnect = true
+        lastCaptureFailure = kind
         onDisconnectedDuringRecording?(reason)
     }
 
@@ -769,7 +813,9 @@ class AudioEngine: NSObject, ObservableObject {
             guard let self else { return }
             guard self.isRecording, !self.disconnectStopPending else { return }
             self.disconnectStopPending = true
-            self.handleRecordingCaptureFailure(reason: err?.localizedDescription ?? "runtime error")
+            self.handleRecordingCaptureFailure(
+                reason: err?.localizedDescription ?? "runtime error", kind: .runtimeError
+            )
         }
     }
 
@@ -794,6 +840,7 @@ class AudioEngine: NSObject, ObservableObject {
             self.dataFlowWatchdog?.cancel()
             self.dataFlowWatchdog = nil
             self.sessionInterrupted = true
+            self.interruptionsThisTake += 1
             let watchdog = DispatchWorkItem { [weak self] in
                 guard let self, self.isRecording, !self.disconnectStopPending else { return }
                 logger.warning("Interruption watchdog fired — no recovery after 5 s")
@@ -801,7 +848,8 @@ class AudioEngine: NSObject, ObservableObject {
                 self.sessionInterrupted = false
                 self.disconnectStopPending = true
                 self.handleRecordingCaptureFailure(
-                    reason: "Recording stopped: microphone access was interrupted"
+                    reason: "Recording stopped: microphone access was interrupted",
+                    kind: .interrupted
                 )
             }
             self.interruptionWatchdog = watchdog
@@ -832,7 +880,10 @@ class AudioEngine: NSObject, ObservableObject {
                     guard !self.disconnectStopPending else { return }
                     if stillDown {
                         self.disconnectStopPending = true
-                        self.handleRecordingCaptureFailure(reason: "interruption ended but session did not restart")
+                        self.handleRecordingCaptureFailure(
+                            reason: "interruption ended but session did not restart",
+                            kind: .restartFailed
+                        )
                     } else if self.isRecording {
                         // Running again, but running is not delivering: give
                         // the restart the same deadline as any buffer gets.
@@ -897,6 +948,23 @@ class AudioEngine: NSObject, ObservableObject {
             }
             return kind == .microphone
         }
+    }
+
+    /// The bound input, as the Cloud heartbeat reports it: transport,
+    /// manufacturer, format and channel layout, and a name only where
+    /// `SessionDiagnostics` allows one. Nil with no input bound. Main thread.
+    func inputDiagnostics() -> SessionDiagnostics.InputInfo? {
+        guard let device = currentInput?.device else { return nil }
+        let transport = audioDeviceID(forUID: device.uniqueID).flatMap { transportType(for: $0) }
+        inputFormatLock.lock()
+        let format = lastInputFormat
+        inputFormatLock.unlock()
+        return SessionDiagnostics.InputInfo(
+            transport: transport,
+            manufacturer: device.manufacturer,
+            name: device.localizedName,
+            format: format
+        )
     }
 
     // MARK: - Recording lifecycle
@@ -1015,6 +1083,8 @@ class AudioEngine: NSObject, ObservableObject {
         recordingInputDeviceUID = currentInput?.device.uniqueID
         disconnectStopPending = false
         didDispatchDisconnect = false
+        lastCaptureFailure = nil
+        interruptionsThisTake = 0
         // A markDataFlowing queued behind the previous take's stopRecording can
         // re-arm the data-flow watchdog after stop cancelled it; cancel all
         // three here so a stale item can never fire into this take.
@@ -1040,7 +1110,9 @@ class AudioEngine: NSObject, ObservableObject {
             logger.warning("First-buffer watchdog fired — no audio buffer within \(Int(Self.firstBufferTimeoutSeconds), privacy: .public) s of record start")
             self.firstBufferWatchdog = nil
             self.disconnectStopPending = true
-            self.handleRecordingCaptureFailure(reason: "The microphone delivered no audio")
+            self.handleRecordingCaptureFailure(
+                reason: "The microphone delivered no audio", kind: .noFirstBuffer
+            )
         }
         firstBufferWatchdog = fbWatchdog
         DispatchQueue.main.asyncAfter(
@@ -1408,6 +1480,13 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
     ) {
         // Live peak-hold meter, always — independent of recording state.
         updateMeterLevels(from: sampleBuffer)
+        // Keep the input's format for diagnostics. Capture reuses one format
+        // description while the format holds, so this locks only on a change.
+        if let format = CMSampleBufferGetFormatDescription(sampleBuffer), format !== lastInputFormat {
+            inputFormatLock.lock()
+            lastInputFormat = format
+            inputFormatLock.unlock()
+        }
 
         guard isRecording else { return }
 
@@ -1462,14 +1541,14 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             input.expectsMediaDataInRealTime = true
 
             guard writer.canAdd(input) else {
-                tearDownWriterLocked(reason: "AVAssetWriter rejected the configured input")
+                tearDownWriterLocked(reason: "AVAssetWriter rejected the configured input", kind: .writerFailed)
                 return
             }
             writer.add(input)
 
             guard writer.startWriting() else {
                 let reason = writer.error?.localizedDescription ?? "startWriting failed"
-                tearDownWriterLocked(reason: reason)
+                tearDownWriterLocked(reason: reason, kind: .writerFailed)
                 return
             }
             let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -1484,7 +1563,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
 
         guard writer.status == .writing else {
             let reason = writer.error?.localizedDescription ?? "AVAssetWriter status \(writer.status.rawValue)"
-            tearDownWriterLocked(reason: reason)
+            tearDownWriterLocked(reason: reason, kind: .writerFailed)
             return
         }
 
@@ -1501,7 +1580,10 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
                 DispatchQueue.main.async { [weak self] in self?.droppedFrameWarning = true }
             }
             if consecutiveDropCount >= writeErrorThreshold {
-                tearDownWriterLocked(reason: "Recording stopped: disk or encoder could not keep up (audio was being dropped)")
+                tearDownWriterLocked(
+                    reason: "Recording stopped: disk or encoder could not keep up (audio was being dropped)",
+                    kind: .audioDropped
+                )
             } else {
                 writerLock.unlock()
             }
@@ -1527,7 +1609,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             if consecutiveWriteErrors >= writeErrorThreshold {
                 let reason = writer.error?.localizedDescription
                     ?? "AVAssetWriter status \(writer.status.rawValue)"
-                tearDownWriterLocked(reason: reason)
+                tearDownWriterLocked(reason: reason, kind: .writerFailed)
             } else {
                 writerLock.unlock()
             }
@@ -1539,7 +1621,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
     /// it up, ends the recording session, and delegates stop/finalize to
     /// RecorderViewModel (same path as device disconnect). Does not set
     /// lastError — the VM owns the user-facing message via stopRecording.
-    private func tearDownWriterLocked(reason: String) {
+    private func tearDownWriterLocked(reason: String, kind: CaptureFailure) {
         let writer = assetWriter
         let abortedSidecar = pcmSidecar
         let hadSamples = didAppendAtLeastOneSample
@@ -1569,7 +1651,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
                 self.droppedFrameWarning = false
                 self.writeIndicatorClearWork?.cancel()
                 self.isWritingData = false
-                self.dispatchDisconnectIfNeeded("Recording stopped: \(reason)")
+                self.dispatchDisconnectIfNeeded("Recording stopped: \(reason)", kind: kind)
             }
             return
         }
@@ -1599,7 +1681,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             self.droppedFrameWarning = false
             self.writeIndicatorClearWork?.cancel()
             self.isWritingData = false
-            self.dispatchDisconnectIfNeeded("Recording stopped: \(reason)")
+            self.dispatchDisconnectIfNeeded("Recording stopped: \(reason)", kind: kind)
         }
     }
 
