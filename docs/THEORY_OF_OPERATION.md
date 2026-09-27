@@ -27,13 +27,13 @@ A "double-ender" is a standard remote podcast recording technique. The host and 
 
 ### Who it's for and what problem it solves
 
-DoublEnder is for podcast guests who should not need to know anything about audio. The problem is that most recording software is either consumer-grade and unpredictable (Voice Memos records in 32 kbps AAC over AirDrop; QuickTime loses the file if the window is closed mid-recording) or professional and intimidating. DoublEnder occupies the gap: it produces production-usable files, survives crashes and device disconnects, and presents nothing but a microphone picker and a single button.
+DoublEnder is for podcast guests who should not need to know anything about audio. The problem is that most recording software is either consumer-grade and unpredictable (built for voice notes, with compressed defaults, and quiet about what survives a crash mid-take) or professional and intimidating. DoublEnder occupies the gap: it produces production-usable files, survives crashes and device disconnects, and presents little more than a microphone picker and a single button.
 
 The design philosophy is deliberately Voice Memos-like in UX simplicity and field-recorder-like in reliability. It is closer to a hardware recorder (Zoom H6, Sound Devices MixPre) than to a consumer screen recorder: it records continuously to a safe format, mirrors a crash-recovery copy in parallel, and never silently loses a take.
 
 ### The two variants
 
-Both share 100% of the Swift source in `DoublEnder/`. They differ only in what's compiled in and what assets/credentials are bundled.
+Both build from the one `DoublEnder/` source tree. They differ in what is compiled in — the Local target leaves out the four Cloud-only source files, which exist only in the private overlay, and the Cloud target leaves out `ContentView.swift` in favour of `CloudContentView` — and in what assets and credentials are bundled.
 
 | Variant | Version suffix | Key addition | Distribution |
 |---|---|---|---|
@@ -60,7 +60,7 @@ The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. 
 │  AppState · timers · disk watch · device selection logic    │
 │  isFinalizingRecording · USB first-seen map                 │
 └──────────┬──────────────────────────────┬───────────────────┘
-           │ @ObservedObject               │ @Published state
+           │ owns · Combine sinks          │ @ObservedObject
            ▼                              ▼
 ┌──────────────────┐              ┌────────────────────────────┐
 │   AudioEngine    │              │   ContentView /            │
@@ -76,7 +76,7 @@ The `GCS_ENABLED` Swift compilation condition gates every Cloud-only code path. 
 
 **AppDelegate** owns what SwiftUI's scenes can't: the recorder window itself (`FaceplateWindow`, borderless yet able to become key, on screen before SwiftUI's launch pass; see §10), the quit intercept (`applicationShouldTerminate`, which ⌘W reaches too), and the crash-recovery scan, which hides the recorder until every recovered take is dealt with.
 
-**RecorderViewModel** is the single source of truth. It holds `AppState`, all timers, the `selectedInputDeviceID`, and user preferences. It mediates between AppDelegate's event-driven callbacks (quit, crash-recovery) and AudioEngine's completion handlers. It is a singleton (`shared`) because AppDelegate needs access independently of SwiftUI's view hierarchy.
+**RecorderViewModel** is the single source of truth. It holds `AppState`, the take's timers (elapsed time, the disk watch and the input-health poll; the watchdogs live in AudioEngine), the `selectedInputDeviceID`, and user preferences. It mediates between AppDelegate's event-driven callbacks (quit, crash-recovery) and AudioEngine's completion handlers. It is a singleton (`shared`) because AppDelegate needs access independently of SwiftUI's view hierarchy.
 
 **AudioEngine** owns all AVFoundation objects. It knows nothing about SwiftUI or app state — it publishes `@Published` flags and fires callbacks that the VM handles. This isolation means the engine can be rebuilt, stopped, or torn down without touching the UI layer.
 
@@ -100,11 +100,11 @@ The Cloud target excludes `Assets.xcassets` and adds `CloudAssets.xcassets`, so 
 
 ### Why this architecture vs. alternatives
 
-**AVCaptureSession over AVAudioEngine:** AVAudioEngine uses an installTap approach that delivers samples through AVAudioPCMBuffer intermediates and requires explicit format negotiation. The old AUHAL-based path (used in pre-1.6 versions) had a race condition: when a USB device was selected, AUHAL's `kAudioUnitProperty_CurrentDevice` setter needed the device's hardware stream description to already be available, but fresh USB devices sometimes hadn't committed it yet, causing silent capture failures or click artifacts regardless of retry delay. AVCaptureSession binds the device directly (not via the system default), and delivering buffers in the device's native format through `AVCaptureAudioDataOutput` eliminates both the format negotiation and the AUHAL race. The capture-stage format conversion that produced click artifacts in every earlier attempt is simply not present.
+**AVCaptureSession over AVAudioEngine:** AVAudioEngine uses an installTap approach that delivers samples through AVAudioPCMBuffer intermediates and requires explicit format negotiation. The old AUHAL-based path (used up to 1.6.26; AVCaptureSession replaced it in 1.6.27) had a race condition: when a USB device was selected, AUHAL's `kAudioUnitProperty_CurrentDevice` setter needed the device's hardware stream description to already be available, but fresh USB devices sometimes hadn't committed it yet, causing silent capture failures or click artifacts regardless of retry delay. AVCaptureSession binds the device directly (not via the system default), and delivering buffers in the device's native format through `AVCaptureAudioDataOutput` eliminates both the format negotiation and the AUHAL race. The capture-stage format conversion that produced click artifacts in every earlier attempt is simply not present.
 
-**AVAssetWriter over AudioFile / ExtAudioFile / custom PCM writer:** AVAssetWriter streams directly to the output file with no intermediate buffer. It handles AAC encoding internally, manages the moov atom for M4A, and applies any necessary sample-rate conversion (for AAC only; WAV is written at native rate). It is the same foundation Apple uses in QuickTime Player's recording mode and the Camera app — battle-tested at the OS level, with failure surfaces (writer status, write errors) that are explicit and catchable.
+**AVAssetWriter over AudioFile / ExtAudioFile / custom PCM writer:** AVAssetWriter writes the audio into the output file as it records — there is no temp file and no move on stop. It handles AAC encoding internally, writes the moov atom for M4A at `finishWriting`, and applies any necessary sample-rate conversion (for AAC only; WAV is written at native rate). It is a system framework with failure surfaces (writer status, write errors) that are explicit and catchable.
 
-**Observable pattern:** RecorderViewModel conforms to `ObservableObject` with explicit `@Published` properties rather than using the newer `@Observable` macro. This is intentional: AppDelegate and RecordingViewModel are not in a SwiftUI view hierarchy, so the macro's observation registration mechanism (which requires the `@Environment` injection path) is not available. `@ObservedObject` on the view side and direct `objectWillChange.send()` from Combine sinks cover the non-SwiftUI callers cleanly.
+**Observable pattern:** RecorderViewModel conforms to `ObservableObject` with explicit `@Published` properties rather than using the newer `@Observable` macro. That is a requirement, not a preference: the deployment target is macOS 13, and the Observation framework behind `@Observable` needs macOS 14. `@ObservedObject` on the view side, and `objectWillChange.send()` from Combine sinks that forward AudioEngine's `@Published` flags, cover everything; AppDelegate simply reads the shared instance.
 
 ---
 
@@ -139,7 +139,7 @@ graph LR
 
 ### Why AVCaptureAudioDataOutput has no `audioSettings`
 
-The `AVCaptureAudioDataOutput` is created with default `audioSettings` (nil), so the session delivers CMSampleBuffers in whatever native format the device produces — typically `kAudioFormatLinearPCM` interleaved with the device's own bit depth and sample rate (e.g. 24-bit at 48 kHz for a Scarlett 2i2, 32-bit float at 96 kHz for some Apollo interfaces). This is intentional.
+The `AVCaptureAudioDataOutput` is created with default `audioSettings` (nil), so the session delivers CMSampleBuffers in whatever native format the device produces — linear PCM at the device's own bit depth, sample rate and channel layout (24-bit integer from many USB interfaces, 32-bit float from others). This is intentional.
 
 Every prior attempt to set explicit `audioSettings` (specifying a target format like `AVLinearPCMBitDepthKey: 16`) produced click artifacts at format conversion boundaries — most noticeably at USB device attach/detach and on macOS CoreAudio reconfiguration events. The AVAssetWriter's internal transcoder handles format adaptation far more reliably when it sees the source format hint at writer-input creation time. No per-buffer PCM conversion happens anywhere in the hot path.
 
@@ -147,13 +147,13 @@ Every prior attempt to set explicit `audioSettings` (specifying a target format 
 
 `startRecording()` creates the `AVAssetWriter` and stores the output settings (`pendingOutputSettings`) but does **not** create an `AVAssetWriterInput`. That happens in `captureOutput(_:didOutput:from:)` on the very first CMSampleBuffer.
 
-The reason is `sourceFormatHint`. The `AVAssetWriterInput` initializer accepts a `CMFormatDescription` that describes the source PCM it will receive. Without this hint, the writer either rejects inputs that don't exactly match the output settings, or it must do per-buffer format detection internally. With the hint derived from the first buffer's actual format description, the writer knows exactly what to expect and can configure its internal transcoder once rather than on every append. The first buffer's `CMSampleBufferGetPresentationTimeStamp` also becomes `writer.startSession(atSourceTime:)`, giving exact CoreMedia timestamps rather than synthesised ones.
+The reason is `sourceFormatHint`. The `AVAssetWriterInput` initializer accepts a `CMFormatDescription` that describes the source PCM it will receive, and taking it from the first buffer's actual format description means the writer is configured, when the input is created, for exactly what the device delivers. The hint is not strictly required: in a test on macOS 26.7 with the app's settings, an input created without one accepted the same Int24 buffers and wrote a correct file, for both AAC and WAV. It is used because it states the real source format rather than leaving the writer to learn it from the first append. The first buffer's `CMSampleBufferGetPresentationTimeStamp` also becomes `writer.startSession(atSourceTime:)`, giving exact CoreMedia timestamps rather than synthesised ones.
 
 ### Format resolution: AAC vs. WAV
 
 **AAC:** `AVFormatIDKey: kAudioFormatMPEG4AAC`, `AVSampleRateKey: 48_000`, `AVNumberOfChannelsKey: 1`, `AVEncoderBitRateKey: 256_000`. These are final — the writer downmixes multi-channel input and resamples to 48 kHz internally. Fixed rate is intentional: AAC is a delivery format for podcast production and 48 kHz is the broadcast-standard sample rate for voice.
 
-**WAV (LPCM):** `AVFormatIDKey: kAudioFormatLinearPCM`, `AVLinearPCMBitDepthKey: 24`, little-endian, interleaved. `AVSampleRateKey: 48_000` is written into `pendingOutputSettings` as a **placeholder** — `kAudioFormatLinearPCM` requires an explicit sample rate or `canAddInput` returns false, but 48 kHz is never actually used for WAV output.
+**WAV (LPCM):** `AVFormatIDKey: kAudioFormatLinearPCM`, `AVLinearPCMBitDepthKey: 24`, little-endian, interleaved. `AVSampleRateKey: 48_000` is written into `pendingOutputSettings` as a **placeholder**, and 48 kHz is never actually used for WAV output. (The code comment's reason, that LPCM settings without a sample rate make `canAddInput` return false, did not hold on macOS 26.7: the writer accepted them. The placeholder is harmless either way, and the explicit rate below is what counts.)
 
 In the first-buffer delegate path, when the pending format ID is `kAudioFormatLinearPCM`, the code replaces the placeholder with the device's actual sample rate extracted from the buffer's `CMFormatDescription`:
 
@@ -166,11 +166,11 @@ if let formatID = outputSettings[AVFormatIDKey] as? UInt32,
 }
 ```
 
-The `AVAssetWriterInput` is then created with `resolvedSettings` — so a 48 kHz Scarlett gets a 48 kHz WAV, a 96 kHz Apollo gets a 96 kHz WAV, and the writer does not resample. This matters for production: a DAW importing a native-rate file needs no sample-rate conversion at the mix stage.
+The `AVAssetWriterInput` is then created with `resolvedSettings` — so a device running at 48 kHz gets a 48 kHz WAV, one at 96 kHz a 96 kHz WAV, and the writer does not resample. This matters for production: a DAW importing a native-rate file needs no sample-rate conversion at the mix stage.
 
 ### The PCM sidecar mirror
 
-While `AVAssetWriterInput.append` streams to the M4A/WAV, `PCMSidecar.append(sampleBuffer:)` is called from the capture delegate on `writerQueue` and writes a parallel Float32 mono stream to a companion file (`<filename>.pcmrec`). Normalization happens on `writerQueue`; the actual `FileHandle.write` runs on a dedicated `ioQueue` so a slow disk never blocks the writer append. Under light load the sidecar is typically one buffer behind; under disk pressure the gap can grow until `onFirstWriteFailure` fires — the main recording continues regardless. On stop, `sidecar.close()` / `sidecar.discard()` synchronizes `ioQueue` so all samples dispatched before the delegate returned are flushed before the handle closes.
+While `AVAssetWriterInput.append` streams to the M4A/WAV, `PCMSidecar.append(sampleBuffer:)` is called from the capture delegate on `writerQueue` and writes a parallel Float32 mono stream to a companion file (the main file's name plus `.pcmrec`, e.g. `DoublEnder_….m4a.pcmrec`). Normalization happens on `writerQueue`; the actual `FileHandle.write` runs on a dedicated `ioQueue` so a slow disk never blocks the writer append. Under disk pressure the sidecar can fall behind the main file, with the pending writes held in memory; nothing bounds the gap. A write that fails fires `onFirstWriteFailure` once — the main recording continues regardless. On stop, `sidecar.close()` / `sidecar.discard()` synchronizes `ioQueue` so all samples dispatched before the delegate returned are flushed before the handle closes.
 
 The sidecar is opened in `startRecording()` before `isRecording` is set, using a provisional sample rate from the device's `activeFormat`. Even a crash before the first buffer arrives leaves a sidecar on disk with a valid header. The provisional rate is patched later via `updateSampleRateIfNeeded` on every buffer where the rate changed (a no-op in practice unless a CoreAudio rate-change event occurred mid-session).
 
@@ -183,7 +183,7 @@ The DEP2 sidecar header format (20 bytes):
 | 12 | 4 | Channel count (UInt32, little-endian) |
 | 16 | 4 | Payload format code (UInt32, little-endian; `1` = Float32) |
 
-DEP1 (16-byte, `"DEP1"`) omits the format code field. The parser handles both for backward compatibility with sidecars written by pre-1.6 builds.
+DEP1 (16-byte, `"DEP1"`) omits the format code field. The parser handles both for backward compatibility with sidecars written by builds before 1.6.33, when DEP2 arrived.
 
 The sidecar flushes to disk via `FileHandle.synchronize()` every 512 KB of payload. At 48 kHz Float32 mono (192 KB/s) this is approximately every 2.7 seconds; at 96 kHz it's roughly every 1.4 seconds. A power loss loses at most one sync interval rather than the entire session.
 
@@ -193,12 +193,12 @@ The sidecar flushes to disk via `FileHandle.synchronize()` every 512 KB of paylo
 
 - **Float32** (`kAudioFormatFlagIsFloat` + 32 bits): reinterpret memory as `Float`. Non-interleaved multi-channel: take channel 0 only. Interleaved multi-channel: average all channels per frame.
 - **Int16** (`kAudioFormatFlagIsSignedInteger` + 16 bits): divide by `32768.0`. Same interleaving logic.
-- **Int24** (`kAudioFormatFlagIsSignedInteger` + 24 bits): 3 bytes per sample, little-endian on macOS. Read `b0, b1, b2` and sign-extend: `raw = (b2 << 16) | (b1 << 8) | b0`; if `raw & 0x800000 != 0`, set high byte to `0xFF`. Divide by `8388608.0` (2²³). This path is critical for Scarlett, Apollo, and similar pro USB interfaces that deliver 24-bit PCM natively.
+- **Int24** (`kAudioFormatFlagIsSignedInteger` + 24 bits): 3 bytes per sample, little-endian on macOS. Read `b0, b1, b2` and sign-extend: `raw = (b2 << 16) | (b1 << 8) | b0`; if `raw & 0x800000 != 0`, set high byte to `0xFF`. Divide by `8388608.0` (2²³). This path covers interfaces that deliver 24-bit integer PCM.
 - **Int32** (`kAudioFormatFlagIsSignedInteger` + 32 bits): reinterpret as `Int32`, divide by `Float(Int32.max)`.
 
 Any other format (`mBitsPerChannel` not 16/24/32, or `mFormatFlags` not matching float or signed integer) returns nil and the sidecar gets no data for that buffer. The main writer still records normally.
 
-The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so the level display always reflects the same averaged-mono signal that ends up in the recorded file.
+The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so it shows the same averaged-mono signal the sidecar records. That is not quite the signal in the main file: AVAssetWriter makes its own mono mix from multi-channel input, and for a two-channel source that mix is 3 dB hotter than the average the meter shows (see "Mono output" in §10).
 
 ---
 
@@ -208,8 +208,10 @@ The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so t
 
 ```
 AppState (RecorderViewModel.state):
-  .selectingMic       — permission pending or just granted; engine building
-  .ready              — engine healthy, device bound, ready to record
+  .selectingMic       — waiting for the microphone permission request to return
+  .ready              — permission granted and an input chosen; the session may
+                        still be building, and RECORD stays disabled until
+                        canStartRecording (engine healthy, pick usable, not rebuilding)
   .recording          — take in progress
   .uploading          — (GCS only) writer done, upload running
   .uploadFailed(URL)  — (GCS only) retries exhausted; file still on Desktop
@@ -252,7 +254,7 @@ init()
 If the main file writer was in an error state at disconnect time, `stopRecording` receives `.failure`; if a PCM sidecar exists, `recoverSidecarIfNeeded` re-wraps it to WAV and presents that as the saved file instead.
 
 **Session interruption (another app takes the mic):**
-`AVCaptureSessionWasInterrupted` fires. The interruption watchdog arms for 5 seconds. Meanwhile `sessionInterrupted = true` is published, and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers (either `AVCaptureSessionInterruptionEnded` or a successful sample buffer arriving), the watchdog is cancelled and the take continues. If 5 seconds pass without recovery, the watchdog fires `handleRecordingCaptureFailure` and the take is stopped and saved.
+`AVCaptureSessionWasInterrupted` fires. The interruption watchdog arms for 5 seconds. Meanwhile `sessionInterrupted = true` is published, and the UI shows "Input interrupted — reconnecting…" without stopping the clock. If the session recovers (either `AVCaptureSessionInterruptionEnded` or a successful sample buffer arriving), the watchdog is cancelled and the take continues. If 5 seconds pass without recovery, the watchdog fires `handleRecordingCaptureFailure` and the take is stopped and saved. In practice the take fails sooner: no buffers arrive during an interruption, so the data-flow watchdog, armed by the last buffer before it, fires 3 seconds after that buffer. An interruption therefore has to end within about 3 seconds to be survived.
 
 **Data-flow stall (driver silently stops delivering):**
 The data-flow watchdog fires after 3 seconds with no successful `append`. This catches USB hub starvation, driver firmware hangs, and Bluetooth profile transitions that don't generate an `AVCaptureSessionWasInterrupted` notification. The path is identical to the interruption watchdog: `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording` → VM stop.
@@ -264,10 +266,10 @@ The first-buffer watchdog fires 5 seconds after record start if not a single buf
 `checkRecordingInputHealth()` is called from `inputWatchTimer` every second. It checks `device.isConnected` and the device's presence in `availableInputDevices`. This is a belt-and-suspenders catch for USB unplugs that CoreAudio's listener reports slowly. It uses `disconnectStopPending` to prevent double-firing with the listener path.
 
 **Sustained backpressure (writer can't keep up):**
-If `AVAssetWriterInput.isReadyForMoreMediaData` returns false for 3 consecutive buffers (≈30 ms of dropped audio), `tearDownWriterLocked` is called. If the writer has already received at least one sample (`didAppendAtLeastOneSample = true`), writer refs are left intact for `stopRecording` to finalize rather than cancelling. The VM then gets the same `onDisconnectedDuringRecording` path, but the `finishWriting` call in `stopRecording` may still succeed and produce a partial-but-valid file.
+If `AVAssetWriterInput.isReadyForMoreMediaData` returns false for 3 consecutive buffers (tens of milliseconds of dropped audio, depending on the device's buffer size), `tearDownWriterLocked` is called. If the writer has already received at least one sample (`didAppendAtLeastOneSample = true`), writer refs are left intact for `stopRecording` to finalize rather than cancelling. The VM then gets the same `onDisconnectedDuringRecording` path, but the `finishWriting` call in `stopRecording` may still succeed and produce a partial-but-valid file.
 
 **Disk full during recording:**
-`diskWatchTimer` fires every 5 seconds, calling `DiskSpaceChecker.recordingBlockedReason`. If it returns non-nil, `stopRecording()` is called immediately. Because the writer is still active (not in an error state), `finishWriting` usually succeeds and the file is saved. The error message shown reflects the disk space reason via `pendingDisconnectReason`.
+`diskWatchTimer` fires every 5 seconds, calling `DiskSpaceChecker.recordingBlockedReason`. If it returns non-nil, `stopRecording()` is called immediately. Because the writer is still active (not in an error state), `finishWriting` usually succeeds and the file is saved, with the ordinary saved confirmation. Nothing tells the user the disk was the reason: this path does not set `pendingDisconnectReason`. The disk-space message appears only when the next RECORD is refused.
 
 **Duplicate stop calls (race between disconnect, disk watcher, and user STOP):**
 `RecorderViewModel.isFinalizingRecording` is set true at the top of `stopRecording` and cleared when the engine's completion fires (success or real failure). A second `stopRecording` call that arrives while `isFinalizingRecording` is already true — and gets back `RecordingError.noActiveRecording` from AudioEngine (because the writer refs were cleared by the first call) — is silently swallowed as a no-op. A real `.noActiveRecording` (no finalize in flight) still surfaces as an error.
@@ -288,11 +290,13 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 #### Watchdog 1: Interruption watchdog (5 seconds)
 
-**What it covers:** `AVCaptureSessionWasInterrupted` indicates another app has taken exclusive control of the audio hardware (phone call overlay, Siri, FaceTime, another audio app going exclusive). This is a recoverable condition — most interruptions last a few seconds and the session resumes automatically.
+**What it covers:** `AVCaptureSessionWasInterrupted` indicates the session has lost the input to something else — another app or the system taking the audio hardware. It is treated as recoverable: a brief interruption ends and the session resumes.
 
 **Mechanism:** On `captureSessionWasInterrupted`, arm a `DispatchWorkItem` for 5 seconds. If the session recovers — either via `captureSessionInterruptionEnded` or a successful sample buffer arriving (whichever is first) — cancel the watchdog. If 5 seconds pass without recovery, the take is treated as a hard failure.
 
-**Cancellation points:** `captureSessionInterruptionEnded`, `markDataFlowing` (first successful buffer after interruption), all recording-stop and cancel paths. These cancellations are coordinated via `disconnectStopPending`.
+**Cancellation points:** `captureSessionInterruptionEnded`, `markDataFlowing` (first successful buffer after interruption), all recording-stop and cancel paths. Its firing is guarded by `disconnectStopPending`, so it stands down if another path is already stopping the take.
+
+**In practice the data-flow watchdog fires first.** Arriving interruptions do not cancel the data-flow watchdog, and no buffers flow during one, so it fires 3 seconds after the last buffer — before this watchdog's 5 seconds are up. An interruption is survived only if it ends within about 3 seconds.
 
 **UI surface:** While the watchdog is running, `sessionInterrupted = true` is published. RecorderViewModel exposes this as `recordingWarning = "Input interrupted — reconnecting…"`, shown as a yellow badge in the viewport. The clock keeps running.
 
@@ -302,11 +306,11 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **Mechanism:** On every call to `markDataFlowing` (which is called from the delegate whenever `input.append` returns true), the existing watchdog is cancelled and a new `DispatchWorkItem` is created for 3 seconds. If 3 seconds pass without a successful append, the watchdog fires `handleRecordingCaptureFailure`. Because the watchdog is cancelled and re-armed on every successful buffer, it only fires when the data truly stops.
 
-**Interaction with interruption watchdog:** If both fire in close proximity (a device disconnect that coincides with an interruption notification), `disconnectStopPending` and `didDispatchDisconnect` latches prevent duplicate teardowns. See §5.5.
+**Interaction with interruption watchdog:** If both fire in close proximity (a device disconnect that coincides with an interruption notification), `disconnectStopPending` and `didDispatchDisconnect` latches prevent duplicate teardowns. See "The disconnect latch chain" below.
 
 #### Watchdog 3: Input-health poll (1 second, RecorderViewModel)
 
-**What it covers:** CoreAudio's device-list listener can lag behind a physical USB unplug by 100–500 ms. `AVCaptureDevice.isConnected` flips to false much sooner — it reflects the hardware state directly.
+**What it covers:** CoreAudio's device-list listener can lag behind a physical USB unplug. The poll reads the bound device's `AVCaptureDevice.isConnected` directly rather than waiting for the list to change.
 
 **Mechanism:** `inputWatchTimer` fires every second. `AudioEngine.checkRecordingInputHealth()` reads `currentInput?.device.isConnected` and checks whether the device UID still appears in `availableInputDevices`. Either failure triggers `triggerRecordingInputDisconnect`, which sets `disconnectStopPending` and routes through `handleRecordingCaptureFailure`.
 
@@ -320,6 +324,8 @@ The design philosophy is closer to a hardware field recorder than a consumer scr
 
 **Deliberately NOT cancelled on `captureSessionInterruptionEnded`:** if an interruption ends but the restarted session still delivers nothing, this watchdog is the only remaining guard — and a genuinely healthy restart cancels it via `markDataFlowing` within milliseconds anyway. Do not "fix" this by adding that cancellation point.
 
+That guard covers only a take whose first buffer never arrived, since the first append cancels this watchdog. `captureSessionInterruptionEnded` also cancels the data-flow watchdog, which only the next successful append re-arms. So a mid-take interruption that ends with the session running but silent is left with no watchdog at all; the 1-second input-health poll checks only that the device is connected.
+
 ### The drop threshold (3 drops → take failure)
 
 `AVAssetWriterInput.isReadyForMoreMediaData` returning false is a backpressure signal — the writer's internal ring buffer is momentarily full. A single false is normal on startup or during a brief encoder stall. Three consecutive false values (≈30 ms at a 48 kHz, 10 ms buffer) means sustained loss — audio is being dropped, the take is already compromised, and failing sooner triggers sidecar recovery before more audio is lost.
@@ -332,7 +338,7 @@ A separate counter (`consecutiveWriteErrors`) tracks failed `input.append()` cal
 
 Three separate latches prevent duplicate teardowns when several failure paths converge:
 
-1. **`disconnectStopPending` (AudioEngine):** Set by `triggerRecordingInputDisconnect`, `tearDownWriterLocked` (when the engine decides to stop), `captureSessionRuntimeError`, and the first-buffer watchdog. Guards `triggerRecordingInputDisconnect` and `handleRecordingCaptureFailure` — once set, neither fires again for the current take.
+1. **`disconnectStopPending` (AudioEngine):** Every failure path checks that it is clear, sets it, and then calls `handleRecordingCaptureFailure`, which proceeds only when it is set: `triggerRecordingInputDisconnect` (device list and health poll), all three watchdogs, `captureSessionRuntimeError`, and an interruption that ends with the session still down. `tearDownWriterLocked` sets it too and dispatches directly. The first path to set it wins; the others find it set and stand down for the rest of the take. It is cleared by every stop path and at the next `startRecording`.
 
 2. **`didDispatchDisconnect` (AudioEngine):** Set in `dispatchDisconnectIfNeeded`. Because multiple paths can all arrive at `handleRecordingCaptureFailure → dispatchDisconnectIfNeeded` (interruption watchdog, data-flow watchdog, runtime error, health poll), this latch guarantees `onDisconnectedDuringRecording` fires exactly once per take. Reset in `startRecording` for the next take.
 
@@ -340,9 +346,9 @@ Three separate latches prevent duplicate teardowns when several failure paths co
 
 ### The PCM sidecar as crash safety net
 
-The sidecar parallel-writes the entire session as uncompressed Float32 mono PCM. Because it's a flat append-only file with a self-describing header, even an abruptly truncated sidecar (power loss mid-session) re-wraps into a valid WAV at recovery time — there is no moov atom, no container integrity requirement. The recovered WAV is silently playable from the first sample.
+The sidecar parallel-writes the entire session as uncompressed Float32 mono PCM. Because it's a flat append-only file with a self-describing header, even an abruptly truncated sidecar (power loss mid-session) re-wraps into a valid WAV at recovery time — there is no moov atom, no container integrity requirement. The recovered WAV plays from the first sample.
 
-On a normal successful stop, `sidecar.discard()` deletes the `.pcmrec` file — it's redundant once the main file is closed. On any failure where `finishWriting` could not be called (crash, kill, engine tear-down), `sidecar.close()` leaves the file intact for recovery. The critical invariant: the sidecar file exists on disk if and only if the main recording is unrecoverable.
+On a normal successful stop, `sidecar.discard()` deletes the `.pcmrec` file — it's redundant once the main file is closed. When `finishWriting` fails, or the engine tears the writer down, `sidecar.close()` keeps the file for recovery; a crash or a kill simply leaves it where it is. The critical invariant: the sidecar file exists on disk if and only if the main recording is unrecoverable.
 
 **Sidecar write failure (mid-take):** If any `FileHandle.write` fails (disk full, filesystem error), `onFirstWriteFailure` fires once and sets `audioEngine.sidecarFailedDuringRecording = true`. The main recording continues — the sidecar is the backup, not the primary. The VM surfaces "Crash backup unavailable" as a non-fatal warning. Subsequent write failures are silent (latch prevents re-notification).
 
@@ -352,7 +358,7 @@ On a normal successful stop, `sidecar.discard()` deletes the `.pcmrec` file — 
 
 - **Stop & Save:** Calls `vm.stopRecording { NSApp.reply(toApplicationShouldTerminate: true) }`. The app stays alive until `finishWriting` completes, then terminates normally.
 - **Quit Without Saving:** Calls `vm.abortRecording { NSApp.reply(toApplicationShouldTerminate: true) }`. `AudioEngine.cancelRecording` calls `writer.cancelWriting()` (which deletes the partial output file) and `sidecar.discard()`.
-- **Cancel:** Calls `NSApp.reply(toApplicationShouldTerminate: false)`. Recording resumes.
+- **Cancel:** Calls `NSApp.reply(toApplicationShouldTerminate: false)`. The recording, which never paused, continues.
 
 **Uploading (Cloud):** `applicationShouldTerminate` also returns `.terminateLater` when `isCurrentlyUploading` is true — recording and uploading are mutually exclusive states, so at most one intercept presents. `presentUploadInProgressAlert` offers exactly two choices:
 
@@ -373,9 +379,9 @@ During recording, the 5-second disk watch calls the same function. If it returns
 
 ### Device enumeration
 
-`AudioEngine.refreshDevices()` calls `AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)` and filters the result to remove `CADefaultDeviceAggregate-*` entries. These are macOS-internal aggregate devices CoreAudio auto-creates around the current system default for AUHAL compatibility; they mean nothing to the user and picking one is effectively a no-op (it re-points at whatever the real default is).
+`AudioEngine.refreshDevices()` calls `AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)` on macOS 14 and later, and the deprecated `AVCaptureDevice.devices(for: .audio)` on macOS 13, where those device types don't exist. It filters the result to remove `CADefaultDeviceAggregate-*` entries. These are macOS-internal aggregate devices CoreAudio auto-creates around the current system default for AUHAL compatibility; they mean nothing to the user and picking one is effectively a no-op (it re-points at whatever the real default is).
 
-Hardware vs. virtual classification uses CoreAudio `kAudioDevicePropertyTransportType`. Devices with transport `kAudioDeviceTransportTypeAggregate` or `kAudioDeviceTransportTypeVirtual` are classified as `.virtual`; everything else (including unknown transport, which returns true from `deviceHasInputStreams`) is classified as `.microphone`. The `hardwareInputDevices()` filter exposes only the `.microphone` class to the picker, so BlackHole, Loopback, and similar virtual routing devices never appear in the UI.
+Hardware vs. virtual classification uses CoreAudio `kAudioDevicePropertyTransportType`. Devices with transport `kAudioDeviceTransportTypeAggregate` or `kAudioDeviceTransportTypeVirtual` are classified as `.virtual`; everything else, including a device whose transport CoreAudio can't report, is classified as `.microphone`, so real hardware is never hidden. The `hardwareInputDevices()` filter exposes only the `.microphone` class to the picker, so BlackHole, Loopback, and similar virtual routing devices never appear in the UI.
 
 ### Refresh triggers
 
@@ -384,7 +390,7 @@ Hardware vs. virtual classification uses CoreAudio `kAudioDevicePropertyTranspor
 2. **`NSApplication.didBecomeActiveNotification`**: devices plugged while DoublEnder was backgrounded are picked up when the app comes front.
 3. **`NSWorkspace.didWakeNotification`**: catches devices that reconnected during sleep.
 
-The two notification triggers share `handleRefreshTrigger`, which skips the refresh while a take is in progress — a device change mid-recording is the disconnect machinery's concern (§5), not the picker's. RecorderViewModel additionally calls `refreshDevices()` directly at permission grant and in `switchToFallbackInputAfterLoss`. The listener and the notifications are belt-and-suspenders — in practice the CoreAudio listener is fast enough that the notifications are rarely the first to fire.
+The two notification triggers share `handleRefreshTrigger`, which skips the refresh while a take is in progress — a device change mid-recording is the disconnect machinery's concern (§5), not the picker's. RecorderViewModel additionally calls `refreshDevices()` directly at permission grant and in `switchToFallbackInputAfterLoss`. The listener and the notifications overlap on purpose, as belt-and-suspenders.
 
 ### Hot-plug offer
 
@@ -399,15 +405,15 @@ If the user dismisses with "Keep Current," the UID is stored in `dismissedUSBDev
 ### `setDevice` flow
 
 `RecorderViewModel.selectedInputDeviceID.didSet` → `AudioEngine.setDevice(_:)`:
-1. **Pre-check:** `deviceHasInputStreams` queries CoreAudio for input stream count. Zero → set `selectedDeviceUsable = false` and return (no session rebuild). The previously-bound device keeps recording. `deviceHasInputStreams` returns true on query failure rather than false-rejecting.
-2. **System default:** `setSystemDefaultInputDevice` is called for cross-app consistency. Other apps that honor the system default will follow the pick. Note: some virtual devices accept this call with no error but CoreAudio ignores it silently. The rebuild step detects this.
-3. **Session rebuild:** `rebuildSession(with: device, intendedDeviceID: id)` tears down the current session on `sessionQueue` and builds a new one bound to the explicit `AVCaptureDevice`. After `session.startRunning()`, the code resolves `intendedDeviceID` back to an `AVCaptureDevice` and compares UIDs. If they differ (CoreAudio ignored the system-default set), `selectedDeviceUsable = false` is published.
+1. **Pre-check:** `deviceHasInputStreams` queries CoreAudio for input stream count. Zero → set `selectedDeviceUsable = false` and return (no session rebuild). The previously-bound device stays bound. (During a recording the view model reverts a pick before calling `setDevice`, which refuses anyway.) `deviceHasInputStreams` returns true on query failure rather than false-rejecting.
+2. **System default:** `setSystemDefaultInputDevice` is called for cross-app consistency. Other apps that honor the system default will follow the pick. Note: some virtual devices accept this call with no error but CoreAudio ignores it silently. Nothing detects that, and nothing needs to: DoublEnder binds the device directly, so its own capture never depends on the system default.
+3. **Session rebuild:** `rebuildSession(with: device, intendedDeviceID: id)` tears down the current session on `sessionQueue` and builds a new one bound to the explicit `AVCaptureDevice`. After `session.startRunning()`, the code resolves `intendedDeviceID` back to an `AVCaptureDevice` and compares UIDs; if they differ, `selectedDeviceUsable = false` is published. Because the session is built from that same device, this is a check that the session is on the requested input. It cannot see the system-default setting.
 
 ### Disconnect during recording vs. while idle
 
 **Recording:** `notifyIfRecordingInputDisconnected` (from `refreshDevices`) or `checkRecordingInputHealth` (from the 1s timer) calls `triggerRecordingInputDisconnect` → `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording`. The VM stops, saves, and switches to fallback.
 
-**Idle:** `notifyIfActiveInputLostWhileIdle` detects that the bound device is gone and calls `onActiveInputLostWhileIdle`. RecorderViewModel presents a non-recording-loss alert ("switched to built-in mic"), calls `switchToFallbackInputAfterLoss`, and suppresses re-notification via `idleInputLossNotified`.
+**Idle:** `notifyIfActiveInputLostWhileIdle` detects that the bound device is gone and calls `onActiveInputLostWhileIdle`, once per loss (`idleInputLossNotified`). RecorderViewModel calls `switchToFallbackInputAfterLoss` and then presents the "switched to the built-in microphone" alert.
 
 **Fallback device selection:** `switchToFallbackInputAfterLoss` calls `refreshDevices()` first to get the current list, then: built-in mic if present (`builtInInputDevice`), first hardware device otherwise (`preferredDefaultDevice`), or `audioEngine.start()` (engine with no device) if neither.
 
@@ -427,15 +433,24 @@ In `AppDelegate.applicationDidFinishLaunching` → `runCrashRecoveryIfNeeded`:
 
 2. **Filter for sidecars.** `pathExtension == "pcmrec"`.
 
-3. **Discard empty sidecars.** `PCMSidecar.hasRecoverableContent` checks the file size against the 20-byte V2 header size. Sidecars that are header-only (result of a `PCMSidecar.init` FileHandle failure where the file was created but not written to) are discarded. Their companion main files are checked:
-   - Main file `> PCMSidecar.mainFileValidThresholdBytes` (8 KB) → the main file is a valid finalized recording; keep it, log a warning that the sidecar was orphaned.
+3. **Discard empty sidecars.** `PCMSidecar.hasRecoverableContent` checks the file size against the 20-byte V2 header size. Sidecars that are header-only (a take that ended, by a crash or an engine tear-down, before any audio reached the sidecar; a failed `PCMSidecar.init` deletes its own file) are discarded. Their companion main files are checked:
+   - Main file `> PCMSidecar.mainFileValidThresholdBytes` (8 KB) → treated as a valid finalized recording; keep it, log a warning that the sidecar was orphaned. (Size alone can't establish that — see below.)
    - Main file `≤ PCMSidecar.mainFileValidThresholdBytes` → stub/aborted container; delete both.
 
 4. **Recover non-empty sidecars.** The main window is hidden (`mainWindow?.orderOut(nil)`), `NSApp.activate(ignoringOtherApps: true)` brings DoublEnder forward, and each recoverable sidecar gets a `presentRecoveryDialog` call. The dialogs are sequential modals — the user must clear each before seeing the next. After all dialogs complete, `mainWindow?.makeKeyAndOrderFront(nil)` brings the app forward normally.
 
 ### The 8 KB threshold
 
-`PCMSidecar.mainFileValidThresholdBytes` (8 KB) is the single source of truth for this check in launch-time cleanup and `RecoveryModel.hasValidMainFile`. It is larger than any valid AAC moov atom from a sub-millisecond take, but small enough that a stub container (where `finishWriting` was never called and only the initial container header was written) falls below it. The threshold was chosen by examining the smallest valid AAC M4A output the writer produces: even a 0.1-second take with a valid moov atom exceeds 8 KB. A container where `cancelWriting()` ran typically has fewer than 1 KB.
+`PCMSidecar.mainFileValidThresholdBytes` (8 KB) is the single source of truth for this check in launch-time cleanup and `RecoveryModel.hasValidMainFile`. It is meant to separate a finalized main file from a stub whose `finishWriting` never ran. Size cannot make that distinction. Measured on macOS 26.7 with the app's own writer settings:
+
+| Main file | AAC (`.m4a`) | WAV |
+|---|---|---|
+| Finalized, 0.1 s take | 4,607 bytes | 18,496 bytes |
+| Crashed (never finalized), 1 s take | 26,122 bytes | 148,096 bytes |
+| Crashed, 10-minute take | 16.5 MB | 86.4 MB |
+| After `cancelWriting()` | deleted | deleted |
+
+AVAssetWriter writes the audio into the file as it records and adds the M4A's moov atom only at `finishWriting`, so a crashed M4A has all its audio but no index, and does not open. A crashed WAV has all its audio too, but its header records a data size of zero, so it reads as empty. Either way the file passes 8 KB within about a third of a second of recording, so exceeding the threshold means only that something was written, not that the file was finalized. `cancelWriting()` removes the file rather than leaving a stub.
 
 ### RecoveryModel and RecoveryView
 
@@ -445,12 +460,12 @@ In `AppDelegate.applicationDidFinishLaunching` → `runCrashRecoveryIfNeeded`:
 - `.success(URL)` — the recovered WAV path
 - `.failure(String)` — error message; the sidecar is left in place
 
-`hasValidMainFile` is computed at init by checking whether the companion `.m4a` exists and exceeds `PCMSidecar.mainFileValidThresholdBytes`. This captures the race window where `finishWriting` completed but `sidecar.discard()` hadn't run before the crash — a valid recording is on disk alongside a now-redundant sidecar.
+`hasValidMainFile` is computed at init by checking whether the companion main file (`.m4a` or `.wav`) exists and exceeds `PCMSidecar.mainFileValidThresholdBytes`. It is meant to catch the race window where `finishWriting` completed but `sidecar.discard()` hadn't run before the crash — a valid recording on disk alongside a now-redundant sidecar. Given the measurements above, it is also true after almost any crash mid-take, when the main file is not valid; the dialog then offers KEEP SAVED for a file that won't play, and choosing it deletes the sidecar, the only recoverable copy.
 
 **Prompt options:**
 
 When `hasValidMainFile = false` (interrupted recording — most common case):
-- **RECOVER:** Run `PCMSidecar.recoverToWAV`. On success, delete both the sidecar and the companion (unplayable partial) main file. The recovered WAV is revealed in Finder on dismiss.
+- **RECOVER:** Run `PCMSidecar.recoverToWAV`. On success, delete both the sidecar and the companion (unplayable partial) main file, and offer REVEAL IN FINDER or CLOSE.
 - **DELETE:** Delete both files without recovering. The audio is lost.
 
 When `hasValidMainFile = true` (sidecar orphaned next to a valid main file):
@@ -496,8 +511,8 @@ DoublEnder Cloud has no backend server. Authentication uses GCS V4 signed URLs g
 1. Load the bundled service-account key (JSON) from the app bundle (via `Bundle.main.url(forResource:)`).
 2. Parse `private_key` (PEM-encoded PKCS#8 RSA key) and `client_email`.
 3. Build a canonical request string for the resumable-initiation POST according to the V4 signing protocol. The signed headers are `host;x-goog-hash;x-goog-resumable` — `x-goog-*` extension headers must be signed for GCS to accept the start request and remember the checksum for finalize-time validation.
-4. SHA-256 hash it with CryptoKit.
-5. Sign the hash with RSASSA-PKCS1-v1_5 via `SecKeyCreateSignature` (Security.framework, because CryptoKit has no RSA). The PKCS#8 outer `PrivateKeyInfo` wrapper is stripped via a minimal DER walk to extract the bare PKCS#1 `RSAPrivateKey` that `SecKeyCreateWithData` expects.
+4. SHA-256 hash it with CryptoKit, and build the V4 string-to-sign: the algorithm, the timestamp, the credential scope and that hash in hex.
+5. Sign the string-to-sign with RSASSA-PKCS1-v1_5 over SHA-256 via `SecKeyCreateSignature` (`.rsaSignatureMessagePKCS1v15SHA256`; Security.framework, because CryptoKit has no RSA). The PKCS#8 outer `PrivateKeyInfo` wrapper is stripped via a minimal DER walk to extract the bare PKCS#1 `RSAPrivateKey` that `SecKeyCreateWithData` expects.
 6. Hex-encode the signature and append to the canonical query string.
 
 The signed URL is valid for 15 minutes — but it gates **only the initiation POST**. GCS answers that POST with a **session URI** which is itself the upload capability: every subsequent chunk PUT goes to it unsigned, and it stays valid for about a week. That split is the load-bearing fact of the design: a multi-gigabyte take on a slow connection can far outlive the 15-minute signing window, because the signature only has to survive the instant of initiation. No OAuth token, no refresh cycle, no backend round-trip.
@@ -529,7 +544,7 @@ The GCS object key is `{prefix}/{uuid}/{filename}`. The prefix is derived from t
 `CloudConnectivity` (singleton, `@MainActor`) publishes a single `isReady` flag: `credentialsOK && networkSatisfied`.
 
 - `credentialsOK`: checked once at init by parsing the service-account JSON for `private_key` and `client_email`. A bundle stripped of the key file (corrupted build) shows `isReady = false` forever.
-- `networkSatisfied`: tracked live by `NWPathMonitor`. Updates arrive within ~1 s of a path change (Wi-Fi drop, VPN flip, airplane mode). The monitor runs on a `.utility` background queue; updates hop to the main actor via `Task { @MainActor }` for the `@Published` mutation.
+- `networkSatisfied`: tracked live by `NWPathMonitor`, which reports each path change (Wi-Fi drop, VPN flip, airplane mode) as it happens. The monitor runs on a `.utility` background queue; updates hop to the main actor via `Task { @MainActor }` for the `@Published` mutation.
 
 `CloudContentView` lights the blue LED only when the local-only switch is on *and* `connectivity.isReady` — see the switch's two indicators above. `ContentView` (Local) has no blue LED — the blue LED art lives in `CloudAssets.xcassets` and is not in the Local target, and `CloudConnectivity` is not imported. The red `RECORDING` LED is present in both variants (its art is in `SharedAssets.xcassets`) and is **solid** while `state == .recording`, dark otherwise.
 
@@ -605,7 +620,7 @@ Version suffix conventions:
 
 ### No sandbox
 
-DoublEnder is unsandboxed. This is a deliberate choice: sandboxing would require either a security-scoped bookmark (complex, requires user interaction to establish) or a save panel to select the output directory. Both would add friction for guests who are asked to "just record and send the file." The Desktop write path (`FileManager.urls(for: .desktopDirectory)`) works without sandbox because the Desktop is available to all unsandboxed apps. The only entitlement in `DoublEnder.entitlements` is `NSMicrophoneUsageDescription` (a privacy manifest requirement, not a sandbox entitlement). `ENABLE_HARDENED_RUNTIME: YES` is still set, so the binary is notarization-eligible.
+DoublEnder is unsandboxed. This is a deliberate choice: sandboxing would require either a security-scoped bookmark (complex, requires user interaction to establish) or a save panel to select the output directory. Both would add friction for guests who are asked to "just record and send the file." Unsandboxed, the app writes to the Desktop path (`FileManager.urls(for: .desktopDirectory)`) directly, with no bookmark or panel. macOS still guards the Desktop folder for every app, sandboxed or not (a Files and Folders privacy permission since macOS 10.15), so the first access, normally the launch-time crash-recovery scan, asks the user once. The app supplies no `NSDesktopFolderUsageDescription`, so that prompt carries no explanation of its own. `DoublEnder.entitlements` holds two entitlements: `com.apple.security.device.audio-input`, which the hardened runtime requires for microphone access, and `com.apple.security.network.client`, which only a sandboxed app needs. The microphone prompt's text is the `NSMicrophoneUsageDescription` key in Info.plist, not an entitlement. `ENABLE_HARDENED_RUNTIME: YES` is set, so the binary is notarization-eligible.
 
 ### No save panel
 
@@ -615,17 +630,17 @@ The filename prefix is overridable from the settings popover (`filenameBase`), p
 
 ### Mono output
 
-All output is mono. Interleaved multi-channel input is averaged to mono per frame before encoding; non-interleaved (planar) input takes channel 0 only in the sidecar/meter normalization path (see §3) — planar delivery is rare via `AVCaptureAudioDataOutput`. The rationale: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
+All output is mono, but the main file and the sidecar are made mono by different code. The main file's mix is AVAssetWriter's own: the output settings ask for one channel and the writer downmixes whatever arrives. Measured on macOS 26.7 with a two-channel 24-bit source, it scales each channel by 0.707 (−3 dB) and sums them. A tone on one channel only lands 3 dB lower in the file, and the same signal on both channels lands 3 dB higher, so a device that duplicates a mono mic onto two channels clips the main file at any peak above −3 dBFS. The sidecar and the meter instead average interleaved channels (and take channel 0 of planar input; see §3), which puts them 3 dB below the main file for any two-channel source, so the meter can show headroom that the file doesn't have. The rationale for mono: podcast production almost universally uses mono guest stems. Stereo doubles the file size for guests sharing via email or a consumer file service, and a podcast editor will sum to mono anyway. A future format option would not be hard to add, but it is not a current requirement.
 
 ### AAC as default format
 
-256 kbps AAC over M4A is transparent quality for voice at a practical file size (~1.9 MB/min). A 1-hour guest recording is ~115 MB — safely below the attachment limit of most email providers. The encoder runs inside `AVAssetWriter`'s internal pipeline at hardware acceleration rates with no additional CPU overhead beyond `AVCaptureSession`.
+256 kbps AAC over M4A is transparent quality for voice at a practical file size (~1.9 MB/min at its nominal rate). A 1-hour guest recording is ~115 MB — far above the 20–25 MB attachment limit of most email providers, so it travels by a file-sharing link, but a fraction of the ~520 MB the same hour takes as 24-bit WAV at 48 kHz. The encoder runs inside `AVAssetWriter`; for one mono voice channel its CPU cost is small.
 
 WAV is provided for guests who are instructed specifically to record lossless (producers running a high-quality mix), but it defaults to off because naive guests will record 90-minute WAVs and then struggle to send them. The settings popover shows a format description that explains the tradeoff.
 
 ### Why the meter floor is −36 dB
 
-`LevelMeter.dbFloor = -36`. The choice is deliberate: the meter is an activity indicator, not a precision metering tool. The 36 dB range from floor to 0 covers the range that matters for "is audio coming in?" A quiet room with ambient noise sits around −25 to −30 dBFS; speech peaks around −12 to −6 dBFS. The bottom 24 dB (−60 to −36) is below ambient room noise for any practical recording environment — showing it would display a perpetually-lit floor segment with no useful information. The 1 dB deadzone above `dbMin` in the meter rendering prevents the leftmost segment from staying lit at idle due to ambient noise resting just above the clamped floor.
+`LevelMeter.dbFloor = -36`. The choice is deliberate: the meter is an activity indicator, not a precision metering tool. The 36 dB range from floor to 0 covers the range that matters for "is audio coming in?": speech at a sensible gain peaks in the top 12 dB or so. Extending the floor to −60 would add 24 dB that shows mostly room noise — lit segments at idle that say nothing useful about the voice. The 1 dB deadzone above `dbMin` in the meter rendering prevents the leftmost segment from staying lit at idle due to ambient noise resting just above the clamped floor.
 
 ### The main window is the app's, not SwiftUI's
 
@@ -651,11 +666,11 @@ The faceplate moves its own window. `WindowDragArea`, the layer under the whole 
 
 ### Notes metadata not stored in WAV
 
-`AVMutableMetadataItem` with `.commonIdentifierDescription` is written to the `AVAssetWriter.metadata` array. M4A honors this in the moov atom (visible in Finder → Get Info → More Info and readable by most DAWs). `AVAssetWriter` writing to a WAV container silently drops metadata — there is no RIFF LIST INFO support in Apple's writer. The settings popover shows a warning ("Notes are not stored in WAV files.") when WAV is selected.
+`AVMutableMetadataItem` with `.commonIdentifierDescription` is written to the `AVAssetWriter.metadata` array. M4A keeps it in the moov atom's metadata. `AVAssetWriter` writing to a WAV container silently drops it — there is no RIFF LIST INFO support in Apple's writer. (Both checked on macOS 26.7: the note's text is in a finished M4A and absent from a finished WAV.) The settings popover shows a warning ("Notes are not stored in WAV files.") when WAV is selected.
 
 ### The write-flow indicator
 
-The `WRITING` label in the bottom-right of the viewport goes bright amber when buffers are actively flowing and dims when they stop. It does not track "is the capture session running" (that's `AudioEngine.isRunning`) — it tracks "did `AVAssetWriterInput.append` return true in the last 150 ms." A capture session that is running but delivering no data (before the first real buffer after a device switch, during an interruption recovery window) correctly shows a dim WRITING label. This makes it a useful diagnostic: if the button is red-orange (recording state) but WRITING is dim for more than a second, something upstream is stalled.
+The `WRITING` label in the bottom-right of the viewport goes bright amber when buffers are actively flowing and dims when they stop. It does not track "is the capture session running" (the session's own `isRunning`, which AudioEngine keeps private) — it tracks "did `AVAssetWriterInput.append` return true in the last 150 ms." A capture session that is running but delivering no data (before the first real buffer after a device switch, during an interruption recovery window) correctly shows a dim WRITING label. This makes it a useful diagnostic: if the button is red-orange (recording state) but WRITING is dim for more than a second, something upstream is stalled.
 
 ### Session defaults (custom filename) cleared at every launch
 
