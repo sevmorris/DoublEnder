@@ -554,7 +554,7 @@ Neither light blinks. The red LED did blink on a 0.75 s timer until 2.2.0; the b
 
 ### Session heartbeat (dashboard)
 
-`SessionHeartbeat` (singleton, compiled only into Cloud builds) lets a producer watch live sessions on a dashboard as Recording / Idle / Stale. While a take is in progress it POSTs `{sessionId, guestName, state}` to a Cloudflare Worker `/ingest` endpoint every 30 seconds; `sessionId` is a per-launch UUID, so each running Cloud instance is one dashboard row.
+`SessionHeartbeat` (singleton, compiled only into Cloud builds) lets a producer watch live sessions on a dashboard as Recording / Idle / Stale. While a take is in progress it POSTs `{sessionId, guestName, state, version}` to a Cloudflare Worker `/ingest` endpoint every 30 seconds; `sessionId` is a per-launch UUID, so each running Cloud instance is one dashboard row, and `version` is the build's own (`2.5.6cr`), so the dashboard shows which release each guest runs. A copy from before `version` was added sends no such field; the Worker then shows the build number from the request's default User-Agent (`DoublEnder%20Cloud/47 CFNetwork/…`).
 
 The model is **pull-based staleness**: the app only ever beats its current state; the Worker derives "Stale" from the *absence* of beats and TTL-expires dead sessions. A crash therefore needs no "I died" message — the beats simply stop, and the dashboard reads Recording → Stale. A clean stop beats "idle" explicitly, reading Recording → Idle. That distinction — did the guest's app stop cleanly or die mid-take — is the whole point of the dashboard.
 

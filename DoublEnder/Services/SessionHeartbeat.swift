@@ -76,6 +76,12 @@ final class SessionHeartbeat {
 	private static var clientId: String? { nonEmptyInfoValue(for: "IngestClientId") }
 	private static var clientSecret: String? { nonEmptyInfoValue(for: "IngestClientSecret") }
 
+	/// The build's own version ("2.5.6cr"), so the dashboard can show which
+	/// release each guest is running. Omitted from the beat when absent; the
+	/// Worker then falls back to the build number in the User-Agent, which is
+	/// all a copy from before this field sends.
+	private static let appVersion = nonEmptyInfoValue(for: "CFBundleShortVersionString")
+
 	/// True only when the ingest URL and both service-token halves are present.
 	private static var isConfigured: Bool {
 		ingestURL != nil && clientId != nil && clientSecret != nil
@@ -161,8 +167,8 @@ final class SessionHeartbeat {
 		timer = nil
 	}
 
-	/// POST the current {sessionId, guestName, state} to the ingest endpoint.
-	/// Detached and result-ignored — never awaited, never fails the take.
+	/// POST the current {sessionId, guestName, state, version} to the ingest
+	/// endpoint. Detached and result-ignored — never awaited, never fails the take.
 	private func sendBeat() {
 		guard let url = Self.ingestURL,
 			  let clientId = Self.clientId,
@@ -173,11 +179,15 @@ final class SessionHeartbeat {
 		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 		request.setValue(clientId, forHTTPHeaderField: "CF-Access-Client-Id")
 		request.setValue(clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
-		request.httpBody = try? JSONSerialization.data(withJSONObject: [
+		var beat = [
 			"sessionId": sessionId,
 			"guestName": guestName,
 			"state": reportedState,
-		])
+		]
+		if let version = Self.appVersion {
+			beat["version"] = version
+		}
+		request.httpBody = try? JSONSerialization.data(withJSONObject: beat)
 
 		// Diagnostics follow the FR-004 discipline: log only the HTTP status or
 		// the error category — never the service-token secret, the URL, or the
