@@ -187,6 +187,37 @@ if git rev-parse -q --verify "refs/remotes/$REMOTE/$BRANCH" >/dev/null \
 fi
 ok "HEAD contains everything on $REMOTE/$BRANCH"
 
+# The checks above cover the public tree only. With the private overlay present,
+# the Cloud release that follows builds from the overlay's files too, and they
+# live in a separate repo sharing this working tree (decloud), which the dirty
+# check and the fetch above never see. Uncommitted overlay edits would ship in
+# the Cloud build without being recorded anywhere; an overlay behind its remote
+# (a second Mac missing a change pushed from the first) would ship stale Cloud
+# code without a word; a feature branch would ship unmerged code; and unpushed
+# commits would ship code the overlay's remote doesn't have. Only tracked files
+# count: every public file is untracked from the overlay's side.
+if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
+    OVERLAY_GIT_DIR="${DECLOUD_GIT_DIR:-$HOME/DoublEnder-cloud.git}"
+    if [[ ! -d "$OVERLAY_GIT_DIR" ]]; then
+        warn "No overlay repo at ${OVERLAY_GIT_DIR/#$HOME/~} — the Cloud overlay's state can't be checked"
+    else
+        OG=(git --git-dir="$OVERLAY_GIT_DIR" --work-tree="$PROJECT_DIR")
+        [[ -z "$("${OG[@]}" status --porcelain --untracked-files=no)" ]] \
+            || fail "The Cloud overlay has uncommitted changes — commit them (decloud commit) or set them aside before releasing"
+        [[ "$("${OG[@]}" branch --show-current)" == "main" ]] \
+            || fail "The Cloud overlay is on '$("${OG[@]}" branch --show-current)', not main — run: decloud switch main"
+        "${OG[@]}" fetch --quiet origin \
+            || fail "Could not fetch the Cloud overlay's remote"
+        OVERLAY_BEHIND=$("${OG[@]}" rev-list --count HEAD..origin/main)
+        OVERLAY_AHEAD=$("${OG[@]}" rev-list --count origin/main..HEAD)
+        (( OVERLAY_BEHIND == 0 )) \
+            || fail "The Cloud overlay is $OVERLAY_BEHIND commit(s) behind origin/main — run: decloud pull"
+        (( OVERLAY_AHEAD == 0 )) \
+            || fail "The Cloud overlay has $OVERLAY_AHEAD unpushed commit(s) — run: decloud push"
+        ok "Cloud overlay clean, on main, and in sync with origin/main"
+    fi
+fi
+
 # ── Version ordering ────────────────────────────────────────────────────────────────────────
 # Nothing here stopped a release going backwards. On 2026-09-03 Magic Backup
 # Machine published v1.3.9 on top of v1.4.2 — two sessions releasing from one
