@@ -53,7 +53,6 @@ SCHEME="DoublEnder"
 APP_NAME="DoublEnder"
 DERIVED_DATA="/tmp/doublender_build_${VERSION}"
 APP_PATH="$DERIVED_DATA/Build/Products/Release/${APP_NAME}.app"
-STAGING="/tmp/doublender_dmg_${VERSION}"
 DMG="/tmp/${APP_NAME}-${TAG}.dmg"
 APP_ZIP="/tmp/${APP_NAME}-${TAG}-app.zip"
 MOUNT="/tmp/doublender_verify_${VERSION}"
@@ -82,7 +81,6 @@ cleanup() {
         hdiutil detach "$MOUNT" -quiet 2>/dev/null || true
         rm -rf -- "$MOUNT" || true
     fi
-    [[ -d "${STAGING:-}" ]]      && rm -rf -- "$STAGING"      || true
     [[ -d "${DERIVED_DATA:-}" ]] && rm -rf -- "$DERIVED_DATA" || true
     [[ -f "${DMG:-}" ]]          && rm -f  -- "$DMG"          || true
     [[ -f "${APP_ZIP:-}" ]]      && rm -f  -- "$APP_ZIP"      || true
@@ -577,7 +575,7 @@ fi
 
 # ── Clean up temp files ───────────────────────────────────────────────────────
 step "Cleaning up"
-rm -rf "$STAGING" "$MOUNT" "$DERIVED_DATA"
+rm -rf "$MOUNT" "$DERIVED_DATA"
 rm -f "$DMG"
 ok "Temp files removed"
 
