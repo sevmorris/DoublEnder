@@ -15,13 +15,7 @@
 
 **[Download Latest (DMG)](https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v2.5.9lr.dmg)**
 
-Prefer Homebrew? A tap is published alongside every release:
-
-```sh
-brew install --cask sevmorris/tap/doublender
-```
-
-`brew upgrade --cask doublender` tracks each new release automatically.
+Updates come from the app itself: DoublEnder checks GitHub for a new version at launch and from **Check for Updates…** in the app menu, and its **Download** button gets the new DMG.
 
 ---
 
