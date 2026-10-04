@@ -21,6 +21,7 @@
 		4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
 		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
+		79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
 		8E601DF8702C2656E0AD1D93 /* Saira-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */; };
 		9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
@@ -86,6 +87,7 @@
 		F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		F90248FE45395766ECDFF5C6 /* HelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpView.swift; sourceTree = "<group>"; };
 		FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionFormattingTests.swift; sourceTree = "<group>"; };
+		FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheckerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -150,6 +152,7 @@
 				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
 				8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */,
+				FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */,
 				FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */,
 			);
 			path = DoublEnderTests;
@@ -335,6 +338,7 @@
 				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
 				D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */,
+				79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */,
 				3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
