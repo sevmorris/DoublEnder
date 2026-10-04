@@ -3,13 +3,13 @@ name: DoublEnder
 options:
   bundleIdPrefix: io.github.sevmorris
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
     # Public DoublEnder ("Local") build. The "lr" suffix mirrors Cloud's "cr"
     # so the build flavour is visible at a glance in the version overlay,
     # download filenames, and crash reports. release.sh's regex rewrites
@@ -21,7 +21,7 @@ targets:
   DoublEnder:
     type: application
     platform: macOS
-    deploymentTarget: "13.0"
+    deploymentTarget: "15.0"
     sources:
       - path: DoublEnder
         excludes:
@@ -56,7 +56,7 @@ targets:
   DoublEnderTests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "13.0"
+    deploymentTarget: "15.0"
     sources:
       - path: DoublEnderTests
         excludes:
