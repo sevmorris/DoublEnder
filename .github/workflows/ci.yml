@@ -9,8 +9,18 @@ jobs:
   build-and-test:
     # WaxOnWaxOff's build-and-test job, adapted: DoublEnder bundles no binaries,
     # and its project is generated from project.yml. The repo is public, so the
-    # macOS runner is free.
-    runs-on: macos-15
+    # macOS runners are free.
+    #
+    # macos-26 because the recorder leans on writer behaviour measured on
+    # 26.7 — the stereo pair's downmix gain (PCMSidecarTests writes every
+    # layout through the writer) and a WAV written without a sample rate —
+    # which a macos-15 job alone never checks. It also keeps 26 tested
+    # when the development Mac moves on to 27.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
