@@ -1,6 +1,6 @@
 # DoublEnder — Theory of Operation
 
-**Version:** 2.5.9lr · Last updated: 2026-09-26
+**Version:** 2.5.10lr · Last updated: 2026-09-26
 
 ---
 
