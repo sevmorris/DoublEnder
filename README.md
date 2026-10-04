@@ -4,7 +4,7 @@
 <p align="center">
   <strong>Dead-simple guest recording for podcasters</strong>
   <br />
-  <strong>Version:</strong> 2.5.10lr
+  <strong>Version:</strong> 2.6.0lr
   <br />
   <a href="https://sevmorris.github.io/DoublEnder/">App Page</a>
   ·
@@ -13,7 +13,7 @@
 
 > **No installer needed.** DoublEnder is a self-contained app — just double-click it wherever it is: your Desktop, Downloads folder, an external drive, or anywhere else you like.
 
-**[Download Latest (DMG)](https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v2.5.10lr.dmg)**
+**[Download Latest (DMG)](https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v2.6.0lr.dmg)**
 
 Updates come from the app itself: DoublEnder checks GitHub for a new version at launch and from **Check for Updates…** in the app menu, and its **Download** button gets the new DMG.
 
