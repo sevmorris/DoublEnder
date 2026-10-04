@@ -208,7 +208,7 @@ class AudioEngine: NSObject, ObservableObject {
     /// every successful writer append so isWritingData only flips to false
     /// when buffers stop arriving for 150 ms.
     private var writeIndicatorClearWork: DispatchWorkItem?
-    /// Watchdog fired when `AVCaptureSessionWasInterrupted` is not resolved
+    /// Watchdog fired when `AVCaptureSession.wasInterruptedNotification` is not resolved
     /// within 5 s by either `InterruptionEnded` or an incoming sample buffer.
     /// Cancellation points: `captureSessionInterruptionEnded`, first successful
     /// sample in `markDataFlowing`, and all recording-stop/cancel paths.
@@ -579,7 +579,7 @@ class AudioEngine: NSObject, ObservableObject {
     ///
     /// Also cancels the interruption watchdog — a successfully appended
     /// sample proves the session recovered, regardless of whether
-    /// `AVCaptureSessionInterruptionEnded` fired. Doing this here avoids
+    /// `AVCaptureSession.interruptionEndedNotification` fired. Doing this here avoids
     /// scheduling a dedicated main-thread dispatch on every buffer.
     private func markDataFlowing() {
         if interruptionWatchdog != nil {
@@ -631,23 +631,14 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     func refreshDevices() {
-        // Enumerate every audio input device. macOS 14 introduced the
-        // .microphone / .external device-type discovery path; on macOS 12–13
-        // we fall back to the deprecated-but-functional
-        // AVCaptureDevice.devices(for:), which returns the same set of audio
-        // inputs (built-in mics, USB interfaces, aggregates, virtuals). Both
-        // paths feed the identical CADefaultDeviceAggregate filtering and
-        // transport-type classification below.
-        let discoveredDevices: [AVCaptureDevice]
-        if #available(macOS 14.0, *) {
-            discoveredDevices = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.microphone, .external],
-                mediaType: .audio,
-                position: .unspecified
-            ).devices
-        } else {
-            discoveredDevices = AVCaptureDevice.devices(for: .audio)
-        }
+        // Enumerate every audio input device: built-in mics, USB interfaces,
+        // aggregates, virtuals. They feed the CADefaultDeviceAggregate
+        // filtering and transport-type classification below.
+        let discoveredDevices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
         // Filter out macOS's internal "CADefaultDeviceAggregate-*" devices.
         // These are wrapper aggregates CoreAudio auto-creates around the
         // current system default whenever AUHAL needs to bind via the
@@ -792,18 +783,18 @@ class AudioEngine: NSObject, ObservableObject {
     private func installSessionObservers(for session: AVCaptureSession) {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(captureSessionRuntimeError(_:)),
-                           name: .AVCaptureSessionRuntimeError, object: session)
+                           name: AVCaptureSession.runtimeErrorNotification, object: session)
         center.addObserver(self, selector: #selector(captureSessionWasInterrupted(_:)),
-                           name: .AVCaptureSessionWasInterrupted, object: session)
+                           name: AVCaptureSession.wasInterruptedNotification, object: session)
         center.addObserver(self, selector: #selector(captureSessionInterruptionEnded(_:)),
-                           name: .AVCaptureSessionInterruptionEnded, object: session)
+                           name: AVCaptureSession.interruptionEndedNotification, object: session)
     }
 
     private func removeSessionObservers(for session: AVCaptureSession) {
         let center = NotificationCenter.default
-        center.removeObserver(self, name: .AVCaptureSessionRuntimeError, object: session)
-        center.removeObserver(self, name: .AVCaptureSessionWasInterrupted, object: session)
-        center.removeObserver(self, name: .AVCaptureSessionInterruptionEnded, object: session)
+        center.removeObserver(self, name: AVCaptureSession.runtimeErrorNotification, object: session)
+        center.removeObserver(self, name: AVCaptureSession.wasInterruptedNotification, object: session)
+        center.removeObserver(self, name: AVCaptureSession.interruptionEndedNotification, object: session)
     }
 
     @objc private func captureSessionRuntimeError(_ notification: Notification) {
