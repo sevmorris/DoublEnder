@@ -233,7 +233,7 @@ struct FaceplateMeterRow: View {
                 .background(ViewAnchor { capture($0) })
         }
         .buttonStyle(.plain)
-        .focusEffectDisabledIfAvailable()
+        .focusEffectDisabled()
         .disabled(disabled)
         .help(help)
     }
@@ -298,14 +298,10 @@ struct WindowDragArea: View {
         let area = Color.black.opacity(0.001)
             .background(ViewAnchor { anchor.view = $0 })
             .gesture(DragGesture(minimumDistance: 2).onChanged { moveWindow(with: $0) })
-        if #available(macOS 15.0, *) {
-            // The click that brings the app forward can start the drag too,
-            // as it can on a title bar. Scoped to this layer: the buttons
-            // still ignore a click that only activates the window.
-            area.allowsWindowActivationEvents(true)
-        } else {
-            area
-        }
+        // The click that brings the app forward can start the drag too,
+        // as it can on a title bar. Scoped to this layer: the buttons
+        // still ignore a click that only activates the window.
+        area.allowsWindowActivationEvents(true)
     }
 
     private func moveWindow(with drag: DragGesture.Value) {
@@ -361,7 +357,7 @@ struct FaceplateSecondaryButton: View {
                 .overlay(RoundedRectangle(cornerRadius: FaceplateDesign.s(4)).stroke(FaceplateDesign.vpAmber, lineWidth: FaceplateDesign.s(1)))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabledIfAvailable()
+        .focusEffectDisabled()
     }
 }
 
@@ -416,7 +412,7 @@ struct FaceplateDevicePickerPopover: View {
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
-        .focusEffectDisabledIfAvailable()
+        .focusEffectDisabled()
     }
 }
 

@@ -104,7 +104,7 @@ The Cloud target excludes `Assets.xcassets` and adds `CloudAssets.xcassets`, so 
 
 **AVAssetWriter over AudioFile / ExtAudioFile / custom PCM writer:** AVAssetWriter writes the audio into the output file as it records — there is no temp file and no move on stop. It handles AAC encoding internally, writes the moov atom for M4A at `finishWriting`, and applies any necessary sample-rate conversion (for AAC only; WAV is written at native rate). It is a system framework with failure surfaces (writer status, write errors) that are explicit and catchable.
 
-**Observable pattern:** RecorderViewModel conforms to `ObservableObject` with explicit `@Published` properties rather than using the newer `@Observable` macro. That is a requirement, not a preference: the deployment target is macOS 13, and the Observation framework behind `@Observable` needs macOS 14. `@ObservedObject` on the view side, and `objectWillChange.send()` from Combine sinks that forward AudioEngine's `@Published` flags, cover everything; AppDelegate simply reads the shared instance.
+**Observable pattern:** RecorderViewModel conforms to `ObservableObject` with explicit `@Published` properties rather than using the newer `@Observable` macro. That began as a requirement, while the deployment target was macOS 13 and the Observation framework behind `@Observable` needed 14. The target is 15 now, so it is a choice that could be revisited. `@ObservedObject` on the view side, and `objectWillChange.send()` from Combine sinks that forward AudioEngine's `@Published` flags, cover everything; AppDelegate simply reads the shared instance.
 
 ---
 
@@ -393,7 +393,7 @@ During recording, the 5-second disk watch calls the same function. If it returns
 
 ### Device enumeration
 
-`AudioEngine.refreshDevices()` calls `AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)` on macOS 14 and later, and the deprecated `AVCaptureDevice.devices(for: .audio)` on macOS 13, where those device types don't exist. It filters the result to remove `CADefaultDeviceAggregate-*` entries. These are macOS-internal aggregate devices CoreAudio auto-creates around the current system default for AUHAL compatibility; they mean nothing to the user and picking one is effectively a no-op (it re-points at whatever the real default is).
+`AudioEngine.refreshDevices()` calls `AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)`. It filters the result to remove `CADefaultDeviceAggregate-*` entries. These are macOS-internal aggregate devices CoreAudio auto-creates around the current system default for AUHAL compatibility; they mean nothing to the user and picking one is effectively a no-op (it re-points at whatever the real default is).
 
 Hardware vs. virtual classification uses CoreAudio `kAudioDevicePropertyTransportType`. Devices with transport `kAudioDeviceTransportTypeAggregate` or `kAudioDeviceTransportTypeVirtual` are classified as `.virtual`; everything else, including a device whose transport CoreAudio can't report, is classified as `.microphone`, so real hardware is never hidden. The `hardwareInputDevices()` filter exposes only the `.microphone` class to the picker, so BlackHole, Loopback, and similar virtual routing devices never appear in the UI.
 

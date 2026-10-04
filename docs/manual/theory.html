@@ -769,7 +769,7 @@
     <h2>Device Management and Hot-Plug</h2>
 
     <h3>Device Enumeration</h3>
-    <p><code>AudioEngine.refreshDevices()</code> calls <code>AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio)</code> on macOS 14 and later, and the deprecated <code>AVCaptureDevice.devices(for: .audio)</code> on macOS 13, where those device types don't exist. It filters the result to remove <code>CADefaultDeviceAggregate-*</code> entries. These are macOS-internal aggregates CoreAudio auto-creates around the current system default for AUHAL compatibility; picking one is a no-op and confusing to the user.</p>
+    <p><code>AudioEngine.refreshDevices()</code> calls <code>AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio)</code>. It filters the result to remove <code>CADefaultDeviceAggregate-*</code> entries. These are macOS-internal aggregates CoreAudio auto-creates around the current system default for AUHAL compatibility; picking one is a no-op and confusing to the user.</p>
     <p>Hardware vs. virtual classification uses CoreAudio <code>kAudioDevicePropertyTransportType</code>. Devices with transport <code>kAudioDeviceTransportTypeAggregate</code> or <code>kAudioDeviceTransportTypeVirtual</code> are classified as <code>.virtual</code>; everything else, including a device whose transport CoreAudio can't report, is <code>.microphone</code>, so real hardware is never hidden. The <code>hardwareInputDevices()</code> filter exposes only <code>.microphone</code> devices to the picker, so BlackHole, Loopback, and similar routing devices never appear in the UI.</p>
 
     <h3>Refresh Triggers</h3>
