@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # release.sh — Build, sign, notarize, package, and publish a DoublEnder release.
 #
-# Usage: ./release.sh <version> [--generated-notes]
+# Usage: ./release.sh <version> [--generated-notes] [--skip-tests]
 #   e.g. ./release.sh 1.6.30lr
 #
 # When the private Cloud overlay (project.cloud.yml) is present, also publishes
@@ -27,20 +27,24 @@ PERMALINK="$PERMALINK_BUCKET/DoublEnder.dmg"
 # Anything else — including no arguments, or a second positional that isn't a
 # flag — still fails with usage, as it did before the flags existed.
 ALLOW_GENERATED_NOTES=0
+SKIP_TESTS=0
 ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --generated-notes) ALLOW_GENERATED_NOTES=1 ;;
+        --skip-tests)      SKIP_TESTS=1 ;;
         *)                 ARGS+=("$arg") ;;
     esac
 done
 
 if [[ ${#ARGS[@]} -ne 1 ]]; then
-    echo "Usage: $0 <version> [--generated-notes]"
+    echo "Usage: $0 <version> [--generated-notes] [--skip-tests]"
     echo "  e.g. $0 1.0.0"
     echo ""
     echo "  --generated-notes  Release without a curated release-notes file,"
     echo "                     generating notes from commit subjects instead."
+    echo "  --skip-tests       Skip the test suite (not recommended; use only when"
+    echo "                     tests are known-broken and you need an emergency release)."
     exit 1
 fi
 
@@ -57,6 +61,7 @@ DMG="/tmp/${APP_NAME}-${TAG}.dmg"
 APP_ZIP="/tmp/${APP_NAME}-${TAG}-app.zip"
 MOUNT="/tmp/doublender_verify_${VERSION}"
 NOTES_FILE="$PROJECT_DIR/release-notes/${TAG}.md"
+TEST_LOG="/tmp/doublender_test_${VERSION}.log"
 SIGN_IDENTITY="Developer ID Application: Seven Morris (T9RLNAXPWU)"
 # notarytool keychain profile, shared by every sibling release script. A profile
 # cannot be exported, so a new Mac needs it created again under this name:
@@ -84,6 +89,7 @@ cleanup() {
     [[ -d "${DERIVED_DATA:-}" ]] && rm -rf -- "$DERIVED_DATA" || true
     [[ -f "${DMG:-}" ]]          && rm -f  -- "$DMG"          || true
     [[ -f "${APP_ZIP:-}" ]]      && rm -f  -- "$APP_ZIP"      || true
+    [[ -f "${TEST_LOG:-}" ]]     && rm -f  -- "$TEST_LOG"     || true
 }
 # A zsh EXIT trap does not fire on a signal, so Ctrl-C or a closed terminal
 # during the long notarization wait used to leave the version bump sitting in
@@ -319,6 +325,33 @@ if [[ -f "$PROJECT_DIR/project.cloud.yml" ]]; then
         echo "      expected:  $CLOUD_NOTES (private overlay)" >&2
         fail "No Cloud notes for v${CLOUD_VERSION} — write that file in the overlay, or re-run with --generated-notes"
     fi
+fi
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+# Nothing ran DoublEnderTests before a release: CI runs them, but nothing here
+# checks that it is green, and CI never runs the Xcode on this Mac, the one
+# that builds the release. FilmStrip's step, with its escape hatch. These are
+# the public tests; the Cloud overlay's are scripts/verify-cloud.sh's.
+#
+# The version bump regenerates the project from project.yml before the build,
+# so the tests run on a regenerated one too. Preflight proved the tree clean,
+# so restoring project.pbxproj on failure discards only what this generate
+# wrote, and leaves nothing committed and nothing to undo.
+step "Running unit tests"
+if (( SKIP_TESTS )); then
+    warn "Skipping tests (--skip-tests)"
+else
+    xcodegen generate --quiet
+    if ! xcodebuild test \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -destination 'platform=macOS,arch=arm64' \
+        -quiet > "$TEST_LOG" 2>&1; then
+        git checkout -- DoublEnder.xcodeproj/project.pbxproj 2>/dev/null || true
+        cat "$TEST_LOG" >&2
+        fail "Tests failed — fix before releasing, or pass --skip-tests for an emergency release"
+    fi
+    ok "Tests passed"
 fi
 
 # ── Version bump ──────────────────────────────────────────────────────────────
