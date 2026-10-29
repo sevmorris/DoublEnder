@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels the run for the commit before it, which
+# nobody would read. Every other run has a group of its own, by run_id, so each
+# push to the default branch is tested to the end. repo-standards holds every
+# workflow to this (ci-cancel).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     # WaxOnWaxOff's build-and-test job, adapted: DoublEnder bundles no binaries,
