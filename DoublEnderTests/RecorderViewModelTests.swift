@@ -125,7 +125,7 @@ final class StopFailureMessageTests: XCTestCase {
             RecorderViewModel.stopFailureMessage(
                 for: RecordingError.noActiveRecording, mainOutput: main, disconnectReason: reason
             ),
-            "\(reason). No audio was captured — try again with the built-in microphone."
+            "\(reason). No audio was captured — try again with another input."
         )
     }
 
@@ -142,7 +142,7 @@ final class StopFailureMessageTests: XCTestCase {
             RecorderViewModel.stopFailureMessage(
                 for: RecordingError.noActiveRecording, mainOutput: main, disconnectReason: nil
             ),
-            "No audio was captured — try again with the built-in microphone."
+            "No audio was captured — try again with another input."
         )
     }
 

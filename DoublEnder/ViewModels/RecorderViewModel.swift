@@ -981,7 +981,7 @@ class RecorderViewModel: ObservableObject {
     /// (why it stopped) when something stopped it.
     static func noAudioCapturedMessage(reason: String?) -> String {
         let prefix = reason.map { "\($0). " } ?? ""
-        return "\(prefix)No audio was captured — try again with the built-in microphone."
+        return "\(prefix)No audio was captured — try again with another input."
     }
 
     /// Told to the user when the engine's stop fails and the sidecar was not
