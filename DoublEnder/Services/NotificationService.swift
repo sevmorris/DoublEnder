@@ -67,6 +67,36 @@ final class NotificationService: NSObject {
         )
         try? await center.add(request)
     }
+
+    /// Post a banner when a take has gone without a voice, for a guest with the
+    /// app behind their call. No sound: the mic would record it, if it works.
+    func postNoVoice(heardEarlier: Bool) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        let allowed = settings.authorizationStatus == .authorized
+                   || settings.authorizationStatus == .provisional
+        guard allowed else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "DoublEnder"
+        content.body = Self.noVoiceMessage(heardEarlier: heardEarlier)
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        try? await center.add(request)
+    }
+
+    static func noVoiceMessage(heardEarlier: Bool) -> String {
+        if heardEarlier {
+            return "Still recording, but no voice for \(VoiceDetector.warnAfterVoiceSeconds / 60) minutes. "
+                + "Check your microphone, or stop if you're finished."
+        }
+        return "Recording, but no voice heard in \(VoiceDetector.warnBeforeVoiceSeconds / 60) minutes. "
+            + "Check that the right microphone is selected and turned up."
+    }
 }
 
 extension NotificationService: UNUserNotificationCenterDelegate {

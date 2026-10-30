@@ -181,9 +181,25 @@ final class SessionDiagnosticsTests: XCTestCase {
     }
 
     func testTakeCause() {
-        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: true, engineStop: true, failure: .dataStalled), "diskSpace")
-        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: false, engineStop: true, failure: .dataStalled), "dataStalled")
-        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: false, engineStop: false, failure: nil), "user")
+        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: true, remoteStop: true, engineStop: true, failure: .dataStalled), "diskSpace")
+        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: false, remoteStop: true, engineStop: true, failure: .dataStalled), "dataStalled")
+        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: false, remoteStop: true, engineStop: false, failure: nil), "remote")
+        XCTAssertEqual(SessionDiagnostics.takeCause(diskStop: false, remoteStop: false, engineStop: false, failure: nil), "user")
+    }
+
+    /// The Worker answers a beat with `{ok: true}`, and `stopTake` when the
+    /// producer stopped that take. Whatever else comes back must stop nothing:
+    /// Cloudflare Access answers an expired token with its login page.
+    func testStopRequestInBeatResponse() {
+        func request(_ text: String) -> String? {
+            SessionDiagnostics.stopRequest(inBeatResponse: Data(text.utf8))
+        }
+        XCTAssertEqual(request(#"{"ok":true,"stopTake":"take-1"}"#), "take-1")
+        XCTAssertNil(request(#"{"ok":true}"#))
+        XCTAssertNil(request(#"{"ok":true,"stopTake":""}"#))
+        XCTAssertNil(request(#"{"ok":true,"stopTake":7}"#))
+        XCTAssertNil(request("<!doctype html><title>Sign in</title>"))
+        XCTAssertNil(SessionDiagnostics.stopRequest(inBeatResponse: nil))
     }
 
     func testCrashBackupState() {
@@ -195,10 +211,49 @@ final class SessionDiagnosticsTests: XCTestCase {
     func testTakeInfoIsValidJSON() {
         let take = SessionDiagnostics.TakeInfo(
             end: .saved, cause: "user", seconds: 42, droppedFrames: false,
-            interruptions: 1, crashBackup: "ok"
+            interruptions: 1, crashBackup: "ok", voice: VoiceDetector.Status(heard: true, secondsWithoutVoice: 3)
         )
         XCTAssertTrue(JSONSerialization.isValidJSONObject(take.json))
         XCTAssertEqual(take.json["end"] as? String, "saved")
+        XCTAssertEqual(take.json["voiceHeard"] as? Bool, true)
+        XCTAssertNil(take.json["noVoiceSeconds"], "Sent only past the warning's threshold")
+    }
+
+    func testTakeInfoReportsAVoiceThatWentMissing() {
+        let take = SessionDiagnostics.TakeInfo(
+            end: .saved, cause: "user", seconds: 4000, droppedFrames: false, interruptions: 0, crashBackup: "ok",
+            voice: VoiceDetector.Status(heard: false, secondsWithoutVoice: 4000)
+        )
+        XCTAssertEqual(take.json["voiceHeard"] as? Bool, false)
+        XCTAssertEqual(take.json["noVoiceSeconds"] as? Int, 4000)
+    }
+
+    /// The note goes on the confirmation the guest clicks through, so it must
+    /// not blame the mic for a short take or a voice that stopped late on.
+    func testTakeNote() {
+        let fine = VoiceDetector.Status(heard: true, secondsWithoutVoice: 0)
+        XCTAssertNil(RecorderViewModel.takeNote(diskReason: nil, remoteStop: false, voice: fine))
+        XCTAssertNil(
+            RecorderViewModel.takeNote(diskReason: nil, remoteStop: false, voice: VoiceDetector.Status(heard: false, secondsWithoutVoice: 5)),
+            "A short take isn't long enough to judge"
+        )
+        XCTAssertNil(
+            RecorderViewModel.takeNote(diskReason: nil, remoteStop: false, voice: VoiceDetector.Status(heard: true, secondsWithoutVoice: 900)),
+            "The show ended and the take ran on, which isn't a mic problem"
+        )
+
+        let silent = VoiceDetector.Status(heard: false, secondsWithoutVoice: 4000)
+        XCTAssertEqual(
+            RecorderViewModel.takeNote(diskReason: nil, remoteStop: false, voice: silent),
+            "No voice was detected in this recording. Check your microphone before the next take."
+        )
+        XCTAssertEqual(
+            RecorderViewModel.takeNote(diskReason: nil, remoteStop: true, voice: fine),
+            "Your producer stopped this recording from the session dashboard."
+        )
+        let all = RecorderViewModel.takeNote(diskReason: "Disk is full.", remoteStop: true, voice: silent) ?? ""
+        XCTAssertEqual(all.components(separatedBy: "\n").count, 3)
+        XCTAssertTrue(all.hasPrefix("Recording stopped early. Disk is full."))
     }
 
     /// An error's message can name a device; only the state's name is sent.

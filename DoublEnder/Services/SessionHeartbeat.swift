@@ -34,9 +34,13 @@ private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", categor
 /// source. When any is absent/empty (dev builds without the injection, and —
 /// via the compile gate — every Local build) the heartbeat is fully inert.
 ///
-/// Off the audio-critical path: every send is a detached URLSession task whose
-/// result is ignored; a dead dashboard produces one log line and never blocks
-/// or delays recording start/stop or the state machine.
+/// Off the audio-critical path: every send is a detached URLSession task; a dead
+/// dashboard produces one log line and never blocks or delays recording
+/// start/stop or the state machine.
+///
+/// The one thing a beat brings back is a stop the producer asked for, naming the
+/// take. The app is never listening: the request waits on the Worker for the next
+/// beat, so it arrives within `intervalSeconds`, at no cost in extra KV writes.
 final class SessionHeartbeat {
 	static let shared = SessionHeartbeat()
 
@@ -96,6 +100,10 @@ final class SessionHeartbeat {
 	/// called on the main thread, where every beat is sent from. Nil sends
 	/// the beat without them.
 	var diagnostics: (() -> [String: Any])?
+
+	/// The producer asked to stop the take this ID names, which may have ended
+	/// by now. Set by RecorderViewModel; called on the main thread.
+	var onStopRequested: ((String) -> Void)?
 
 	// MARK: - Public API (called from RecorderViewModel, main thread)
 
@@ -178,8 +186,8 @@ final class SessionHeartbeat {
 	}
 
 	/// POST the current {sessionId, guestName, state, version} and the
-	/// diagnostics to the ingest endpoint. Detached and result-ignored — never
-	/// awaited, never fails the take.
+	/// diagnostics to the ingest endpoint. Detached — never awaited, never fails
+	/// the take. The response is read only for a stop the producer asked for.
 	private func sendBeat() {
 		guard let url = Self.ingestURL,
 			  let clientId = Self.clientId,
@@ -212,12 +220,14 @@ final class SessionHeartbeat {
 		// Diagnostics follow the FR-004 discipline: log only the HTTP status or
 		// the error category — never the service-token secret, the URL, or the
 		// guest name.
-		URLSession.shared.dataTask(with: request) { _, response, error in
+		URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
 			if let error {
 				logger.error("Heartbeat send failed: \(error.localizedDescription, privacy: .public)")
 			} else if let http = response as? HTTPURLResponse,
 					  !(200...299).contains(http.statusCode) {
 				logger.error("Heartbeat returned HTTP \(http.statusCode, privacy: .public)")
+			} else if let takeID = SessionDiagnostics.stopRequest(inBeatResponse: data) {
+				DispatchQueue.main.async { self?.onStopRequested?(takeID) }
 			}
 		}.resume()
 	}
@@ -239,7 +249,8 @@ final class SessionHeartbeat {
 /// built-in, USB, Thunderbolt, PCI, FireWire, HDMI, DisplayPort. A Bluetooth
 /// headset, an iPhone, or an aggregate or virtual device is often named after
 /// its owner ("Jane's AirPods"), so for those the dashboard gets the
-/// transport and manufacturer alone.
+/// transport and manufacturer alone. Whether a voice is being heard is the one
+/// fact from the audio itself: `VoiceDetector`'s decision goes, the audio doesn't.
 enum SessionDiagnostics {
 
 	// MARK: This Mac
@@ -513,13 +524,19 @@ enum SessionDiagnostics {
 		let interruptions: Int
 		/// `crashBackupState`.
 		let crashBackup: String
+		/// Whether a voice was heard, and how the take ended on that score.
+		let voice: VoiceDetector.Status
 
 		var json: [String: Any] {
-			[
+			var json: [String: Any] = [
 				"end": end.rawValue, "cause": cause, "seconds": seconds,
 				"droppedFrames": droppedFrames, "interruptions": interruptions,
-				"crashBackup": crashBackup,
+				"crashBackup": crashBackup, "voiceHeard": voice.heard,
 			]
+			// Only past the warning's threshold, so the dashboard flags what the
+			// guest was warned about and nothing else.
+			if voice.isWarning { json["noVoiceSeconds"] = voice.secondsWithoutVoice }
+			return json
 		}
 	}
 
@@ -542,12 +559,24 @@ enum SessionDiagnostics {
 		}
 	}
 
-	/// Why a take ended: the disk watch, the engine (a `CaptureFailure`), or
-	/// the user.
-	static func takeCause(diskStop: Bool, engineStop: Bool, failure: CaptureFailure?) -> String {
+	/// Why a take ended: the disk watch, the engine (a `CaptureFailure`), the
+	/// producer at the dashboard, or the user. If the engine and the producer
+	/// both stopped it, the engine's failure is the one worth knowing.
+	static func takeCause(diskStop: Bool, remoteStop: Bool, engineStop: Bool, failure: CaptureFailure?) -> String {
 		if diskStop { return "diskSpace" }
 		if engineStop { return failure?.rawValue ?? "engine" }
+		if remoteStop { return "remote" }
 		return "user"
+	}
+
+	/// The take a beat's response asks to stop, or nil. Anything but the Worker's
+	/// JSON, such as Cloudflare Access's login page, asks for nothing.
+	static func stopRequest(inBeatResponse data: Data?) -> String? {
+		guard let data,
+			  let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+			  let takeID = body["stopTake"] as? String,
+			  !takeID.isEmpty else { return nil }
+		return takeID
 	}
 
 	/// The crash backup: "ok", "unavailable" (the sidecar never opened) or
