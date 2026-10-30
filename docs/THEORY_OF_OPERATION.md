@@ -265,7 +265,7 @@ init()
 ### Abnormal paths
 
 **Device disconnect during recording:**
-`audioEngine.onDisconnectedDuringRecording` fires on the main thread. RecorderViewModel sets `suppressIdleInputLossAlert`, stores `pendingDisconnectReason`, and calls `stopRecording`. The stop completes as normal — `finishWriting` is attempted — and the file is saved if possible. After the completion block, `presentDisconnectAlert` runs. `switchToFallbackInputAfterLoss` then rebuilds with the built-in mic.
+`audioEngine.onDisconnectedDuringRecording` fires on the main thread. RecorderViewModel sets `suppressIdleInputLossAlert`, stores `pendingDisconnectReason`, and calls `stopRecording`. The stop completes as normal — `finishWriting` is attempted — and the file is saved if possible. After the completion block, `switchToFallbackInputAfterLoss` rebuilds with the fallback input (§6), and `presentDisconnectAlert` then says which one that is.
 
 If the main file writer was in an error state at disconnect time, `stopRecording` receives `.failure`; if a PCM sidecar holds audio, `recoverSidecarIfNeeded` re-wraps it to WAV and presents that as the saved file instead. In the Cloud build with upload on, the recovered WAV becomes the take and is uploaded like one that finalized (`.uploading`, `performUpload`), and the upload's confirmation is the one the user sees; up to 2.5.6 it was saved but never uploaded, and no dialog appeared unless a disk note forced one. What the user is told otherwise is decided by `RecorderViewModel.stopFailureMessage`. A sidecar that holds audio but could not be re-wrapped gets "your audio is safe", with a relaunch to recover it. When the writer was torn down before any sample reached it (`canAdd` or `startWriting` failed on the first buffer), the engine has already dropped it and the stop comes back as `.noActiveRecording`, with a sidecar holding only its header: the user is told no audio was captured, in the same words as the no-samples stop above. Anything else reports the error. Up to 2.5.6 the check was only that a sidecar existed, so the torn-down case said the audio was safe, and the next launch deleted the empty sidecar without a word.
 
@@ -436,9 +436,9 @@ A dock's audio port ranks below every real mic, in the launch default, the fallb
 
 **Recording:** `notifyIfRecordingInputDisconnected` (from `refreshDevices`) or `checkRecordingInputHealth` (from the 1s timer) calls `triggerRecordingInputDisconnect` → `handleRecordingCaptureFailure` → `dispatchDisconnectIfNeeded` → `onDisconnectedDuringRecording`. The VM stops, saves, and switches to fallback.
 
-**Idle:** `notifyIfActiveInputLostWhileIdle` detects that the bound device is gone and calls `onActiveInputLostWhileIdle`, once per loss (`idleInputLossNotified`). RecorderViewModel calls `switchToFallbackInputAfterLoss` and then presents the "switched to the built-in microphone" alert.
+**Idle:** `notifyIfActiveInputLostWhileIdle` detects that the bound device is gone and calls `onActiveInputLostWhileIdle`, once per loss (`idleInputLossNotified`). RecorderViewModel calls `switchToFallbackInputAfterLoss` and then presents an alert that says which input it landed on.
 
-**Fallback device selection:** `switchToFallbackInputAfterLoss` calls `refreshDevices()` first to get the current list, then: built-in mic if present (`builtInInputDevice`), first hardware device otherwise, a dock's audio port last (`preferredDefaultDevice`), or `audioEngine.start()` (engine with no device) if neither.
+**Fallback device selection:** `switchToFallbackInputAfterLoss` calls `refreshDevices()` first to get the current list, then: built-in mic if present (`builtInInputDevice`), first hardware device otherwise, a dock's audio port last (`preferredDefaultDevice`), or `audioEngine.start()` (engine with no device) if neither. It returns the sentence both alerts end with (`fallbackInputMessage`): "the built-in microphone", the input's name, a warning when that is a dock's audio port, or that no other input is available. Both used to say "the built-in microphone" whatever had happened, which on a Mac with none was false.
 
 ---
 

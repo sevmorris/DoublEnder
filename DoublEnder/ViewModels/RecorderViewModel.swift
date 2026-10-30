@@ -371,7 +371,7 @@ class RecorderViewModel: ObservableObject {
     /// How the last take ended, for the heartbeat's diagnostics.
     private(set) var lastTake: SessionDiagnostics.TakeInfo?
     /// Suppresses the idle input-loss alert while a recording-disconnect
-    /// handler is already showing one and switching to the built-in mic.
+    /// handler is already showing one and switching to the fallback input.
     private var suppressIdleInputLossAlert = false
     /// Prevents back-to-back duplicate disconnect alerts when several
     /// CoreAudio callbacks land in the same unplug event.
@@ -525,8 +525,9 @@ class RecorderViewModel: ObservableObject {
             self.suppressIdleInputLossAlert = true
             self.pendingDisconnectReason = reason
             self.stopRecording {
-                self.presentDisconnectAlert(reason: reason)
-                self.switchToFallbackInputAfterLoss()
+                // Switch first: the alert says which input it landed on.
+                let fallback = self.switchToFallbackInputAfterLoss()
+                self.presentDisconnectAlert(reason: reason, fallback: fallback)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     self.suppressIdleInputLossAlert = false
                 }
@@ -536,8 +537,8 @@ class RecorderViewModel: ObservableObject {
         audioEngine.onActiveInputLostWhileIdle = { [weak self] in
             guard let self else { return }
             guard !self.suppressIdleInputLossAlert else { return }
-            self.switchToFallbackInputAfterLoss()
-            self.presentInputLostWhileIdleAlert()
+            let fallback = self.switchToFallbackInputAfterLoss()
+            self.presentInputLostWhileIdleAlert(fallback: fallback)
         }
 
         // USB hot-plug: AudioEngine fires this on the main thread when a new
@@ -1040,39 +1041,56 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
-    private func switchToFallbackInputAfterLoss() {
+    /// Returns the sentence that tells the user where this left them.
+    private func switchToFallbackInputAfterLoss() -> String {
         audioEngine.refreshDevices()
         if let builtIn = audioEngine.builtInInputDevice() {
             selectedInputDeviceID = builtIn.uniqueID
+            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: builtIn), isBuiltIn: true)
         } else if let fallback = preferredDefaultDevice() {
             selectedInputDeviceID = fallback.uniqueID
+            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: fallback), isBuiltIn: false)
         } else {
             audioEngine.start()
+            return Self.fallbackInputMessage(nil, isBuiltIn: false)
         }
     }
 
-    private func presentDisconnectAlert(reason: String) {
+    /// Told to the user after an input is lost. A Mac with no built-in mic
+    /// falls back to whatever else is attached, so this names what it got, and
+    /// says so when that is a dock's audio port, which only records noise
+    /// unless something is plugged into it.
+    static func fallbackInputMessage(_ input: InputCandidate?, isBuiltIn: Bool) -> String {
+        guard let input else { return "No other input is available." }
+        if isBuiltIn { return "Switched to the built-in microphone." }
+        if InputRanking.isDockPort(input) {
+            return "Switched to \(input.name), a dock's audio port. Choose another input unless your microphone is connected to it."
+        }
+        return "Switched to \(input.name)."
+    }
+
+    private func presentDisconnectAlert(reason: String, fallback: String) {
         guard shouldPresentInputLossAlert() else { return }
         guard !isShowingModalAlert else { return }
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Microphone disconnected"
-        alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. Switched to the built-in microphone."
+        alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. \(fallback)"
         alert.addButton(withTitle: "OK")
         isShowingModalAlert = true
         alert.runModal()
         isShowingModalAlert = false
     }
 
-    private func presentInputLostWhileIdleAlert() {
+    private func presentInputLostWhileIdleAlert(fallback: String) {
         guard shouldPresentInputLossAlert() else { return }
         guard !isShowingModalAlert else { return }
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Microphone disconnected"
-        alert.informativeText = "The selected input is no longer available. Switched to the built-in microphone."
+        alert.informativeText = "The selected input is no longer available. \(fallback)"
         alert.addButton(withTitle: "OK")
         isShowingModalAlert = true
         alert.runModal()

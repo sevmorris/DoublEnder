@@ -80,6 +80,33 @@ final class InputRankingTests: XCTestCase {
         )
     }
 
+    // MARK: - The alert after losing an input
+
+    func testLosingAnInputNamesWhatItFellBackTo() {
+        let builtIn = InputCandidate(
+            uniqueID: "builtIn", name: "MacBook Pro Microphone", manufacturer: "Apple Inc.", isUSB: false
+        )
+        XCTAssertEqual(
+            RecorderViewModel.fallbackInputMessage(builtIn, isBuiltIn: true),
+            "Switched to the built-in microphone."
+        )
+        XCTAssertEqual(
+            RecorderViewModel.fallbackInputMessage(usbMic, isBuiltIn: false),
+            "Switched to Shure MV7."
+        )
+        XCTAssertEqual(
+            RecorderViewModel.fallbackInputMessage(nil, isBuiltIn: false),
+            "No other input is available."
+        )
+    }
+
+    func testFallingBackToADockSaysItIsOne() {
+        XCTAssertEqual(
+            RecorderViewModel.fallbackInputMessage(dock, isBuiltIn: false),
+            "Switched to CalDigit Thunderbolt 3 Audio, a dock's audio port. Choose another input unless your microphone is connected to it."
+        )
+    }
+
     // MARK: - What counts as a dock's port
 
     func testDockNamesAreRecognized() {
