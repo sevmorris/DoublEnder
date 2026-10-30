@@ -324,6 +324,8 @@ class RecorderViewModel: ObservableObject {
         if isCurrentlyRecording && audioEngine.sessionInterrupted {
             return "Input interrupted — reconnecting…"
         }
+        // Buffers are flowing and the file is growing, but nobody is on it.
+        if isCurrentlyRecording && audioEngine.voiceStatus.isWarning { return "No voice — check your mic" }
         // SCO / low-quality input: show regardless of recording state so the
         // user can switch devices before pressing record.
         if audioEngine.lowQualityInput { return "Low-quality input (BT SCO?)" }
@@ -368,6 +370,12 @@ class RecorderViewModel: ObservableObject {
     /// DiskSpaceChecker message. `stopRecording` tells the user with whatever
     /// confirms the take, once, and clears it.
     private var diskStopReason: String?
+    /// Set when the producer stopped the take from the dashboard. `stopRecording`
+    /// says so with whatever confirms the take, once, and clears it.
+    private var remoteStopRequested = false
+    /// Names the take in the heartbeat, so a stop the producer asks for can only
+    /// ever end the take they were looking at. Replaced at each start.
+    private var currentTakeID = UUID().uuidString
     /// How the last take ended, for the heartbeat's diagnostics.
     private(set) var lastTake: SessionDiagnostics.TakeInfo?
     /// Suppresses the idle input-loss alert while a recording-disconnect
@@ -425,6 +433,20 @@ class RecorderViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // Fires as the warning comes and goes, so each stretch without a voice
+        // posts one banner, and a take's start clears the last take's warning.
+        audioEngine.$voiceStatus
+            .map(\.isWarning)
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isWarning in
+                guard let self else { return }
+                self.objectWillChange.send()
+                guard isWarning, self.isCurrentlyRecording else { return }
+                let heardEarlier = self.audioEngine.voiceStatus.heard
+                Task { await NotificationService.shared.postNoVoice(heardEarlier: heardEarlier) }
+            }
+            .store(in: &cancellables)
         audioEngine.$meterLevel
             .receive(on: DispatchQueue.main)
             .assign(to: &$meterLevel)
@@ -472,6 +494,9 @@ class RecorderViewModel: ObservableObject {
             .store(in: &cancellables)
         SessionHeartbeat.shared.diagnostics = { [weak self] in
             self?.sessionDiagnostics() ?? [:]
+        }
+        SessionHeartbeat.shared.onStopRequested = { [weak self] takeID in
+            self?.stopForProducer(takeID: takeID)
         }
         #endif
 
@@ -726,6 +751,8 @@ class RecorderViewModel: ObservableObject {
     /// omit the argument and fall through to the timestamp scheme.
     func startRecording(nameOverride: String? = nil) {
         diskStopReason = nil
+        remoteStopRequested = false
+        currentTakeID = UUID().uuidString
         if let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
             format: outputFormat
@@ -788,6 +815,32 @@ class RecorderViewModel: ObservableObject {
         "Recording stopped early. \(reason)"
     }
 
+    /// What a take's confirmation adds about how it went, or nil: why it
+    /// stopped, and a warning when it ran long enough to warn about and no voice
+    /// was ever heard, since the file is what the producer is about to receive.
+    static func takeNote(diskReason: String?, remoteStop: Bool, voice: VoiceDetector.Status) -> String? {
+        var lines: [String] = []
+        if let diskReason { lines.append(diskStopNote(reason: diskReason)) }
+        if remoteStop { lines.append("Your producer stopped this recording from the session dashboard.") }
+        if voice.isWarning && !voice.heard {
+            lines.append("No voice was detected in this recording. Check your microphone before the next take.")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    #if GCS_ENABLED
+    /// The producer asked the dashboard to stop this take. The same stop as the
+    /// button, so the file is saved and uploaded as usual. Nothing happens if the
+    /// take has already ended, or a stop is under way: the request can reach us
+    /// more than once, and late.
+    private func stopForProducer(takeID: String) {
+        guard isCurrentlyRecording, !isFinalizingRecording, takeID == currentTakeID else { return }
+        logger.info("Stopping the take at the producer's request")
+        remoteStopRequested = true
+        stopRecording()
+    }
+    #endif
+
     /// Cleanly finalize the current recording. `completion` runs on the main
     /// queue once the writer has closed the file (or failed).
     func stopRecording(completion: (() -> Void)? = nil) {
@@ -807,6 +860,7 @@ class RecorderViewModel: ObservableObject {
             unavailable: audioEngine.sidecarUnavailable,
             failed: audioEngine.sidecarFailedDuringRecording
         )
+        let takeVoice = audioEngine.voiceStatus
 
         audioEngine.stopRecording { [weak self] result in
             guard let self = self else {
@@ -826,12 +880,15 @@ class RecorderViewModel: ObservableObject {
                 return
             }
             self.isFinalizingRecording = false
-            // The disk watch stopped this take: say so with whatever ends it,
-            // once. Only the first stop can have set it — every stop cancels
-            // the disk watch — so a swallowed follower never takes it.
+            // The disk watch or the producer stopped this take: say so with
+            // whatever ends it, once. Only the first stop can have set them —
+            // every stop cancels the disk watch, and the producer's stop waits
+            // for no stop under way — so a swallowed follower never takes them.
             let diskReason = self.diskStopReason
-            let diskNote = diskReason.map { Self.diskStopNote(reason: $0) }
+            let remoteStop = self.remoteStopRequested
+            let takeNote = Self.takeNote(diskReason: diskReason, remoteStop: remoteStop, voice: takeVoice)
             self.diskStopReason = nil
+            self.remoteStopRequested = false
             // Recorded before any confirmation, which is modal: the heartbeat
             // keeps beating while it is up.
             let sidecarHasAudio = Self.hasRecoverableSidecar(for: self.recordedFileURL)
@@ -839,13 +896,15 @@ class RecorderViewModel: ObservableObject {
                 end: SessionDiagnostics.takeEnd(result: result, sidecarHasAudio: sidecarHasAudio),
                 cause: SessionDiagnostics.takeCause(
                     diskStop: diskReason != nil,
+                    remoteStop: remoteStop,
                     engineStop: self.pendingDisconnectReason != nil,
                     failure: self.audioEngine.lastCaptureFailure
                 ),
                 seconds: takeSeconds,
                 droppedFrames: takeDroppedFrames,
                 interruptions: self.audioEngine.interruptionsThisTake,
-                crashBackup: takeCrashBackup
+                crashBackup: takeCrashBackup,
+                voice: takeVoice
             )
             switch result {
             case .success(.some(let url)):
@@ -861,7 +920,7 @@ class RecorderViewModel: ObservableObject {
                     self.recordingTime = 0
                     self.recordedFileURL = nil
                     self.state = .ready
-                    RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: diskNote)
+                    RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: takeNote)
                     self.pendingDisconnectReason = nil
                     completion?()
                     return
@@ -869,16 +928,16 @@ class RecorderViewModel: ObservableObject {
                 // The file is finalized on disk. Hand off to the uploader and
                 // let the .uploading state drive the progress UI. The stop
                 // button unblocks immediately via the completion call below.
-                // The upload's confirmation carries the disk note, once.
+                // The upload's confirmation carries the note, once.
                 self.recordingTime = 0
                 self.uploadProgress = 0
                 self.state = .uploading
-                Task { await self.performUpload(note: diskNote) }
+                Task { await self.performUpload(note: takeNote) }
                 #else
                 self.recordingTime = 0
                 self.recordedFileURL = nil  // m10: clear stale reference after save
                 self.state = .ready
-                RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: diskNote)
+                RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: takeNote)
                 self.pendingDisconnectReason = nil
                 completion?()
                 return
@@ -896,17 +955,17 @@ class RecorderViewModel: ObservableObject {
                 }
             case .failure(let error):
                 self.recordingTime = 0
-                if let recovered = self.recoverSidecarIfNeeded(from: self.recordedFileURL, note: diskNote) {
+                if let recovered = self.recoverSidecarIfNeeded(from: self.recordedFileURL, note: takeNote) {
                     #if GCS_ENABLED
                     if self.cloudUploadEnabled {
                         // The recovered WAV is the take now: upload it like one
                         // that finalized. The upload's confirmation carries the
-                        // disk note, and performUpload records the file before
-                        // it starts, so a quit mid-upload is offered next launch.
+                        // note, and performUpload records the file before it
+                        // starts, so a quit mid-upload is offered next launch.
                         self.recordedFileURL = recovered
                         self.uploadProgress = 0
                         self.state = .uploading
-                        Task { await self.performUpload(note: diskNote) }
+                        Task { await self.performUpload(note: takeNote) }
                     } else {
                         self.recordedFileURL = nil
                         self.state = .ready
@@ -948,7 +1007,8 @@ class RecorderViewModel: ObservableObject {
             payload["input"] = input.json
         }
         if isCurrentlyRecording {
-            payload["take"] = [
+            var take: [String: Any] = [
+                "id": currentTakeID,
                 "seconds": Int(recordingTime),
                 "writing": isWritingData,
                 "interrupted": audioEngine.sessionInterrupted,
@@ -958,7 +1018,11 @@ class RecorderViewModel: ObservableObject {
                     unavailable: audioEngine.sidecarUnavailable,
                     failed: audioEngine.sidecarFailedDuringRecording
                 ),
-            ] as [String: Any]
+            ]
+            if audioEngine.voiceStatus.isWarning {
+                take["noVoiceSeconds"] = audioEngine.voiceStatus.secondsWithoutVoice
+            }
+            payload["take"] = take
         }
         if let lastTake {
             payload["lastTake"] = lastTake.json
@@ -1116,6 +1180,7 @@ class RecorderViewModel: ObservableObject {
         inputWatchTimer?.cancel()
         pendingDisconnectReason = nil
         diskStopReason = nil
+        remoteStopRequested = false
         let url = recordedFileURL
 
         audioEngine.cancelRecording { [weak self] in
@@ -1409,6 +1474,7 @@ class RecorderViewModel: ObservableObject {
         inputWatchTimer?.cancel()
         pendingDisconnectReason = nil
         diskStopReason = nil
+        remoteStopRequested = false
         if audioEngine.isRecordingActive {
             audioEngine.abandonStaleRecordingState()
         }

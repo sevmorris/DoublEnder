@@ -119,6 +119,10 @@ class AudioEngine: NSObject, ObservableObject {
     /// recovery is no longer mirroring audio. Distinct from `sidecarUnavailable`
     /// (which fires when the sidecar can't be opened at record start).
     @Published var sidecarFailedDuringRecording: Bool = false
+    /// Whether the current or last take has a voice in it. Reset in
+    /// `startRecording` and kept after stop, so the VM can report how the take
+    /// ended. Updated at most once a second.
+    @Published var voiceStatus = VoiceDetector.Status()
 
     private let aacBitRate: Int = 256_000
 
@@ -204,6 +208,10 @@ class AudioEngine: NSObject, ObservableObject {
     )
     /// Exponential smoother for the live peak-hold meter; read/written only on writerQueue.
     private var smoothedPeakLevel: Float = LevelMeter.dbFloor
+    /// Listens to the take for a voice; read/written only on writerQueue, like
+    /// the status last published from it.
+    private var voiceDetector = VoiceDetector()
+    private var publishedVoiceStatus = VoiceDetector.Status()
     /// Scheduled "clear write indicator" task; cancelled and re-scheduled on
     /// every successful writer append so isWritingData only flips to false
     /// when buffers stop arriving for 150 ms.
@@ -1096,6 +1104,11 @@ class AudioEngine: NSObject, ObservableObject {
         firstBufferWatchdog?.cancel()
         firstBufferWatchdog = nil
         sidecarFailedDuringRecording = false
+        voiceStatus = VoiceDetector.Status()
+        writerQueue.async {
+            self.voiceDetector = VoiceDetector()
+            self.publishedVoiceStatus = VoiceDetector.Status()
+        }
         isRecording = true
 
         // FR-001: arm the first-buffer deadline. The data-flow watchdog is
@@ -1479,8 +1492,9 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        let mono = PCMSidecar.normalizedMonoFloatSamples(from: sampleBuffer)
         // Live peak-hold meter, always — independent of recording state.
-        updateMeterLevels(from: sampleBuffer)
+        updateMeterLevels(from: mono)
         // Keep the input's format for diagnostics. Capture reuses one format
         // description while the format holds, so this locks only on a change.
         if let format = CMSampleBufferGetFormatDescription(sampleBuffer), format !== lastInputFormat {
@@ -1490,6 +1504,8 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         }
 
         guard isRecording else { return }
+
+        listenForVoice(in: mono, from: sampleBuffer)
 
         writerLock.lock()
         guard let writer = assetWriter else {
@@ -1691,9 +1707,15 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async { self.lastError = nil }
     }
 
-    /// Peak-hold level from a CMSampleBuffer, published to the UI.
-    private func updateMeterLevels(from sampleBuffer: CMSampleBuffer) {
-        let peakLinear = peakLinear(from: sampleBuffer)
+    /// Peak-hold level from a buffer's mono mix, published to the UI.
+    ///
+    /// The mix is `PCMSidecar.normalizedMonoFloatSamples`, the mix the sidecar
+    /// records, which is the writer's own mix of the main file for every channel
+    /// layout whose writer mix has been measured, so the meter shows the level
+    /// the file records. Other layouts can differ (see that function). Nil, for
+    /// an unsupported PCM format, reads as silence.
+    private func updateMeterLevels(from mono: [Float]?) {
+        let peakLinear = mono.map { LevelMeter.peakLinear(in: $0) } ?? 0
         let instantDb = LevelMeter.clampedDisplayDB(fromLinear: peakLinear)
         let coef = instantDb > smoothedPeakLevel ? LevelMeter.peakAttack : LevelMeter.peakRelease
         smoothedPeakLevel += coef * (instantDb - smoothedPeakLevel)
@@ -1703,15 +1725,19 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         }
     }
 
-    /// Peak of the buffer mixed to mono (0…1, or above 1 when the mix clips).
-    ///
-    /// Mixes through `PCMSidecar.normalizedMonoFloatSamples`, the mix the
-    /// sidecar records, which is the writer's own mix of the main file for
-    /// every channel layout whose writer mix has been measured, so the meter
-    /// shows the level the file records. Other layouts can differ (see that
-    /// function). Returns 0 for unsupported PCM formats.
-    private func peakLinear(from sampleBuffer: CMSampleBuffer) -> Float {
-        guard let mono = PCMSidecar.normalizedMonoFloatSamples(from: sampleBuffer) else { return 0 }
-        return LevelMeter.peakLinear(in: mono)
+    /// Feeds the take's mono mix to the voice detector. Display-only, like the
+    /// meter. An unsupported PCM format feeds it nothing, so its clock stops
+    /// rather than reporting a voice missing from audio it never heard.
+    private func listenForVoice(in mono: [Float]?, from sampleBuffer: CMSampleBuffer) {
+        guard let mono,
+              let format = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format) else { return }
+        voiceDetector.process(mono, sampleRate: asbd.pointee.mSampleRate)
+        let status = voiceDetector.status
+        guard status != publishedVoiceStatus else { return }
+        publishedVoiceStatus = status
+        DispatchQueue.main.async { [weak self] in
+            self?.voiceStatus = status
+        }
     }
 }
