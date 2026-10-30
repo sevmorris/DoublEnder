@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import DoublEnder
 
 /// The signals here are stand-ins. The thresholds were set against real tracks:
@@ -146,6 +147,44 @@ final class VoiceDetectorTests: XCTestCase {
     func testWarningComesEarlierForATakeThatNeverHadAVoice() {
         XCTAssertFalse(VoiceDetector.Status(heard: false, secondsWithoutVoice: 119).isWarning)
         XCTAssertTrue(VoiceDetector.Status(heard: false, secondsWithoutVoice: 120).isWarning)
+    }
+
+    /// It has to stay up while another app is in front, and take nothing from it.
+    func testAlertFloatsOverOtherAppsWithoutTakingFocus() throws {
+        defer { NoVoiceAlert.dismiss() }
+        NoVoiceAlert.present(heardEarlier: false)
+        let panel = try XCTUnwrap(NoVoiceAlert.panel)
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+        XCTAssertFalse(panel.hidesOnDeactivate)
+        XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
+        XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
+        XCTAssertGreaterThan(panel.level.rawValue, NSWindow.Level.floating.rawValue)
+        XCTAssertFalse(panel.isKeyWindow)
+        XCTAssertFalse(panel.canBecomeMain)
+        XCTAssertGreaterThan(panel.frame.height, 0, "Sized to its content before it is placed")
+    }
+
+    func testAlertCanBeDismissedAndShownAgain() {
+        defer { NoVoiceAlert.dismiss() }
+        NoVoiceAlert.dismiss()
+        XCTAssertNil(NoVoiceAlert.panel, "Dismissing with nothing up does nothing")
+
+        NoVoiceAlert.present(heardEarlier: false)
+        let first = NoVoiceAlert.panel
+        NoVoiceAlert.present(heardEarlier: true)
+        XCTAssertFalse(first?.isVisible ?? true, "A second never stacks on the first")
+        XCTAssertNotNil(NoVoiceAlert.panel)
+
+        NoVoiceAlert.dismiss()
+        XCTAssertNil(NoVoiceAlert.panel)
+    }
+
+    /// One tells a guest to check their input, the other allows they've finished.
+    func testAlertWordsFollowTheThresholds() {
+        XCTAssertTrue(NoVoiceAlert.message(heardEarlier: false).contains("in 2 minutes"))
+        XCTAssertTrue(NoVoiceAlert.message(heardEarlier: true).contains("for 10 minutes"))
+        XCTAssertTrue(NoVoiceAlert.message(heardEarlier: true).contains("stop if you're finished"))
     }
 
     /// A host who is only listening can go five minutes without a word.
