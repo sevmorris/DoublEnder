@@ -371,7 +371,7 @@ class RecorderViewModel: ObservableObject {
     /// How the last take ended, for the heartbeat's diagnostics.
     private(set) var lastTake: SessionDiagnostics.TakeInfo?
     /// Suppresses the idle input-loss alert while a recording-disconnect
-    /// handler is already showing one and switching to the built-in mic.
+    /// handler is already showing one and switching to the fallback input.
     private var suppressIdleInputLossAlert = false
     /// Prevents back-to-back duplicate disconnect alerts when several
     /// CoreAudio callbacks land in the same unplug event.
@@ -525,8 +525,9 @@ class RecorderViewModel: ObservableObject {
             self.suppressIdleInputLossAlert = true
             self.pendingDisconnectReason = reason
             self.stopRecording {
-                self.presentDisconnectAlert(reason: reason)
-                self.switchToFallbackInputAfterLoss()
+                // Switch first: the alert says which input it landed on.
+                let fallback = self.switchToFallbackInputAfterLoss()
+                self.presentDisconnectAlert(reason: reason, fallback: fallback)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     self.suppressIdleInputLossAlert = false
                 }
@@ -536,14 +537,15 @@ class RecorderViewModel: ObservableObject {
         audioEngine.onActiveInputLostWhileIdle = { [weak self] in
             guard let self else { return }
             guard !self.suppressIdleInputLossAlert else { return }
-            self.switchToFallbackInputAfterLoss()
-            self.presentInputLostWhileIdleAlert()
+            let fallback = self.switchToFallbackInputAfterLoss()
+            self.presentInputLostWhileIdleAlert(fallback: fallback)
         }
 
         // USB hot-plug: AudioEngine fires this on the main thread when a new
         // USB input device appears while the app is running. We offer to
         // switch unless recording (don't interrupt), it's already the
-        // selected device, or the user dismissed it this session.
+        // selected device, it's a dock's audio port, or the user dismissed it
+        // this session.
         audioEngine.onNewUSBDeviceDetected = { [weak self] device in
             self?.presentUSBSwitchPrompt(for: device)
         }
@@ -572,6 +574,10 @@ class RecorderViewModel: ObservableObject {
         if isCurrentlyRecording { return }
         // Already the current input — nothing to switch to.
         if device.uniqueID == selectedInputDeviceID { return }
+        // Plugging in a dock isn't asking for its audio port, and nothing has
+        // to be plugged into that port for it to deliver noise. It stays in
+        // the picker for anyone who has a headset in it.
+        if InputRanking.isDockPort(audioEngine.inputCandidate(for: device)) { return }
         // User said "Keep Current" for this device earlier this session.
         if dismissedUSBDevices.contains(device.uniqueID) { return }
         // Another alert is already on screen — the device will still appear
@@ -586,8 +592,8 @@ class RecorderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .informational
-        alert.messageText = "USB mic detected: \(device.localizedName)"
-        alert.informativeText = "Switch input to this device?"
+        alert.messageText = "USB audio input detected: \(device.localizedName)"
+        alert.informativeText = "Switch to this input if your microphone is connected through it."
         alert.addButton(withTitle: "Switch")            // .alertFirstButtonReturn
         alert.addButton(withTitle: "Keep Current")      // .alertSecondButtonReturn
 
@@ -616,12 +622,15 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
-    /// First hardware mic (built-in, USB, Bluetooth) in discovery order, or
+    /// First hardware mic (built-in, USB, Bluetooth) in discovery order, with
+    /// a dock's audio port only if there is nothing else (`InputRanking`), or
     /// nil if none are present. Used wherever the app needs to pick a sensible
     /// default without user input. Virtual / aggregate devices are never
     /// considered — the engine stays stopped instead.
     private func preferredDefaultDevice() -> AVCaptureDevice? {
-        audioEngine.hardwareInputDevices().first
+        let hardware = audioEngine.hardwareInputDevices()
+        let choice = InputRanking.defaultInput(among: hardware.map(audioEngine.inputCandidate))
+        return hardware.first { $0.uniqueID == choice?.uniqueID }
     }
 
     /// Stamp every currently-present USB device that we haven't seen before
@@ -644,14 +653,16 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// USB input device with the most recent first-seen timestamp among
-    /// currently-present USB devices. Returns nil if none are present. The
-    /// timestamp comes from `recordCurrentUSBDevicesFirstSeen`; devices we've
-    /// never stamped fall back to a 0 timestamp, so unknown devices lose
-    /// every tie-break to known ones.
+    /// currently-present USB devices, leaving out a dock's audio port
+    /// (`InputRanking`). Returns nil if none are left. The timestamp comes
+    /// from `recordCurrentUSBDevicesFirstSeen`; devices we've never stamped
+    /// fall back to a 0 timestamp, so unknown devices lose every tie-break to
+    /// known ones.
     private func mostRecentlyConnectedUSBDevice() -> AVCaptureDevice? {
         let map = defaults.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
         let usb = audioEngine.usbInputDevices()
-        return usb.max { (map[$0.uniqueID] ?? 0) < (map[$1.uniqueID] ?? 0) }
+        let choice = InputRanking.usbOffer(among: usb.map(audioEngine.inputCandidate), firstSeen: map)
+        return usb.first { $0.uniqueID == choice?.uniqueID }
     }
 
     private func requestPermissions() {
@@ -678,8 +689,8 @@ class RecorderViewModel: ObservableObject {
                     } else if let fallback = self.preferredDefaultDevice() {
                         // No built-in mic on this Mac (Mac mini, Mac
                         // Studio, etc.). Fall back to the first hardware
-                        // input so we still have an engine running when
-                        // the USB prompt fires below.
+                        // input, a dock's audio port last, so we still have
+                        // an engine running when the USB prompt fires below.
                         self.selectedInputDeviceID = fallback.uniqueID
                     } else {
                         // No input devices at all — engine stays stopped;
@@ -696,6 +707,7 @@ class RecorderViewModel: ObservableObject {
                     // prompt from here explicitly. Most-recent-first-seen
                     // wins when multiple USBs are present, capturing
                     // "the one I just plugged in" intent across launches.
+                    // A dock's audio port is never the one offered.
                     if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
                         self.presentUSBSwitchPrompt(for: usbDevice)
                     }
@@ -969,7 +981,7 @@ class RecorderViewModel: ObservableObject {
     /// (why it stopped) when something stopped it.
     static func noAudioCapturedMessage(reason: String?) -> String {
         let prefix = reason.map { "\($0). " } ?? ""
-        return "\(prefix)No audio was captured — try again with the built-in microphone."
+        return "\(prefix)No audio was captured — try again with another input."
     }
 
     /// Told to the user when the engine's stop fails and the sidecar was not
@@ -1029,39 +1041,56 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
-    private func switchToFallbackInputAfterLoss() {
+    /// Returns the sentence that tells the user where this left them.
+    private func switchToFallbackInputAfterLoss() -> String {
         audioEngine.refreshDevices()
         if let builtIn = audioEngine.builtInInputDevice() {
             selectedInputDeviceID = builtIn.uniqueID
+            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: builtIn), isBuiltIn: true)
         } else if let fallback = preferredDefaultDevice() {
             selectedInputDeviceID = fallback.uniqueID
+            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: fallback), isBuiltIn: false)
         } else {
             audioEngine.start()
+            return Self.fallbackInputMessage(nil, isBuiltIn: false)
         }
     }
 
-    private func presentDisconnectAlert(reason: String) {
+    /// Told to the user after an input is lost. A Mac with no built-in mic
+    /// falls back to whatever else is attached, so this names what it got, and
+    /// says so when that is a dock's audio port, which only records noise
+    /// unless something is plugged into it.
+    static func fallbackInputMessage(_ input: InputCandidate?, isBuiltIn: Bool) -> String {
+        guard let input else { return "No other input is available." }
+        if isBuiltIn { return "Switched to the built-in microphone." }
+        if InputRanking.isDockPort(input) {
+            return "Switched to \(input.name), a dock's audio port. Choose another input unless your microphone is connected to it."
+        }
+        return "Switched to \(input.name)."
+    }
+
+    private func presentDisconnectAlert(reason: String, fallback: String) {
         guard shouldPresentInputLossAlert() else { return }
         guard !isShowingModalAlert else { return }
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Microphone disconnected"
-        alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. Switched to the built-in microphone."
+        alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. \(fallback)"
         alert.addButton(withTitle: "OK")
         isShowingModalAlert = true
         alert.runModal()
         isShowingModalAlert = false
     }
 
-    private func presentInputLostWhileIdleAlert() {
+    private func presentInputLostWhileIdleAlert(fallback: String) {
         guard shouldPresentInputLossAlert() else { return }
         guard !isShowingModalAlert else { return }
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Microphone disconnected"
-        alert.informativeText = "The selected input is no longer available. Switched to the built-in microphone."
+        alert.informativeText = "The selected input is no longer available. \(fallback)"
         alert.addButton(withTitle: "OK")
         isShowingModalAlert = true
         alert.runModal()
