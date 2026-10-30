@@ -324,8 +324,6 @@ class RecorderViewModel: ObservableObject {
         if isCurrentlyRecording && audioEngine.sessionInterrupted {
             return "Input interrupted — reconnecting…"
         }
-        // Buffers are flowing and the file is growing, but nobody is on it.
-        if isCurrentlyRecording && audioEngine.voiceStatus.isWarning { return "No voice — check your mic" }
         // SCO / low-quality input: show regardless of recording state so the
         // user can switch devices before pressing record.
         if audioEngine.lowQualityInput { return "Low-quality input (BT SCO?)" }
@@ -434,17 +432,27 @@ class RecorderViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         // Fires as the warning comes and goes, so each stretch without a voice
-        // posts one banner, and a take's start clears the last take's warning.
+        // shows one pop-up, however often the guest has dismissed the last, and
+        // a voice coming back takes it down.
         audioEngine.$voiceStatus
             .map(\.isWarning)
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isWarning in
                 guard let self else { return }
-                self.objectWillChange.send()
-                guard isWarning, self.isCurrentlyRecording else { return }
-                let heardEarlier = self.audioEngine.voiceStatus.heard
-                Task { await NotificationService.shared.postNoVoice(heardEarlier: heardEarlier) }
+                if isWarning, self.isCurrentlyRecording {
+                    NoVoiceAlert.present(heardEarlier: self.audioEngine.voiceStatus.heard)
+                } else {
+                    NoVoiceAlert.dismiss()
+                }
+            }
+            .store(in: &cancellables)
+        // A take's voice status outlives it, so its end has to take the pop-up
+        // down. Every exit from .recording passes through here.
+        $state
+            .sink { newState in
+                if case .recording = newState { return }
+                NoVoiceAlert.dismiss()
             }
             .store(in: &cancellables)
         audioEngine.$meterLevel

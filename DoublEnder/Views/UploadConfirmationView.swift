@@ -22,9 +22,11 @@ private struct ThemedConfirmationView: View {
     let iconName: String
     let title: String
     let message: String
-    let fileName: String
+    var fileName: String? = nil
     /// An extra line under the file name, such as why the take stopped.
-    let note: String?
+    var note: String? = nil
+    /// A second button beside OK.
+    var secondary: (label: String, action: () -> Void)? = nil
     let onAcknowledge: () -> Void
 
     var body: some View {
@@ -33,12 +35,19 @@ private struct ThemedConfirmationView: View {
             icon(iconName)
             titleText(title)
             bodyText(message)
-            fileNameText(fileName)
+            if let fileName {
+                fileNameText(fileName)
+            }
             if let note {
                 bodyText(note)
             }
-            pillButton("OK") { onAcknowledge() }
-                .padding(.top, 2)
+            HStack(spacing: 10) {
+                pillButton("OK") { onAcknowledge() }
+                if let secondary {
+                    pillButton(secondary.label, action: secondary.action)
+                }
+            }
+            .padding(.top, 2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 26)
@@ -183,6 +192,93 @@ enum RecordingSavedConfirmation {
             fileName: fileName,
             note: note
         )
+    }
+}
+
+/// Tells a guest that a take has gone without a voice. A guest recording a call
+/// has the call in front and the app behind it, so this floats above every app,
+/// on every Space and over a full-screen call. It takes nothing from the call:
+/// the app doesn't activate and the keyboard stays where it is, so a guest mid-
+/// sentence in another window loses nothing. It isn't modal, and it has no sound,
+/// since the mic would record one if it works.
+enum NoVoiceAlert {
+    private(set) static var panel: NSPanel?
+
+    private final class Panel: NSPanel {
+        /// Borderless windows refuse key status, and a click on a button needs it.
+        override var canBecomeKey: Bool { true }
+        override var canBecomeMain: Bool { false }
+    }
+
+    static func present(heardEarlier: Bool) {
+        dismiss()
+        let panel = Panel(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 240),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        let view = ThemedConfirmationView(
+            iconName: "mic.slash.fill",
+            title: "DoublEnder",
+            message: message(heardEarlier: heardEarlier),
+            secondary: (label: "OPEN DOUBLENDER", action: {
+                dismiss()
+                showApp()
+            })
+        ) {
+            dismiss()
+        }
+        panel.contentViewController = NSHostingController(rootView: view)
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .modalPanel
+        // An NSPanel hides itself when its app isn't active, which here is always.
+        panel.hidesOnDeactivate = false
+        panel.worksWhenModal = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        if let content = panel.contentViewController?.view {
+            panel.setContentSize(content.fittingSize)
+        }
+        // The screen the guest is working on, not the one the app sits on: the
+        // app may well be out of sight on another display.
+        if let screen = NSScreen.main {
+            let frame = screen.visibleFrame
+            panel.setFrameOrigin(NSPoint(
+                x: frame.midX - panel.frame.width / 2,
+                y: frame.midY - panel.frame.height / 2
+            ))
+        } else {
+            panel.center()
+        }
+        panel.orderFrontRegardless()
+        self.panel = panel
+    }
+
+    /// Nothing happens if it isn't up. Called from its own buttons, so the panel
+    /// outlives the click that closes it.
+    static func dismiss() {
+        guard let closing = panel else { return }
+        panel = nil
+        closing.orderOut(nil)
+        DispatchQueue.main.async { _ = closing }
+    }
+
+    static func message(heardEarlier: Bool) -> String {
+        if heardEarlier {
+            return "Still recording, but no voice for \(VoiceDetector.warnAfterVoiceSeconds / 60) minutes. "
+                + "Check your microphone, or stop if you're finished."
+        }
+        return "Recording, but no voice heard in \(VoiceDetector.warnBeforeVoiceSeconds / 60) minutes. "
+            + "Check that the right microphone is selected and turned up."
+    }
+
+    /// The input picker and STOP are both on the faceplate.
+    private static func showApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first { $0 is FaceplateWindow }?.makeKeyAndOrderFront(nil)
     }
 }
 
