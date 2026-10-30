@@ -903,6 +903,16 @@ class AudioEngine: NSObject, ObservableObject {
         availableInputDevices.filter { isUSBDevice($0) }
     }
 
+    /// `device` as `InputRanking` sees it.
+    func inputCandidate(for device: AVCaptureDevice) -> InputCandidate {
+        InputCandidate(
+            uniqueID: device.uniqueID,
+            name: device.localizedName,
+            manufacturer: device.manufacturer,
+            isUSB: isUSBDevice(device)
+        )
+    }
+
     /// True if `device` is the Mac's built-in hardware input per CoreAudio
     /// transport. MacBook built-in mics return true; USB / Bluetooth /
     /// aggregate / virtual devices return false. RecorderViewModel uses

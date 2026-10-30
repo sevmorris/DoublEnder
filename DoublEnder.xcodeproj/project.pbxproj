@@ -16,6 +16,7 @@
 		144D0ED26FE67B34771CFD94 /* Saira-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = A2C44036438AE9A6FC75EC29 /* Saira-OFL.txt */; };
 		1AF67E7E0C25924B21B6F378 /* SharedAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */; };
 		2060C7480B61F1F8CB1634C5 /* DoublEnderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A664098C4701B731F134D15A /* DoublEnderApp.swift */; };
+		2367AE382B10D902E7B40D1F /* InputRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */; };
 		3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */; };
 		4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
 		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
@@ -37,6 +38,7 @@
 		DF7E5277F967AA00454980E9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */; };
 		E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8331841FA32B270066E651 /* NotificationService.swift */; };
 		EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F427670EB2DAF640994599 /* AudioEngine.swift */; };
+		F1B041B5952B893872D4F0E3 /* InputRankingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDA327BB738E9F05AA1691C /* InputRankingTests.swift */; };
 		FB3C04C5129AA1C6A4751208 /* CRC32C.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC852F7502C76B7E658A7DA2 /* CRC32C.swift */; };
 /* End PBXBuildFile section */
 
@@ -71,6 +73,7 @@
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
 		A2C44036438AE9A6FC75EC29 /* Saira-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Saira-OFL.txt"; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
+		ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRanking.swift; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C757981FB56F560204E52311 /* CRC32CTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32CTests.swift; sourceTree = "<group>"; };
 		CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -78,6 +81,7 @@
 		DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeter.swift; sourceTree = "<group>"; };
 		E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeterTests.swift; sourceTree = "<group>"; };
 		EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
+		EBDA327BB738E9F05AA1691C /* InputRankingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRankingTests.swift; sourceTree = "<group>"; };
 		EC47A7DBFE3560714B1EABA7 /* DoublEnder.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DoublEnder.entitlements; sourceTree = "<group>"; };
 		EC852F7502C76B7E658A7DA2 /* CRC32C.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32C.swift; sourceTree = "<group>"; };
 		ED51B67AFF43A5CA03791B8C /* DoublEnderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoublEnderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -147,6 +151,7 @@
 			children = (
 				CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */,
 				C757981FB56F560204E52311 /* CRC32CTests.swift */,
+				EBDA327BB738E9F05AA1691C /* InputRankingTests.swift */,
 				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
 				8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */,
@@ -186,6 +191,7 @@
 			children = (
 				EC852F7502C76B7E658A7DA2 /* CRC32C.swift */,
 				4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */,
+				ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */,
 				DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */,
 				9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */,
 			);
@@ -312,6 +318,7 @@
 				4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */,
 				DEFEF410E23AD80FD16C8CE5 /* FaceplateStateViews.swift in Sources */,
 				D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */,
+				2367AE382B10D902E7B40D1F /* InputRanking.swift in Sources */,
 				A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */,
 				E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */,
 				9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */,
@@ -331,6 +338,7 @@
 			files = (
 				11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */,
 				6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */,
+				F1B041B5952B893872D4F0E3 /* InputRankingTests.swift in Sources */,
 				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
 				D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */,

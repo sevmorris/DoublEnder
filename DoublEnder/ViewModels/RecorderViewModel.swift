@@ -543,7 +543,8 @@ class RecorderViewModel: ObservableObject {
         // USB hot-plug: AudioEngine fires this on the main thread when a new
         // USB input device appears while the app is running. We offer to
         // switch unless recording (don't interrupt), it's already the
-        // selected device, or the user dismissed it this session.
+        // selected device, it's a dock's audio port, or the user dismissed it
+        // this session.
         audioEngine.onNewUSBDeviceDetected = { [weak self] device in
             self?.presentUSBSwitchPrompt(for: device)
         }
@@ -572,6 +573,10 @@ class RecorderViewModel: ObservableObject {
         if isCurrentlyRecording { return }
         // Already the current input — nothing to switch to.
         if device.uniqueID == selectedInputDeviceID { return }
+        // Plugging in a dock isn't asking for its audio port, and nothing has
+        // to be plugged into that port for it to deliver noise. It stays in
+        // the picker for anyone who has a headset in it.
+        if InputRanking.isDockPort(audioEngine.inputCandidate(for: device)) { return }
         // User said "Keep Current" for this device earlier this session.
         if dismissedUSBDevices.contains(device.uniqueID) { return }
         // Another alert is already on screen — the device will still appear
@@ -586,8 +591,8 @@ class RecorderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .informational
-        alert.messageText = "USB mic detected: \(device.localizedName)"
-        alert.informativeText = "Switch input to this device?"
+        alert.messageText = "USB audio input detected: \(device.localizedName)"
+        alert.informativeText = "Switch to this input if your microphone is connected through it."
         alert.addButton(withTitle: "Switch")            // .alertFirstButtonReturn
         alert.addButton(withTitle: "Keep Current")      // .alertSecondButtonReturn
 
@@ -616,12 +621,15 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
-    /// First hardware mic (built-in, USB, Bluetooth) in discovery order, or
+    /// First hardware mic (built-in, USB, Bluetooth) in discovery order, with
+    /// a dock's audio port only if there is nothing else (`InputRanking`), or
     /// nil if none are present. Used wherever the app needs to pick a sensible
     /// default without user input. Virtual / aggregate devices are never
     /// considered — the engine stays stopped instead.
     private func preferredDefaultDevice() -> AVCaptureDevice? {
-        audioEngine.hardwareInputDevices().first
+        let hardware = audioEngine.hardwareInputDevices()
+        let choice = InputRanking.defaultInput(among: hardware.map(audioEngine.inputCandidate))
+        return hardware.first { $0.uniqueID == choice?.uniqueID }
     }
 
     /// Stamp every currently-present USB device that we haven't seen before
@@ -644,14 +652,16 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// USB input device with the most recent first-seen timestamp among
-    /// currently-present USB devices. Returns nil if none are present. The
-    /// timestamp comes from `recordCurrentUSBDevicesFirstSeen`; devices we've
-    /// never stamped fall back to a 0 timestamp, so unknown devices lose
-    /// every tie-break to known ones.
+    /// currently-present USB devices, leaving out a dock's audio port
+    /// (`InputRanking`). Returns nil if none are left. The timestamp comes
+    /// from `recordCurrentUSBDevicesFirstSeen`; devices we've never stamped
+    /// fall back to a 0 timestamp, so unknown devices lose every tie-break to
+    /// known ones.
     private func mostRecentlyConnectedUSBDevice() -> AVCaptureDevice? {
         let map = defaults.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
         let usb = audioEngine.usbInputDevices()
-        return usb.max { (map[$0.uniqueID] ?? 0) < (map[$1.uniqueID] ?? 0) }
+        let choice = InputRanking.usbOffer(among: usb.map(audioEngine.inputCandidate), firstSeen: map)
+        return usb.first { $0.uniqueID == choice?.uniqueID }
     }
 
     private func requestPermissions() {
@@ -678,8 +688,8 @@ class RecorderViewModel: ObservableObject {
                     } else if let fallback = self.preferredDefaultDevice() {
                         // No built-in mic on this Mac (Mac mini, Mac
                         // Studio, etc.). Fall back to the first hardware
-                        // input so we still have an engine running when
-                        // the USB prompt fires below.
+                        // input, a dock's audio port last, so we still have
+                        // an engine running when the USB prompt fires below.
                         self.selectedInputDeviceID = fallback.uniqueID
                     } else {
                         // No input devices at all — engine stays stopped;
@@ -696,6 +706,7 @@ class RecorderViewModel: ObservableObject {
                     // prompt from here explicitly. Most-recent-first-seen
                     // wins when multiple USBs are present, capturing
                     // "the one I just plugged in" intent across launches.
+                    // A dock's audio port is never the one offered.
                     if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
                         self.presentUSBSwitchPrompt(for: usbDevice)
                     }

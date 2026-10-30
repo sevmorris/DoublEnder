@@ -408,13 +408,22 @@ The two notification triggers share `handleRefreshTrigger`, which skips the refr
 
 ### Hot-plug offer
 
-On each `refreshDevices`, new UIDs (UIDs present now but absent in `knownInputDeviceUIDs`) that are USB devices trigger `onNewUSBDeviceDetected` — but only while no take is in progress (`AudioEngine` skips the callback when `isRecording`; `RecorderViewModel.presentUSBSwitchPrompt` also bails on `isCurrentlyRecording`). The handler presents an `NSAlert` app-modal offering to switch. `knownInputDeviceUIDs` is updated **before** firing the callback, so any re-entrant `refreshDevices` call that arrives during the modal's `runModal()` loop sees the new UID as already known and does not stack a duplicate prompt. The first `refreshDevices` after init seeds `knownInputDeviceUIDs` silently — launch-time device population is not a "new arrival."
+On each `refreshDevices`, new UIDs (UIDs present now but absent in `knownInputDeviceUIDs`) that are USB devices trigger `onNewUSBDeviceDetected` — but only while no take is in progress (`AudioEngine` skips the callback when `isRecording`; `RecorderViewModel.presentUSBSwitchPrompt` also bails on `isCurrentlyRecording`). The handler presents an `NSAlert` app-modal offering to switch, worded "USB audio input detected" and asking the guest to switch if their microphone is connected through it. It used to say "USB mic detected", which oversold what a USB input is: an interface, a headset adapter or a dock's port with nothing in it. `knownInputDeviceUIDs` is updated **before** firing the callback, so any re-entrant `refreshDevices` call that arrives during the modal's `runModal()` loop sees the new UID as already known and does not stack a duplicate prompt. The first `refreshDevices` after init seeds `knownInputDeviceUIDs` silently — launch-time device population is not a "new arrival."
 
 If the user dismisses with "Keep Current," the UID is stored in `dismissedUSBDevices` (memory-only, per-session). It will not be offered again until the next app launch. The same UID will be offered at the next launch if the device is still present (via the post-init USB prompt path in `requestPermissions`).
 
+### A dock's audio port
+
+A dock's audio port ranks below every real mic, in the launch default, the fallback and the offer. To CoreAudio it is one more USB input, and with nothing plugged into its jack it still delivers a steady stream of input noise. On 2026-10-30 a guest on a Mac mini, which has no built-in mic, recorded 1 h 6 m of that through "CalDigit Thunderbolt 3 Audio". How that input got selected isn't known: on such a Mac the launch default could land on it, and on any Mac the prompt called it a USB mic.
+
+`InputRanking.isDockPort` calls an input a dock's port when its transport is USB and its name or manufacturer contains "thunderbolt" or "caldigit", or has "dock", "docking" or "hub" as a whole word. The USB condition is what makes "thunderbolt" safe: a real Thunderbolt interface has Thunderbolt transport, while a dock's audio chip is a USB device behind the dock's own hub. Going by name is the exception to the transport-only classification above, because no transport or level tells these apart, and a wrong answer costs little: the port stays in the picker either way. A dock whose chip has a generic name ("USB Audio Device") reads as a mic and can still be offered, so the prompt's wording doesn't promise one.
+
+- **Default input** (`InputRanking.defaultInput`, behind `preferredDefaultDevice`): the first hardware input that isn't a dock's port. With nothing else present it is the dock's port after all, since a headset may be plugged into it and the engine needs an input to run.
+- **Offer** (`InputRanking.usbOffer`, behind `mostRecentlyConnectedUSBDevice`, and a guard in `presentUSBSwitchPrompt` for hot-plug): never a dock's port, even as the only USB input. A dock plugged in alongside a USB mic still offers the mic.
+
 ### USB first-seen map
 
-`recordCurrentUSBDevicesFirstSeen()` stamps every currently-present USB device with a timestamp in `UserDefaults` (key `usbDeviceFirstSeenAt`, value `[UID: Double]`). Entries are never pruned — UIDs are stable per physical device, so the map grows only with new hardware. At launch, `mostRecentlyConnectedUSBDevice()` picks the USB device with the most recent timestamp and offers it via `presentUSBSwitchPrompt`. This captures "the one I just plugged in" intent when multiple USB devices are present.
+`recordCurrentUSBDevicesFirstSeen()` stamps every currently-present USB device with a timestamp in `UserDefaults` (key `usbDeviceFirstSeenAt`, value `[UID: Double]`). Entries are never pruned — UIDs are stable per physical device, so the map grows only with new hardware. At launch, `mostRecentlyConnectedUSBDevice()` picks the USB device with the most recent timestamp, leaving out a dock's audio port, and offers it via `presentUSBSwitchPrompt`. This captures "the one I just plugged in" intent when multiple USB devices are present.
 
 ### `setDevice` flow
 
@@ -429,7 +438,7 @@ If the user dismisses with "Keep Current," the UID is stored in `dismissedUSBDev
 
 **Idle:** `notifyIfActiveInputLostWhileIdle` detects that the bound device is gone and calls `onActiveInputLostWhileIdle`, once per loss (`idleInputLossNotified`). RecorderViewModel calls `switchToFallbackInputAfterLoss` and then presents the "switched to the built-in microphone" alert.
 
-**Fallback device selection:** `switchToFallbackInputAfterLoss` calls `refreshDevices()` first to get the current list, then: built-in mic if present (`builtInInputDevice`), first hardware device otherwise (`preferredDefaultDevice`), or `audioEngine.start()` (engine with no device) if neither.
+**Fallback device selection:** `switchToFallbackInputAfterLoss` calls `refreshDevices()` first to get the current list, then: built-in mic if present (`builtInInputDevice`), first hardware device otherwise, a dock's audio port last (`preferredDefaultDevice`), or `audioEngine.start()` (engine with no device) if neither.
 
 ---
 
