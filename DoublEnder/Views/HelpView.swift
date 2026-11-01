@@ -159,7 +159,9 @@ struct HelpView: View {
                     text("""
                     Choose DoublEnder → Check for Updates… from the app menu to \
                     look for a new version. DoublEnder also performs a quiet \
-                    check at launch.
+                    check at launch. Update and Relaunch installs the new \
+                    version and reopens the app; if a recording is under way, \
+                    it waits for the recording to finish.
                     """)
                 }
 

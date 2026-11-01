@@ -15,7 +15,7 @@
 
 **[Download Latest (DMG)](https://github.com/sevmorris/DoublEnder/releases/latest/download/DoublEnder-v2.7.0lr.dmg)**
 
-Updates come from the app itself: DoublEnder checks GitHub for a new version at launch and from **Check for Updates…** in the app menu, and its **Download** button gets the new DMG.
+Updates come from the app itself: DoublEnder checks GitHub for a new version at launch and from **Check for Updates…** in the app menu, and **Update and Relaunch** installs the new version over the old one. A copy that can't replace itself, such as one still running from the disk image, offers the DMG instead.
 
 ---
 

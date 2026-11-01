@@ -104,6 +104,7 @@ actor UpdateChecker {
             }
             // Always use the GCS permalink so the user gets the current
             // latest build at click-time, not a stale version-pinned URL.
+            // SelfUpdater reads the version from what actually arrives.
             let downloadURL = URL(string: "https://storage.googleapis.com/doublender-downloads/DoublEnder.dmg")!
 
             if latestVersion.compare(Self.numericVersion(currentVersion), options: .numeric) == .orderedDescending {
@@ -200,8 +201,98 @@ private func makeLightAlert() -> NSAlert {
     return alert
 }
 
+#if GCS_ENABLED
+private let updaterAppName = "DoublEnder Cloud"
+#else
+private let updaterAppName = "DoublEnder"
+#endif
+
+/// True while quitting would have to ask first, so nothing relaunches then.
+@MainActor
+private var recorderIsBusy: Bool {
+    let recorder = RecorderViewModel.shared
+    #if GCS_ENABLED
+    return recorder.isCurrentlyRecording || recorder.isCurrentlyUploading
+    #else
+    return recorder.isCurrentlyRecording
+    #endif
+}
+
+/// The window of the update under way, if there is one.
+@MainActor
+private var activeUpdateWindow: UpdateProgressWindow?
+
+/// Downloads and vets the update, replaces this copy and relaunches. Any failure
+/// leaves the installed app as it was and offers the download instead.
+@MainActor
+private func installUpdate(version: String, from downloadURL: URL) async {
+    let window = UpdateProgressWindow(title: "Updating \(updaterAppName)")
+    activeUpdateWindow = window
+    window.showProgress("Downloading \(updaterAppName) \(version)…", fraction: 0)
+    window.show()
+
+    let work = Task { @MainActor in
+        let installed = Bundle.main.bundleURL
+        let staged = try await SelfUpdater.stage(from: downloadURL, replacing: installed,
+                                                 expected: .running(.main)) { fraction in
+            Task { @MainActor in
+                let message = fraction < 1 ? "Downloading \(updaterAppName) \(version)…" : "Checking the download…"
+                window.showProgress(message, fraction: fraction < 1 ? fraction : nil)
+            }
+        }
+        do {
+            // A take started during the download, or one under way when this
+            // began, is left to finish: the update waits for it.
+            while recorderIsBusy {
+                window.showProgress("\(updaterAppName) will relaunch to update when your recording has finished.", fraction: nil)
+                try await Task.sleep(for: .seconds(1))
+            }
+            // No suspension from here to the quit, so no take can start in between.
+            try SelfUpdater.swap(staged: staged, into: installed)
+        } catch {
+            SelfUpdater.discard(staged)
+            throw error
+        }
+        SelfUpdater.discard(staged)
+        try? SelfUpdater.relaunch(installed)
+        NSApp.terminate(nil)
+    }
+    window.setCancelAction { work.cancel() }
+
+    let outcome = await work.result
+    window.close()
+    activeUpdateWindow = nil
+
+    guard !work.isCancelled, case .failure(let error) = outcome else { return }
+    let alert = makeLightAlert()
+    alert.messageText = "Couldn't Install the Update"
+    alert.informativeText = "\(error.localizedDescription) \(updaterAppName) has not changed. You can download the new version and install it yourself."
+    alert.addButton(withTitle: "Download")
+    alert.addButton(withTitle: "Not Now")
+    if alert.runModal() == .alertFirstButtonReturn {
+        NSWorkspace.shared.open(downloadURL)
+    }
+}
+
+/// Why this copy has to be replaced by hand, for the update prompt.
+private func explanation(of obstacle: SelfUpdater.Obstacle, at app: URL) -> String {
+    switch obstacle {
+    case .notARelease:
+        return "This copy isn't a signed release, so it can't replace itself."
+    case .readOnlyLocation:
+        return "This copy can't replace itself where it is. Move it to the Applications folder and open it from there."
+    case .notWritable:
+        return "You don't have permission to replace the copy at \(app.path)."
+    }
+}
+
 @MainActor
 func checkForUpdates(silent: Bool = false) async {
+    if let activeUpdateWindow {
+        activeUpdateWindow.bringForward()
+        return
+    }
+
     let result = await UpdateChecker().check()
 
     switch result {
@@ -209,43 +300,51 @@ func checkForUpdates(silent: Bool = false) async {
         guard !silent else { return }
         let alert = makeLightAlert()
         alert.messageText = "You're up to date"
-        alert.informativeText = "DoublEnder \(version) is the latest version."
+        alert.informativeText = "\(updaterAppName) \(version) is the latest version."
         alert.addButton(withTitle: "OK")
         alert.runModal()
 
     case .available(let version, let downloadURL, let releaseURL):
+        // The check at launch can answer after RECORD has been pressed, and
+        // nothing should appear on top of a take. The next launch offers it.
+        if silent && recorderIsBusy { return }
+
+        let app = Bundle.main.bundleURL
+        let requirement = SelfUpdater.Expected.running(.main).appRequirement
+        let obstacle = await Task.detached { SelfUpdater.obstacle(for: app, requirement: requirement) }.value
+
         let alert = makeLightAlert()
         alert.messageText = "Update Available"
-        #if GCS_ENABLED
-        // Cloud has no GitHub release page; one Download button only.
-        alert.informativeText = "DoublEnder Cloud \(version) is available."
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Not Now")
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(downloadURL)
+        alert.informativeText = "\(updaterAppName) \(version) is available."
+        if let obstacle {
+            alert.informativeText += " " + explanation(of: obstacle, at: app)
         }
+        alert.addButton(withTitle: obstacle == nil ? "Update and Relaunch" : "Download")
+        #if GCS_ENABLED
+        // Cloud has no GitHub release page, so no Release Notes button.
+        alert.addButton(withTitle: "Not Now")
+        let response = alert.runModal()
         _ = releaseURL
         #else
-        alert.informativeText = "DoublEnder \(version) is available."
-        alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Release Notes")
         alert.addButton(withTitle: "Not Now")
         let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(downloadURL)
-        } else if response == .alertSecondButtonReturn {
+        if response == .alertSecondButtonReturn {
             NSWorkspace.shared.open(releaseURL)
         }
         #endif
+        if response == .alertFirstButtonReturn {
+            if obstacle == nil {
+                await installUpdate(version: version, from: downloadURL)
+            } else {
+                NSWorkspace.shared.open(downloadURL)
+            }
+        }
 
     case .needsNewerMacOS(let version, let minimum, let installed):
         // Nothing this Mac can install, so the check at launch says nothing.
         guard !silent else { return }
-        #if GCS_ENABLED
-        let name = "DoublEnder Cloud"
-        #else
-        let name = "DoublEnder"
-        #endif
+        let name = updaterAppName
         let alert = makeLightAlert()
         alert.messageText = "\(name) \(version) needs macOS \(minimum)"
         alert.informativeText = "This Mac has macOS \(UpdateChecker.describe(ProcessInfo.processInfo.operatingSystemVersion)), "

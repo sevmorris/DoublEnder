@@ -17,7 +17,7 @@
 set -euo pipefail
 
 REPO="sevmorris/DoublEnder"
-# The Local download permalink: the file the in-app Download button fetches,
+# The Local download permalink: the file the in-app update fetches,
 # overwritten by every release.
 PERMALINK_BUCKET="gs://doublender-downloads"
 PERMALINK="$PERMALINK_BUCKET/DoublEnder.dmg"
@@ -146,7 +146,7 @@ ok "notarytool profile '$NOTARY_PROFILE' works"
 # The permalink is written after the GitHub release is public, so a gcloud that
 # is signed out, expired or signed in as another account would fail there: the
 # release would be on GitHub, telling every copy of the app to update, while the
-# permalink its Download button fetches still served the previous build, and
+# permalink its update fetches still served the previous build, and
 # neither the Cloud release nor the pruning would run. Describing the bucket
 # costs one API call and proves the credentials reach it.
 gcloud storage buckets describe "$PERMALINK_BUCKET" --format='value(name)' &>/dev/null \

@@ -19,6 +19,7 @@
 		2367AE382B10D902E7B40D1F /* InputRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */; };
 		3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */; };
 		4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
+		50749AE176482F3DCD0BD51C /* SelfUpdaterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */; };
 		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */; };
@@ -29,6 +30,7 @@
 		9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
 		98D7CBA7118AD909811A08D7 /* VersionFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */; };
 		A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */; };
+		AD3FF4B25E11F63BC5B598A6 /* SelfUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8C84AEB11CCD4AF3ADE23FB /* SelfUpdater.swift */; };
 		BB66D98FB9F2F69F8A4F7672 /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */; };
 		CB83A44567673D6FB4273023 /* UploadConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC710282351ED2B87482FED /* UploadConfirmationView.swift */; };
 		D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */; };
@@ -76,11 +78,13 @@
 		A03DF75C34A2F95D28C0C48C /* SharedAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SharedAssets.xcassets; sourceTree = "<group>"; };
 		A2C44036438AE9A6FC75EC29 /* Saira-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Saira-OFL.txt"; sourceTree = "<group>"; };
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
+		ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfUpdaterTests.swift; sourceTree = "<group>"; };
 		ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRanking.swift; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C757981FB56F560204E52311 /* CRC32CTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32CTests.swift; sourceTree = "<group>"; };
 		CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
+		D8C84AEB11CCD4AF3ADE23FB /* SelfUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfUpdater.swift; sourceTree = "<group>"; };
 		DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeter.swift; sourceTree = "<group>"; };
 		E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeterTests.swift; sourceTree = "<group>"; };
 		EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
@@ -132,6 +136,7 @@
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
 				1B8331841FA32B270066E651 /* NotificationService.swift */,
 				1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */,
+				D8C84AEB11CCD4AF3ADE23FB /* SelfUpdater.swift */,
 				93F681091F6D4AD00C951A0C /* SessionHeartbeat.swift */,
 				F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */,
 			);
@@ -159,6 +164,7 @@
 				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
 				8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */,
+				ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */,
 				FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */,
 				FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */,
 				7E69CCADF7F9187ED21667CB /* VoiceDetectorTests.swift */,
@@ -331,6 +337,7 @@
 				DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */,
 				0FBC87E4BA9DEEA32AF58343 /* RecorderViewModel.swift in Sources */,
 				BB66D98FB9F2F69F8A4F7672 /* RecoveryView.swift in Sources */,
+				AD3FF4B25E11F63BC5B598A6 /* SelfUpdater.swift in Sources */,
 				0C4BD68B4A3F8388A4F873AF /* SessionHeartbeat.swift in Sources */,
 				DE683368203B1791D5E8D132 /* UpdateChecker.swift in Sources */,
 				CB83A44567673D6FB4273023 /* UploadConfirmationView.swift in Sources */,
@@ -349,6 +356,7 @@
 				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
 				D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */,
+				50749AE176482F3DCD0BD51C /* SelfUpdaterTests.swift in Sources */,
 				79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */,
 				3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */,
 				890A8F8091CCEAC72C1579A2 /* VoiceDetectorTests.swift in Sources */,
