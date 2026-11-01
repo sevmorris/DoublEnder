@@ -146,6 +146,12 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertThrowsError(try SelfUpdater.app(in: folder))
     }
 
+    func testComparesOnlyTheNumericPartOfAVersion() {
+        XCTAssertEqual(SelfUpdater.numericVersion("2.8.0lr"), "2.8.0")
+        XCTAssertEqual(SelfUpdater.numericVersion("2.8.0"), "2.8.0")
+        XCTAssertEqual(SelfUpdater.numericVersion("1.8"), "1.8")
+    }
+
     // MARK: - Whether this copy can update
 
     func testADevelopmentBuildKeepsTheDownloadButton() throws {
