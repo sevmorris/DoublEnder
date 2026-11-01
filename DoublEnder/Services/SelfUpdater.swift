@@ -1,3 +1,9 @@
+// Shared verbatim across the sibling app repos (DoublEnder, WaxOnWaxOff,
+// ClipHack, FilmStrip, KeyVault, Magic Backup Machine, Barkeep, PasswordGen,
+// Dipstick). Keep the copies byte-identical: scripts/check-shared.sh compares
+// them and a release preflight fails when they drift. Anything app-specific
+// belongs in that app's UpdateChecker, which fills in a SelfUpdatePrompt.
+
 import AppKit
 import Security
 
@@ -13,11 +19,11 @@ import Security
 /// lets an app change one signed by its own team without the App Management
 /// permission, and it holds whoever makes the change responsible, which a
 /// helper left running after the app quits would blur.
-enum SelfUpdater {
+nonisolated enum SelfUpdater {
 
     /// Why this copy cannot replace itself. Each falls back to the Download
     /// button, which needs none of this.
-    enum Obstacle: Equatable {
+    nonisolated enum Obstacle: Equatable {
         /// A development build: it would be replacing itself, wherever Xcode
         /// put it, with something that is not what it was built from.
         case notARelease
@@ -28,7 +34,7 @@ enum SelfUpdater {
         case notWritable
     }
 
-    enum Failure: LocalizedError, Equatable {
+    nonisolated enum Failure: LocalizedError, Equatable {
         case http(Int)
         case untrusted
         case notNewer
@@ -45,8 +51,9 @@ enum SelfUpdater {
             case .untrusted:
                 return "The download isn't a signed release of this app, so nothing was installed."
             case .notNewer:
-                // A release is public moments before its DMG reaches the
-                // download link, and the link is cached for a minute.
+                // Where the download comes from a fixed link rather than the
+                // release itself, a release is public moments before its DMG
+                // reaches the link, and the link may be cached.
                 return "The new version is still being published. Try again in a few minutes."
             case .needsNewerMacOS(let minimum):
                 return "The new version needs macOS \(minimum)."
@@ -109,7 +116,7 @@ enum SelfUpdater {
     // MARK: - Vetting a new version
 
     /// What a download has to be to replace this copy.
-    struct Expected {
+    nonisolated struct Expected {
         var bundleID: String
         var installedVersion: String
         var appRequirement: String
@@ -133,26 +140,42 @@ enum SelfUpdater {
         #endif
     }
 
+    /// `"1.6.28lr"` → `"1.6.28"`: the part of a version that compares, without
+    /// a flavour suffix such as DoublEnder's `lr` and `cr`.
+    static func numericVersion(_ version: String) -> String {
+        String(version.prefix { $0.isNumber || $0 == "." })
+    }
+
     /// Everything that would leave a Mac with a worse app than it has: the
     /// update replaces the only copy, so an app that will not open here has to
-    /// be stopped now. The arm64-only builds that once shipped as universal
-    /// would have broken every Intel Mac this way.
+    /// be stopped now. The arm64-only builds of DoublEnder that once shipped as
+    /// universal would have broken every Intel Mac this way.
     static func vet(_ app: URL, against expected: Expected) throws {
         guard let bundle = Bundle(url: app),
               bundle.bundleIdentifier == expected.bundleID,
               isSigned(app, requirement: expected.appRequirement) else { throw Failure.untrusted }
 
         let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-        guard VersionFormatting.numericVersion(version)
-            .compare(VersionFormatting.numericVersion(expected.installedVersion), options: .numeric) == .orderedDescending
+        guard numericVersion(version)
+            .compare(numericVersion(expected.installedVersion), options: .numeric) == .orderedDescending
         else { throw Failure.notNewer }
 
-        if let minimum = (bundle.infoDictionary?["LSMinimumSystemVersion"] as? String).flatMap(UpdateChecker.macOSVersion),
-           !UpdateChecker.runs(on: expected.os, given: minimum) {
-            throw Failure.needsNewerMacOS(UpdateChecker.describe(minimum))
+        if let minimum = (bundle.infoDictionary?["LSMinimumSystemVersion"] as? String).flatMap(macOSVersion),
+           (expected.os.majorVersion, expected.os.minorVersion, expected.os.patchVersion)
+            < (minimum.majorVersion, minimum.minorVersion, minimum.patchVersion) {
+            throw Failure.needsNewerMacOS("\(minimum.majorVersion).\(minimum.minorVersion)")
         }
         guard bundle.executableArchitectures?.contains(where: { $0.intValue == expected.architecture }) == true
         else { throw Failure.wrongArchitecture }
+    }
+
+    /// "15", "15.0" or "15.2.1" as a version; nil for anything else.
+    private static func macOSVersion(_ string: String) -> OperatingSystemVersion? {
+        let numbers = string.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard (1...3).contains(numbers.count), !numbers.contains(nil) else { return nil }
+        return OperatingSystemVersion(majorVersion: numbers[0]!,
+                                      minorVersion: numbers.count > 1 ? numbers[1]! : 0,
+                                      patchVersion: numbers.count > 2 ? numbers[2]! : 0)
     }
 
     /// The one app at the top of a mounted release DMG, whatever it is named.
@@ -169,15 +192,15 @@ enum SelfUpdater {
     /// Downloads a release and leaves a vetted copy of its app on the same
     /// volume as `installed`, where the swap can be a rename. The caller
     /// disposes of it with `discard`.
-    static func stage(from url: URL, replacing installed: URL, expected: Expected,
+    static func stage(from request: URLRequest, replacing installed: URL, expected: Expected,
                       progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DoublEnderUpdate-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SelfUpdate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
 
         let dmg = scratch.appendingPathComponent("update.dmg")
-        try await UpdateDownload.fetch(url, to: dmg, progress: progress)
+        try await UpdateDownload.fetch(request, to: dmg, progress: progress)
         try Task.checkCancellation()
         let staged = try await Task.detached {
             try stage(diskImage: dmg, replacing: installed, expected: expected)
@@ -253,9 +276,8 @@ enum SelfUpdater {
         }
     }
 
-    /// Opens `app` once this process has gone, so two recorders never hold the
-    /// input at once. It gives up after a minute rather than linger if the quit
-    /// is somehow refused.
+    /// Opens `app` once this process has gone, so two copies never run at once.
+    /// It gives up after a minute rather than linger if the quit is somehow refused.
     static func relaunch(_ app: URL) throws {
         let script = """
             i=0
@@ -273,11 +295,173 @@ enum SelfUpdater {
     }
 }
 
+// MARK: - The prompt
+
+/// What an app tells the update flow. Everything else is the same in every app.
+@MainActor
+struct SelfUpdatePrompt {
+    var appName: String
+    var version: String
+    /// The DMG. Also what the Download button opens when this copy can't update itself.
+    var downloadURL: URL
+    /// How to fetch the DMG, when `downloadURL` alone won't do: a private
+    /// repository's asset needs a token. nil requests `downloadURL`.
+    var installRequest: URLRequest?
+    /// nil leaves out the Release Notes button.
+    var releaseURL: URL?
+    /// nil keeps the system's alert appearance.
+    var appearance: NSAppearance?
+    /// True while the app is doing something a relaunch would cut short.
+    var isBusy: @MainActor () -> Bool = { false }
+    /// Shown while the update waits for `isBusy` to clear.
+    var busyMessage = ""
+}
+
+/// The prompt, the progress window and the relaunch.
+@MainActor
+enum SelfUpdateFlow {
+    private static var activeWindow: UpdateProgressWindow?
+
+    /// True when an update is already under way, whose window is brought forward.
+    static func bringForward() -> Bool {
+        guard let activeWindow else { return false }
+        activeWindow.bringForward()
+        return true
+    }
+
+    /// Offers the update. `silent` is the check at launch, which can answer after
+    /// work has begun, and nothing should appear on top of that. The next launch
+    /// offers it again. Returns true when the user chose Not Now.
+    @discardableResult
+    static func offer(_ prompt: SelfUpdatePrompt, silent: Bool) async -> Bool {
+        if silent && prompt.isBusy() { return false }
+
+        let app = Bundle.main.bundleURL
+        let requirement = SelfUpdater.Expected.running(.main).appRequirement
+        let obstacle = await Task.detached { SelfUpdater.obstacle(for: app, requirement: requirement) }.value
+
+        let alert = makeAlert(prompt)
+        alert.messageText = "Update Available"
+        alert.informativeText = "\(prompt.appName) \(prompt.version) is available."
+        if let obstacle {
+            alert.informativeText += " " + explanation(of: obstacle, at: app)
+        }
+        alert.addButton(withTitle: obstacle == nil ? "Update and Relaunch" : "Download")
+        if prompt.releaseURL != nil {
+            alert.addButton(withTitle: "Release Notes")
+        }
+        alert.addButton(withTitle: "Not Now")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if obstacle == nil {
+                await install(prompt)
+            } else {
+                NSWorkspace.shared.open(prompt.downloadURL)
+            }
+        } else if response == .alertSecondButtonReturn, let releaseURL = prompt.releaseURL {
+            NSWorkspace.shared.open(releaseURL)
+        } else {
+            return true
+        }
+        return false
+    }
+
+    /// Downloads and vets the update, replaces this copy and relaunches. Any
+    /// failure leaves the installed app as it was and offers the download instead.
+    private static func install(_ prompt: SelfUpdatePrompt) async {
+        let window = UpdateProgressWindow(title: "Updating \(prompt.appName)", appearance: prompt.appearance)
+        activeWindow = window
+        let downloading = "Downloading \(prompt.appName) \(prompt.version)…"
+        window.showProgress(downloading, fraction: 0)
+        window.show()
+
+        let work = Task { @MainActor in
+            let installed = Bundle.main.bundleURL
+            let request = prompt.installRequest
+                ?? URLRequest(url: prompt.downloadURL, cachePolicy: .reloadIgnoringLocalCacheData)
+            let staged = try await SelfUpdater.stage(from: request, replacing: installed,
+                                                     expected: .running(.main)) { fraction in
+                Task { @MainActor in
+                    window.showProgress(fraction < 1 ? downloading : "Checking the download…",
+                                        fraction: fraction < 1 ? fraction : nil)
+                }
+            }
+            do {
+                // Work started during the download, or under way when this began,
+                // is left to finish. Once it has, its results are on screen and a
+                // relaunch would clear them, so that is the user's call.
+                var waited = false
+                repeat {
+                    while prompt.isBusy() {
+                        waited = true
+                        window.showProgress(prompt.busyMessage, fraction: nil)
+                        try await Task.sleep(for: .seconds(1))
+                    }
+                    if waited, !confirmRelaunch(prompt) { throw CancellationError() }
+                } while prompt.isBusy()
+                // No suspension from here to the quit, so no work can start in between.
+                try SelfUpdater.swap(staged: staged, into: installed)
+            } catch {
+                SelfUpdater.discard(staged)
+                throw error
+            }
+            SelfUpdater.discard(staged)
+            try? SelfUpdater.relaunch(installed)
+            NSApp.terminate(nil)
+        }
+        window.setCancelAction { work.cancel() }
+
+        let outcome = await work.result
+        window.close()
+        activeWindow = nil
+
+        guard !work.isCancelled, case .failure(let error) = outcome, !(error is CancellationError) else { return }
+        let alert = makeAlert(prompt)
+        alert.messageText = "Couldn't Install the Update"
+        alert.informativeText = "\(error.localizedDescription) \(prompt.appName) has not changed. You can download the new version and install it yourself."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Not Now")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(prompt.downloadURL)
+        }
+    }
+
+    private static func confirmRelaunch(_ prompt: SelfUpdatePrompt) -> Bool {
+        let alert = makeAlert(prompt)
+        alert.messageText = "\(prompt.appName) \(prompt.version) Is Ready to Install"
+        alert.informativeText = "Relaunch now to finish updating, or choose Not Now to update later."
+        alert.addButton(withTitle: "Relaunch Now")
+        alert.addButton(withTitle: "Not Now")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private static func makeAlert(_ prompt: SelfUpdatePrompt) -> NSAlert {
+        let alert = NSAlert()
+        if let appearance = prompt.appearance {
+            alert.window.appearance = appearance
+        }
+        return alert
+    }
+
+    /// Why this copy has to be replaced by hand.
+    private static func explanation(of obstacle: SelfUpdater.Obstacle, at app: URL) -> String {
+        switch obstacle {
+        case .notARelease:
+            return "This copy isn't a signed release, so it can't replace itself."
+        case .readOnlyLocation:
+            return "This copy can't replace itself where it is. Move it to the Applications folder and open it from there."
+        case .notWritable:
+            return "You don't have permission to replace the copy at \(app.path)."
+        }
+    }
+}
+
 // MARK: - Download
 
 /// A download with progress. The async `download(for:delegate:)` does not report
 /// any, so this keeps to the delegate calls, which run on the session's serial queue.
-private final class UpdateDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+nonisolated private final class UpdateDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let destination: URL
     private let progress: @Sendable (Double) -> Void
     private var continuation: CheckedContinuation<Void, Error>?
@@ -288,10 +472,9 @@ private final class UpdateDownload: NSObject, URLSessionDownloadDelegate, @unche
         self.progress = progress
     }
 
-    static func fetch(_ url: URL, to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
+    static func fetch(_ request: URLRequest, to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
         let delegate = UpdateDownload(destination: destination, progress: progress)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         let task = session.downloadTask(with: request)
         session.finishTasksAndInvalidate()
         try await withTaskCancellationHandler {
@@ -341,21 +524,21 @@ private final class UpdateDownload: NSObject, URLSessionDownloadDelegate, @unche
 /// This window is not modal, on purpose. The update runs on the main actor, and
 /// `checkForUpdates` is a main actor task: a modal run loop started inside one
 /// stops the main queue being serviced, so the download could never report back
-/// or finish. It is why the recorder stays usable, too, and why installing
-/// waits for a take rather than refusing to start.
+/// or finish. It is why the app stays usable, too, and why installing waits for
+/// its work rather than refusing to start.
 @MainActor
-final class UpdateProgressWindow: NSObject {
+private final class UpdateProgressWindow: NSObject {
     private let window: NSWindow
     private let label = NSTextField(wrappingLabelWithString: "")
     private let bar = NSProgressIndicator()
     private var onCancel: (() -> Void)?
 
-    init(title: String) {
+    init(title: String, appearance: NSAppearance?) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 120),
                           styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
         window.title = title
-        window.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = appearance
         window.isReleasedWhenClosed = false
         window.isExcludedFromWindowsMenu = true
 
@@ -395,8 +578,8 @@ final class UpdateProgressWindow: NSObject {
 
     func show() {
         window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
-        // `center()` always picks the primary screen; the recorder may be elsewhere.
-        let screen = NSApp.windows.first { $0 is FaceplateWindow }?.screen ?? NSScreen.main
+        // `center()` always picks the primary screen; the app may be on another.
+        let screen = NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.screen ?? NSScreen.main
         if let visible = screen?.visibleFrame {
             window.setFrameOrigin(NSPoint(x: visible.midX - window.frame.width / 2,
                                           y: visible.midY - window.frame.height / 2))
