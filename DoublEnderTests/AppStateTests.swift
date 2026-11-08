@@ -134,11 +134,18 @@ final class SessionDiagnosticsTests: XCTestCase {
     /// The flag the dashboard uses to trust the meter: false where the mixer
     /// falls back because the writer's mix of that layout wasn't measured.
     func testMeterMatchesFileOnlyForMeasuredLayouts() throws {
+        // AudioUnit_5_0: layout 153, five channels, not in the mixer's table.
         let unmeasured = SessionDiagnostics.InputInfo(
             transport: kAudioDeviceTransportTypeUSB, manufacturer: nil, name: nil,
-            format: try makeFormat(channels: 4, bits: 24, layout: nil)
+            format: try makeFormat(channels: 5, bits: 24, layout: channelLayout(tag: (153 << 16) | 5))
         )
         XCTAssertEqual(unmeasured.meterMatchesFile, false)
+        // The Neumann MT 48's 32 planar channels with no layout: summed.
+        let unlabelled = SessionDiagnostics.InputInfo(
+            transport: kAudioDeviceTransportTypeUSB, manufacturer: "Neumann", name: "MT 48",
+            format: try makeFormat(channels: 32, bits: 32, float: true, planar: true, layout: nil)
+        )
+        XCTAssertEqual(unlabelled.meterMatchesFile, true)
         let discrete = SessionDiagnostics.InputInfo(
             transport: kAudioDeviceTransportTypeUSB, manufacturer: nil, name: nil,
             format: try makeFormat(
