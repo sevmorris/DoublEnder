@@ -165,11 +165,12 @@ final class PCMSidecar {
     ///
     /// The output settings ask the writer for one channel, and it makes the
     /// main file mono itself, weighting each source channel by its label in
-    /// the format description's channel layout (`writerMixGains`). A layout
-    /// whose mix hasn't been measured falls back to `stereoPairGain` for a
-    /// pair and, for more channels, to what this did before it followed the
-    /// writer: interleaved channels averaged, planar input's channel 0. There
-    /// the meter and the file can differ.
+    /// the format description's channel layout (`writerMixGains`), or
+    /// summing them when there is no layout. A layout whose mix hasn't been
+    /// measured falls back to `stereoPairGain` for a pair and, for more
+    /// channels, to what this did before it followed the writer: interleaved
+    /// channels averaged, planar input's channel 0. There the meter and the
+    /// file can differ.
     static func normalizedMonoFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
@@ -266,6 +267,10 @@ final class PCMSidecar {
     ///
     ///   - One channel passes through, whatever its label.
     ///   - No layout on a pair: mixed as left and right.
+    ///   - No layout on three or more channels: each at 1, all summed.
+    ///     Measured from 3 to 32 channels, interleaved and planar, on
+    ///     macOS 26.7. An interface that reports many inputs without
+    ///     labelling them (the Neumann MT 48 gives 32) records every one.
     ///   - Left, Right: 0.707 each. Tags Stereo, StereoHeadphones and
     ///     Binaural mix the same way.
     ///   - LeftSurround, RightSurround: 0.5. Tag Quadraphonic is L R Ls Rs.
@@ -281,7 +286,9 @@ final class PCMSidecar {
         guard let layout = CMAudioFormatDescriptionGetChannelLayout(
             formatDesc, sizeOut: &layoutSize
         ) else {
-            return channels == 2 ? [stereoPairGain, stereoPairGain] : nil
+            return channels == 2
+                ? [stereoPairGain, stereoPairGain]
+                : [Float](repeating: 1, count: channels)
         }
         let tag = layout.pointee.mChannelLayoutTag
         let gains: [Float]?

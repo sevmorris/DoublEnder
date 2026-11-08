@@ -200,19 +200,20 @@ Any other format (`mBitsPerChannel` not 16/24/32, or `mFormatFlags` not matching
 
 ### The mono mix
 
-The output settings ask AVAssetWriter for one channel, and it makes the main file mono itself, with CoreAudio's downmix: each source channel is weighted by its label in the source format description's channel layout, and the results are summed. Measured on macOS 15 by writing each layout through the writer with the app's settings, and for an unlabelled pair on macOS 26.7 too:
+The output settings ask AVAssetWriter for one channel, and it makes the main file mono itself, with CoreAudio's downmix: each source channel is weighted by its label in the source format description's channel layout, and the results are summed. Measured on macOS 15 by writing each layout through the writer with the app's settings, for an unlabelled pair on macOS 26.7 too, and for three to 32 unlabelled channels on macOS 26.7:
 
 | Source channels | Weight in the mono mix |
 |---|---|
 | One channel, whatever its label | 1 |
 | A pair with no layout; Left, Right; tags Stereo, StereoHeadphones, Binaural | 0.707 each (−3 dB) |
+| Three or more channels with no layout | 1 each |
 | LeftSurround, RightSurround (tag Quadraphonic is L R Ls Rs) | 0.5 each |
 | Center, Mono, Unknown | 1 each |
 | Tag MidSide | mid 1, side 0 |
 | Discrete channels (tag DiscreteInOrder, or Discrete_*n* labels) | Discrete_0 1, the rest 0 |
 | Unused | 0 |
 
-Discrete channels map to the writer's outputs by number, so with one output only the channel labelled Discrete_0 is heard: a mic on another input of such a device records nothing. `PCMSidecar.writerMixGains` returns those weights for a format description and `normalizedMonoFloatSamples` applies them, so the sidecar, and a WAV recovered from it, carry the file's mix. `PCMSidecarTests` writes every layout in the table through the writer on each CI run and requires the two to peak within 0.1 dB of each other, so a change in Apple's mix fails the build. A layout not in the table falls back: a pair mixes as left and right, and more channels as before this followed the writer (interleaved channels averaged, planar input's channel 0), which can differ from the file.
+Discrete channels map to the writer's outputs by number, so with one output only the channel labelled Discrete_0 is heard: a mic on another input of such a device records nothing. Unlabelled channels are the opposite: every input is recorded, at its own level, and whatever else the device puts on its other channels is added in. The Neumann MT 48 delivers 32 planar Float32 channels with no layout. Up to 2.8.0 the meter, the sidecar and the voice detector read its channel 0 alone, so a mic on its second input recorded but read as silence and a "no voice" warning, and the dashboard flagged the meter as possibly not matching the file. `PCMSidecar.writerMixGains` returns those weights for a format description and `normalizedMonoFloatSamples` applies them, so the sidecar, and a WAV recovered from it, carry the file's mix. `PCMSidecarTests` writes every layout in the table through the writer on each CI run and requires the two to peak within 0.1 dB of each other, so a change in Apple's mix fails the build. A layout not in the table falls back: a pair mixes as left and right, and more channels as before this followed the writer (interleaved channels averaged, planar input's channel 0), which can differ from the file.
 
 The meter in the UI reads from `PCMSidecar.normalizedMonoFloatSamples` too, so it shows the level the file records. Up to 2.5.6 every multi-channel source was averaged (interleaved) or reduced to channel 0 (planar), so for an ordinary two-channel source the meter read 3 dB under the file: a mic duplicated on both channels at −0.92 dBFS showed −0.92 on the meter while clipping the WAV at full scale and taking the AAC to +2.1 dBFS. The meter now reaches full scale when the file does. See "Mono output" in §10.
 

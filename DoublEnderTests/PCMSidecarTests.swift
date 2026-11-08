@@ -173,13 +173,19 @@ final class PCMSidecarTests: XCTestCase {
                 kAudioChannelLabel_Discrete_0, kAudioChannelLabel_Discrete_1,
                 kAudioChannelLabel_Discrete_2, kAudioChannelLabel_Discrete_3
             )),
+            ("unlabelled 3", 3, nil),
+            ("unlabelled 4", 4, nil),
+            ("unlabelled 8", 8, nil),
         ]
         for (index, entry) in layouts.enumerated() {
+            // Unlabelled channels are summed at 1 each, so the tone on all of
+            // them would pass full scale at 0.25 from four channels up.
+            let level = min(0.25, 0.5 / Double(entry.channels))
             var patterns = (0..<entry.channels).map { lit in
-                (0..<entry.channels).map { $0 == lit ? 0.25 : 0 }
+                (0..<entry.channels).map { $0 == lit ? level : 0 }
             }
             if entry.channels > 1 {
-                patterns.append([Double](repeating: 0.25, count: entry.channels))
+                patterns.append([Double](repeating: level, count: entry.channels))
             }
             for (pattern, peaks) in patterns.enumerated() {
                 try assertMixMatchesWriter(
@@ -191,9 +197,30 @@ final class PCMSidecarTests: XCTestCase {
         }
     }
 
-    /// With no layout, more than two channels mix as they did before the
-    /// mixer followed the writer, whose mix of them hasn't been measured.
-    func testMoreThanTwoUnlabelledChannelsAreAveraged() throws {
+    /// The Neumann MT 48 delivers 32 planar Float32 channels with no layout.
+    /// The writer sums them, so a mic on any input reaches the file at its
+    /// own level, and the meter must see it there too: it used to read
+    /// planar input's channel 0 alone.
+    func testMixMatchesWriterForUnlabelledPlanarChannels() throws {
+        let channels = 32
+        let level: Float = 0.5 / Float(channels)
+        let patterns: [(name: String, lit: [Int])] = [
+            ("first", [0]), ("second", [1]), ("last", [channels - 1]),
+            ("first two", [0, 1]), ("all", Array(0..<channels)),
+        ]
+        for pattern in patterns {
+            let peaks = (0..<channels).map { pattern.lit.contains($0) ? level : 0 }
+            try assertMixMatchesWriter(
+                try planarToneBuffers(peaks: peaks),
+                fileName: "planar32-\(pattern.name).wav",
+                context: "32 unlabelled planar channels, tone on \(pattern.name)"
+            )
+        }
+    }
+
+    /// With no layout, three or more channels are summed at 1 each, as the
+    /// writer sums them (see the writer tests below).
+    func testMoreThanTwoUnlabelledChannelsAreSummed() throws {
         // One frame: +max, 0, -max/2 (as close as 24 bits allow).
         let bytes: [UInt8] = [
             0xFF, 0xFF, 0x7F,   // +8388607
@@ -203,6 +230,27 @@ final class PCMSidecarTests: XCTestCase {
         let buffer = try makePCMSampleBuffer(
             bytes: bytes, channels: 3, bitsPerChannel: 24, frameCount: 1
         )
+        let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
+        XCTAssertEqual(result?.count, 1)
+        let expected = Float(8_388_607) / 8_388_608.0 + 0 - 0.5
+        XCTAssertEqual(result?[0] ?? -99, expected, accuracy: 1e-6)
+    }
+
+    /// A layout whose writer mix hasn't been measured mixes three or more
+    /// channels as before the mixer followed the writer: interleaved
+    /// channels averaged.
+    func testUnmeasuredLayoutFallsBackToAveraging() throws {
+        let bytes: [UInt8] = [
+            0xFF, 0xFF, 0x7F,   // +8388607
+            0x00, 0x00, 0x00,   // 0
+            0x00, 0x00, 0xC0,   // -4194304
+        ]
+        let buffer = try makePCMSampleBuffer(
+            bytes: bytes, channels: 3, bitsPerChannel: 24, frameCount: 1,
+            channelLayout: channelLayout(tag: kAudioChannelLayoutTag_MPEG_3_0_A)
+        )
+        let formatDesc = try XCTUnwrap(CMSampleBufferGetFormatDescription(buffer))
+        XCTAssertNil(PCMSidecar.writerMixGains(for: formatDesc, channels: 3))
         let result = PCMSidecar.normalizedMonoFloatSamples(from: buffer)
         XCTAssertEqual(result?.count, 1)
         let expected = (Float(8_388_607) / 8_388_608.0 + 0 - 0.5) / 3
@@ -709,6 +757,73 @@ final class PCMSidecarTests: XCTestCase {
                 channels: [tone.map { $0 * left }, tone.map { $0 * right }],
                 presentationTimeStamp: CMTime(value: CMTimeValue(written), timescale: 48_000)
             ))
+            written += n
+        }
+        return buffers
+    }
+
+    /// One second of the tone as planar Float32 with no channel layout,
+    /// peaking on each channel at the matching entry of `peaks`. Built
+    /// without AVAudioFormat, which needs a layout for more than two
+    /// channels; the planes sit back to back in one block buffer.
+    private func planarToneBuffers(peaks: [Float]) throws -> [CMSampleBuffer] {
+        let rate = 48_000
+        let channels = peaks.count
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: Float64(rate),
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+                | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
+            mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 32, mReserved: 0
+        )
+        var formatDesc: CMAudioFormatDescription?
+        let formatStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
+            magicCookieSize: 0, magicCookie: nil, extensions: nil,
+            formatDescriptionOut: &formatDesc
+        )
+        guard formatStatus == noErr, let formatDesc else {
+            throw NSError(domain: "PCMSidecarTests", code: Int(formatStatus))
+        }
+
+        var buffers: [CMSampleBuffer] = []
+        var written = 0
+        while written < rate {
+            let n = min(1024, rate - written)
+            let byteCount = n * channels * MemoryLayout<Float>.size
+            guard let memory = malloc(byteCount) else {
+                throw NSError(domain: "PCMSidecarTests", code: -1)
+            }
+            let samples = memory.bindMemory(to: Float.self, capacity: n * channels)
+            for i in 0..<n {
+                let s = Float(sin(2 * Double.pi * 1_000 * Double(written + i) / Double(rate)))
+                for (channel, peak) in peaks.enumerated() {
+                    samples[channel * n + i] = s * peak
+                }
+            }
+            var blockBuffer: CMBlockBuffer?
+            let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault, memoryBlock: memory, blockLength: byteCount,
+                blockAllocator: kCFAllocatorMalloc,   // CMBlockBuffer will free() it
+                customBlockSource: nil, offsetToData: 0, dataLength: byteCount,
+                flags: 0, blockBufferOut: &blockBuffer
+            )
+            guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else {
+                free(memory)
+                throw NSError(domain: "PCMSidecarTests", code: Int(blockStatus))
+            }
+            var sampleBuffer: CMSampleBuffer?
+            let sampleStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+                allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
+                formatDescription: formatDesc, sampleCount: CMItemCount(n),
+                presentationTimeStamp: CMTime(value: CMTimeValue(written), timescale: 48_000),
+                packetDescriptions: nil, sampleBufferOut: &sampleBuffer
+            )
+            guard sampleStatus == noErr, let sampleBuffer else {
+                throw NSError(domain: "PCMSidecarTests", code: Int(sampleStatus))
+            }
+            buffers.append(sampleBuffer)
             written += n
         }
         return buffers
