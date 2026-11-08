@@ -35,14 +35,17 @@ Designed for podcast guests who shouldn't need to know anything about audio. No 
 - **One-button recording** to AAC (M4A, 256 kbps at 48 kHz, mono) or WAV (24-bit PCM, mono at the input device's native sample rate)
 - **Settings popover** (gear icon) — override the filename prefix, attach notes (written as file description metadata), or switch output format
 - **Input selector** — pick any system audio input from the mic dropdown
-- **Level meter** — lights up when audio is coming in so you know the mic is working (decorative; no gain control in the app)
+- **Level meter** — lights up when audio is coming in so you know the mic is working, at the level the file records (no gain control in the app)
+- **No-voice warning** — two minutes into a recording with no voice in it, or ten minutes after the last one, a pop-up floats over your call app, so a muted or wrong mic is caught early; it never stops or changes the recording
 - **No DSP processing** — what the mic captures is what hits the file (apart from the unavoidable AAC encode if you pick m4a)
 - **LCD-style timer** — seven-segment HH:MM:SS readout with visible ghost segments
 - **Save confirmation** — when a recording finishes, a confirmation dialog shows the saved filename (always visible, even if notifications are off)
 - **Native notifications** — if enabled in System Settings, a banner also appears with a Reveal in Finder action
 - **Quit protection** — ⌘Q during a recording prompts to save or discard before terminating
 - **Crash recovery** — if the app exits unexpectedly mid-record, the next launch re-wraps the recovery sidecar into a playable WAV (or you can delete it)
-- **Update checker** — Check for Updates… in the app menu polls GitHub releases for new versions
+- **Input changes** — if the mic disconnects mid-recording, the take is stopped and saved, and DoublEnder switches to another input and says which; a newly plugged-in USB input is offered as a switch
+- **Disk space guard** — a recording won't start without room for it, and one that runs the Desktop's disk low is stopped and saved, with the reason on its confirmation
+- **Updates** — DoublEnder checks for a new version at launch and from Check for Updates… in the app menu; Update and Relaunch installs it in place, waiting for a recording to finish first
 
 **Output:** `DoublEnder_<timestamp>.m4a` saved to your Desktop (or `.wav` if WAV is selected — 24-bit PCM, mono at the input device's native sample rate). The filename prefix is overridable from the settings popover.
 
