@@ -61,7 +61,8 @@ struct HelpView: View {
                     #if GCS_ENABLED
                     steps([
                         "Click the mic icon (left) to pick your input device. When you speak, the level meter lights up so you can see audio is coming in.",
-                        "Click the RECORD button to start. The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING lights up.",
+                        "Click the RECORD button. DoublEnder asks who is recording: type your name and click Start Recording. Your name becomes the file's name, and DoublEnder remembers it for next time.",
+                        "The timer counts up, the button fills deep orange-red, and the red LED marked RECORDING lights up.",
                         "Click the button again to stop. Your file saves to the Desktop and uploads automatically. The blue LED marked CLOUD indicates when the cloud connection is ready.",
                         "A confirmation dialog appears when the upload finishes. The local file stays on your Desktop as a backup."
                     ])
@@ -96,18 +97,32 @@ struct HelpView: View {
 
                 section("Settings") {
                     text("""
-                    Tap the gear icon (right of the record button) to open settings. \
+                    Tap the gear icon (right of the level meter) to open settings. \
                     The gear is disabled while recording — you can't change settings \
                     mid-session.
                     """)
-                    definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically.")
-                    definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info.")
-                    definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (24-bit PCM, uncompressed). Defaults to AAC.")
+                    #if GCS_ENABLED
+                    definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically. With cloud upload on, files are named after the name you give when you start recording instead, so this applies only with it off. Resets each time DoublEnder opens.")
+                    #else
+                    definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically. Resets each time DoublEnder opens.")
+                    #endif
+                    definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info. Not stored in WAV files, and not kept after DoublEnder quits.")
+                    definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (24-bit PCM, uncompressed). Defaults to AAC, and DoublEnder remembers your choice.")
                 }
 
                 dividerRow
 
                 section("Output File") {
+                    #if GCS_ENABLED
+                    text("""
+                    Recordings are saved to your Desktop under the name you give \
+                    when you start recording, as .m4a — AAC audio, 256 kbps, mono. \
+                    With cloud upload off, they're named DoublEnder_<date>.m4a, \
+                    with the prefix you set under Filename. If you pick WAV in \
+                    settings, the file is saved as .wav (24-bit PCM, \
+                    uncompressed) instead.
+                    """)
+                    #else
                     text("""
                     Recordings are saved to your Desktop as \
                     DoublEnder_<date>.m4a — AAC audio, 256 kbps, mono. If you \
@@ -115,15 +130,24 @@ struct HelpView: View {
                     PCM, uncompressed) instead. The prefix follows whatever \
                     you set under Filename.
                     """)
+                    #endif
                     text("""
                     When a recording finishes, a confirmation dialog appears with \
                     the saved filename. If notifications are enabled, a system \
                     banner also appears with a Reveal in Finder action.
                     """)
                     text("""
-                    The file is ready to send as-is. It will play in QuickTime, \
-                    VoiceNotes, and any podcast editing app.
+                    The file is ready to send as-is. It plays in QuickTime Player \
+                    and any podcast editing app.
                     """)
+                }
+
+                dividerRow
+
+                section("While You Record") {
+                    definition("No voice heard", "If two minutes of a recording go by with no voice in it, or ten minutes after the last one, a pop-up appears over your other apps. Check that the right microphone is selected and isn't muted, or stop if you're finished; OPEN DOUBLENDER brings the recorder forward. The recording carries on either way, and the pop-up goes away when DoublEnder hears a voice again. If a recording ends without a voice in it, its confirmation says so.")
+                    definition("Microphone disconnected", "If your microphone disconnects while you record, DoublEnder stops and saves the recording, switches to another input and tells you which. If it disconnects between recordings, DoublEnder switches and tells you the same way. Check the input before you record again.")
+                    definition("USB audio input detected", "When you plug in a USB audio device between recordings, DoublEnder offers to switch to it. Choose Switch if your microphone is connected through it, or Keep Current to stay where you are.")
                 }
 
                 #if GCS_ENABLED
@@ -135,7 +159,7 @@ struct HelpView: View {
                     after saving. A progress indicator runs during the upload and a \
                     confirmation dialog appears when it finishes.
                     """)
-                    definition("Connection status", "The blue LED marked CLOUD indicates cloud readiness: solid blue when the network is reachable and the embedded credential is present, off otherwise. You can still record offline — uploads will be retried with the same file when the connection returns.")
+                    definition("Connection status", "The blue LED marked CLOUD indicates cloud readiness: solid blue when the network is reachable and the embedded credential is present, off otherwise. You can still record offline: the file is saved to the Desktop, and the upload is tried a few more times. If it still fails, tap RETRY UPLOAD on the recorder once you're back online; DoublEnder doesn't retry by itself when the connection returns.")
                     definition("Local backup", "Your file is saved to the Desktop first, then uploaded. The local copy is never deleted automatically — keep or remove it as you prefer.")
                     definition("Pending uploads", "If an upload fails or is interrupted (network drop, app quit, retries exhausted), the next launch offers to retry it. The original file always stays on your Desktop until the upload succeeds.")
                     definition("Session status", "While you record, and for a few minutes after, your producer's dashboard shows how the session is going: the name you entered, whether you're recording or uploading, the app version, your Mac's model and macOS version, what kind of microphone you use and its audio format, whether a voice is being picked up, and how your last take ended. It never gets your audio, your Mac's or account's name, your file names, or the name of a Bluetooth headset or iPhone. Switching cloud features off stops it.")
@@ -149,7 +173,7 @@ struct HelpView: View {
                     text("""
                     DoublEnder won't let you lose a recording by mistake.
                     """)
-                    definition("Quitting mid-record", "Pressing ⌘Q while recording shows a confirmation. Choose Stop & Save to finalize the file, Quit Without Saving to discard it, or Cancel to keep going.")
+                    definition("Quitting mid-record", "Pressing ⌘Q or ⌘W while recording shows a confirmation. Choose Stop & Save to finalize the file, Quit Without Saving to discard it, or Cancel to keep going.")
                     definition("Crash recovery", "If the app exits unexpectedly while a recording is in progress, the next launch offers to recover the audio as a WAV file or delete it. If the original recording finalized cleanly before the crash, a Keep Saved option appears instead so the intact file is left untouched.")
                 }
 
