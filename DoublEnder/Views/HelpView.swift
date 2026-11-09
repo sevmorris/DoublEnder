@@ -102,7 +102,7 @@ struct HelpView: View {
                     mid-session.
                     """)
                     #if GCS_ENABLED
-                    definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically. With cloud upload on, files are named after the name you give when you start recording instead, so this applies only with it off. Resets each time DoublEnder opens.")
+                    definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically. With cloud upload on, files take the name you give when you start recording instead, so the field is greyed out until you switch cloud upload off. Resets each time DoublEnder opens.")
                     #else
                     definition("Filename", "Override the prefix on saved files. A timestamp suffix is always appended automatically. Resets each time DoublEnder opens.")
                     #endif
