@@ -445,6 +445,18 @@ struct FaceplateSettingsPopover: View {
                         .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
                         .fixedSize()
                 }
+                // The name prompt names the file outright (Cloud, upload on),
+                // so the prefix would be ignored. Disabled rather than hidden,
+                // so it reads as a setting that comes back with upload off,
+                // which the switch further down this popover does.
+                .disabled(viewModel.shouldPromptForRecordingName)
+                .opacity(viewModel.shouldPromptForRecordingName ? 0.45 : 1)
+                if viewModel.shouldPromptForRecordingName {
+                    Text("Files take the name you give when you start recording.")
+                        .font(.system(size: 11))
+                        .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             VStack(alignment: .leading, spacing: 5) {

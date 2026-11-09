@@ -267,18 +267,4 @@ struct RecorderMainPanel: View {
         let stem = RecorderViewModel.sanitizedRecordingName(from: field.stringValue)
         return stem.isEmpty ? nil : stem
     }
-
-    /// Consent step for builds with no name prompt (Local, and Cloud with
-    /// upload switched off). Same decision, without the field.
-    @MainActor
-    private static func runStartConfirmModal() -> Bool {
-        let alert = NSAlert()
-        alert.window.appearance = NSAppearance(named: .darkAqua)
-        alert.alertStyle = .informational
-        alert.messageText = "Start recording?"
-        alert.informativeText = "DoublEnder is ready and your input is set."
-        alert.addButton(withTitle: "Start Recording")
-        alert.addButton(withTitle: "Not Now").keyEquivalent = "\u{1b}"
-        return alert.runModal() == .alertFirstButtonReturn
-    }
 }
