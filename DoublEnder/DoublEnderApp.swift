@@ -149,14 +149,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // After the erase, because the content view brings up the VM. Before
         // SwiftUI's launch pass, because with no window on screen by then
         // SwiftUI would present the empty Settings scene.
+        #if GCS_ENABLED
+        // Cloud installs any update before the recorder exists. Its window is
+        // what SwiftUI finds on screen meanwhile.
+        LaunchUpdate.run { [weak self] checkAfterLaunch in
+            guard let self else { return }
+            self.showMainWindow()
+            self.checkForUpdatesAfterLaunch = checkAfterLaunch
+            self.launchUpdateDone = true
+            if self.didFinishLaunching { self.startUp() }
+        }
+        #else
         showMainWindow()
+        #endif
     }
 
+    #if GCS_ENABLED
+    /// The recorder is open, the launch update having installed nothing.
+    private var launchUpdateDone = false
+    /// applicationDidFinishLaunching has come, which may be before or after that.
+    private var didFinishLaunching = false
+    /// Whether the usual check after launch still has something to offer.
+    private var checkForUpdatesAfterLaunch = true
+    #endif
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if GCS_ENABLED
+        // Crash recovery and pending uploads wait for the recorder, and are
+        // the new version's to handle when an update relaunches the app.
+        didFinishLaunching = true
+        guard launchUpdateDone else { return }
+        #endif
+        startUp()
+    }
+
+    private func startUp() {
         #if GCS_ENABLED
         let recovered = runCrashRecoveryIfNeeded()
         runPendingUploadCheckIfNeeded()
         offerUploadOfRecoveredTake(recovered)
+        guard checkForUpdatesAfterLaunch else { return }
         #else
         runCrashRecoveryIfNeeded()
         #endif
@@ -193,6 +225,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (custom filename, notes) so the next launch starts fresh.
     /// Also wiped at `applicationWillFinishLaunching` to cover crashes.
     func applicationWillTerminate(_ notification: Notification) {
+        // Without a recorder there are no session settings beyond what
+        // applicationWillFinishLaunching already erased.
+        guard mainWindow != nil else { return }
         RecorderViewModel.shared.clearSessionSettings()
         // synchronize() has been a documented no-op since macOS 10.12 —
         // the OS flushes UserDefaults automatically. Removed (m6).
@@ -203,6 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// its own keep-uploading/quit-anyway intercept (FR-002) — the states are
     /// mutually exclusive, so at most one alert presents.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // No recorder yet (Cloud's launch update relaunching, or ⌘Q during it):
+        // nothing to ask about, and touching the VM would only build it.
+        guard mainWindow != nil else { return .terminateNow }
         if RecorderViewModel.shared.isCurrentlyRecording {
             presentRecordingInProgressAlert()
             return .terminateLater

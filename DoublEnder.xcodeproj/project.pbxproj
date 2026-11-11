@@ -20,6 +20,7 @@
 		3F4BBD10190EA50FF0CDB131 /* VersionFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0CE477A53E2CBD1BF56C9D /* VersionFormattingTests.swift */; };
 		4BC8A3348204A54CA22D9550 /* FaceplateDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FC5E96A4BBCC961A63DD2A /* FaceplateDesign.swift */; };
 		50749AE176482F3DCD0BD51C /* SelfUpdaterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */; };
+		51EBE56CF1802A8263F7FEB5 /* LaunchUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A9BA83E118BA475A640B32 /* LaunchUpdate.swift */; };
 		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */; };
@@ -86,6 +87,7 @@
 		CBBD7A35A5D1282289BEDBAF /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
 		D8C84AEB11CCD4AF3ADE23FB /* SelfUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfUpdater.swift; sourceTree = "<group>"; };
 		DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeter.swift; sourceTree = "<group>"; };
+		E4A9BA83E118BA475A640B32 /* LaunchUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchUpdate.swift; sourceTree = "<group>"; };
 		E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeterTests.swift; sourceTree = "<group>"; };
 		EA8EDFBEFEA598B9419DACF4 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
 		EBDA327BB738E9F05AA1691C /* InputRankingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRankingTests.swift; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 			isa = PBXGroup;
 			children = (
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
+				E4A9BA83E118BA475A640B32 /* LaunchUpdate.swift */,
 				1B8331841FA32B270066E651 /* NotificationService.swift */,
 				1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */,
 				D8C84AEB11CCD4AF3ADE23FB /* SelfUpdater.swift */,
@@ -331,6 +334,7 @@
 				DEFEF410E23AD80FD16C8CE5 /* FaceplateStateViews.swift in Sources */,
 				D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */,
 				2367AE382B10D902E7B40D1F /* InputRanking.swift in Sources */,
+				51EBE56CF1802A8263F7FEB5 /* LaunchUpdate.swift in Sources */,
 				A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */,
 				E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */,
 				9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */,
