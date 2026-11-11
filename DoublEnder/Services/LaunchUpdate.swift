@@ -134,14 +134,22 @@ final class LaunchUpdate {
 
     /// Opens the recorder, once. This window leaves the screen first: building the
     /// recorder can block the main thread on the microphone prompt (a first launch),
-    /// and "Checking for updates…" shouldn't sit behind it. It is only hidden until
-    /// the recorder is up, because closing the app's last window would quit it.
+    /// and "Checking for updates…" shouldn't sit behind it. The change reaches the
+    /// screen only when the run loop next goes idle, so the recorder waits for that;
+    /// the pause makes sure the run loop does.
+    ///
+    /// It turns transparent rather than ordering out: with no window on screen,
+    /// AppKit counts the last window as closed even without a close, and this app
+    /// then quits. It is closed once the recorder is up.
     private func finish(checkAfterLaunch: Bool) {
         guard !finished else { return }
         finished = true
-        window.hide()
-        launch(checkAfterLaunch)
-        window.close()
+        window.makeTransparent()
+        Task {
+            try? await Task.sleep(for: .milliseconds(100))
+            launch(checkAfterLaunch)
+            window.close()
+        }
     }
 
     /// The Cloud manifest check, or nil when it takes longer than `limit`.
@@ -209,10 +217,12 @@ private final class LaunchUpdateWindow: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// Off screen without closing, so it doesn't count as the last window closed.
-    func hide() {
+    /// Gone from the screen but still on it as far as AppKit knows, so it doesn't
+    /// count as the last window closed.
+    func makeTransparent() {
         bar.stopAnimation(nil)
-        window.orderOut(nil)
+        window.ignoresMouseEvents = true
+        window.alphaValue = 0
     }
 
     func close() {
