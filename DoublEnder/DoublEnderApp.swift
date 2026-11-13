@@ -18,12 +18,31 @@ private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", categor
 @main
 enum AppLauncher {
     static func main() {
+        // An update asking a staged copy whether it starts at all: it does.
+        UpdateSelfTest.exitIfAsked()
         if isHostingTests {
             TestHostApp.main()
-        } else {
-            DoublEnderApp.main()
+            return
         }
+        processStart = Date()
+        executableName = Bundle.main.infoDictionary?["CFBundleExecutable"] as? String
+        runningExecutable = Bundle.main.executableURL.flatMap(FileIdentity.init)
+        // Before anything else can fail: a version just installed that has
+        // started twice without staying up is replaced by the one before it.
+        let rollback = UpdateRollback.atLaunch(
+            runningVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
+            installed: Bundle.main.bundleURL, store: .app,
+            tools: .live(bundleID: Bundle.main.bundleIdentifier ?? ""))
+        if rollback == .rolledBack { exit(0) }
+        DoublEnderApp.main()
     }
+
+    /// When this run began, for the sweep of what earlier runs left.
+    nonisolated(unsafe) static var processStart = Date.distantPast
+    /// The running executable as the file system knew it at launch, so an
+    /// update can tell whether the app at its path is still this one.
+    nonisolated(unsafe) static var runningExecutable: FileIdentity?
+    nonisolated(unsafe) static var executableName: String?
 
     /// XCTest is already loaded when main() runs in a test host, and is never
     /// linked into the app itself. The session identifier is Xcode's own mark
@@ -134,6 +153,7 @@ struct DoublEnderApp: App {
 
 // MARK: - App Delegate
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: FaceplateWindow?
 
@@ -142,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         registerBundledFonts()
         NotificationService.shared.configure()
+        sweepUpdateLeftovers()
         // m5: clear session-scoped settings (custom filename) before the VM
         // is initialised — this is the only reliable path that also runs after
         // a crash or force-quit, where applicationWillTerminate never fires.
@@ -225,6 +246,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (custom filename, notes) so the next launch starts fresh.
     /// Also wiped at `applicationWillFinishLaunching` to cover crashes.
     func applicationWillTerminate(_ notification: Notification) {
+        // A clean quit is as healthy as a few seconds of recorder: a guest who
+        // quits at once must not count against the version.
+        if mainWindow != nil { Self.markUpdateHealthy() }
+        // A staged update waiting for its turn goes with the app.
+        UpdateCoordinator.shared.cleanUpForQuit()
         // Without a recorder there are no session settings beyond what
         // applicationWillFinishLaunching already erased.
         guard mainWindow != nil else { return }
@@ -238,20 +264,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// its own keep-uploading/quit-anyway intercept (FR-002) — the states are
     /// mutually exclusive, so at most one alert presents.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // No recorder yet (Cloud's launch update relaunching, or ⌘Q during it):
-        // nothing to ask about, and touching the VM would only build it.
-        guard mainWindow != nil else { return .terminateNow }
-        if RecorderViewModel.shared.isCurrentlyRecording {
+        // What there is to ask about comes from AppActivity, which an update
+        // reads too: it only replaces the app when there is nothing, so its
+        // quit never meets a question. With no recorder yet (Cloud's launch
+        // update relaunching, or ⌘Q during it) there is nothing to ask, and
+        // AppActivity does not build the recorder to find out.
+        switch AppActivity.shared.quitQuestion {
+        case .recording:
             presentRecordingInProgressAlert()
             return .terminateLater
-        }
-        #if GCS_ENABLED
-        if RecorderViewModel.shared.isCurrentlyUploading {
+        case .uploading:
+            #if GCS_ENABLED
             presentUploadInProgressAlert()
             return .terminateLater
+            #else
+            return .terminateNow
+            #endif
+        case nil:
+            // A download or a copy under way stops first, so the disk image is
+            // not left mounted and the copy not left behind.
+            if UpdateCoordinator.shared.cancelBeforeQuit(then: { NSApp.reply(toApplicationShouldTerminate: true) }) {
+                return .terminateLater
+            }
+            return .terminateNow
         }
-        #endif
-        return .terminateNow
     }
 
     /// ⌘W on the recorder routes through here (FaceplateWindow.performClose).
@@ -271,9 +307,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #endif
         window.delegate = self
         mainWindow = window
+        // The recorder exists from here on, so its takes and uploads count.
+        AppActivity.shared.recorder = { RecorderViewModel.shared.activityBlockers }
         // AppKit lists only titled windows in the Window menu by itself.
         NSApp.addWindowsItem(window, title: window.title, filename: false)
         window.makeKeyAndOrderFront(nil)
+        // A version just installed has shown it can stay up once its
+        // recorder has been on screen a few seconds; the one before it goes.
+        MainRunLoop.perform(after: Self.healthyAfter) { Self.markUpdateHealthy() }
+    }
+
+    /// How long the recorder stays up before a new version counts as healthy.
+    private static let healthyAfter: TimeInterval = 5
+
+    private static func markUpdateHealthy() {
+        UpdateRollback.markHealthy(
+            runningVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
+            store: .app, discard: { SelfUpdater.discard($0) })
+    }
+
+    /// What an update cut short in an earlier run: a mounted image, a download,
+    /// a staged copy. Taken off the journal here, before this run can stage
+    /// anything; the detaching and deleting happen off the main thread.
+    private func sweepUpdateLeftovers() {
+        let holders = UpdateSweep.takeLeftovers(store: .app)
+        let start = AppLauncher.processStart
+        let temporary = FileManager.default.temporaryDirectory
+        DispatchQueue.global(qos: .utility).async {
+            UpdateSweep.sweep(holders: holders, temporaryDirectory: temporary, processStart: start)
+        }
     }
 
     // MARK: - Quit-during-recording alert
@@ -288,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Quit Without Saving")   // .alertSecondButtonReturn
         alert.addButton(withTitle: "Cancel")                // .alertThirdButtonReturn
 
-        let response = alert.runModal()
+        let response = ModalGate.run { alert.runModal() }
         let vm = RecorderViewModel.shared
 
         switch response {
@@ -324,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Keep Uploading")   // .alertFirstButtonReturn (default: Return keeps the upload alive)
         alert.addButton(withTitle: "Quit Anyway")      // .alertSecondButtonReturn
 
-        let response = alert.runModal()
+        let response = ModalGate.run { alert.runModal() }
         NSApp.reply(toApplicationShouldTerminate: response != .alertFirstButtonReturn)
     }
     #endif
@@ -357,7 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.messageText = "Couldn't Check for Unsaved Recordings"
             alert.informativeText = "DoublEnder couldn't check the Desktop for recordings from a previous session: \(error.localizedDescription). Check that the Desktop is accessible and relaunch to retry."
             alert.addButton(withTitle: "OK")
-            alert.runModal()
+            ModalGate.run { alert.runModal() }
             return []
         }
 
@@ -468,9 +530,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window?.orderOut(nil)
         }
 
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
-        NSApp.runModal(for: window)
+        ModalGate.run {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSApp.runModal(for: window)
+        }
 
         if case .success(let url) = model.phase { return url }
         return nil

@@ -52,6 +52,9 @@ targets:
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
         CFBundleDisplayName: "$(BUNDLE_DISPLAY_NAME)"
         DefaultRecordingPrefix: "$(DEFAULT_RECORDING_PREFIX)"
+        # The updater runs a staged copy with --selftest before it replaces
+        # anything; only a copy that says it answers is asked (UpdateSelfTest).
+        UpdateSelfTest: true
 
   DoublEnderTests:
     type: bundle.unit-test

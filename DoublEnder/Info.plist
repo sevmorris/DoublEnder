@@ -30,5 +30,7 @@
 	<string>DoublEnder saves recordings to your Desktop and checks it for recordings left by a crash.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>DoublEnder needs microphone access to record audio.</string>
+	<key>UpdateSelfTest</key>
+	<true/>
 </dict>
 </plist>
