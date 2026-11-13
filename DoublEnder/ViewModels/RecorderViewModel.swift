@@ -297,6 +297,28 @@ class RecorderViewModel: ObservableObject {
     }
     #endif
 
+    /// What the recorder is in the middle of, for `AppActivity`: what a quit
+    /// asks about and an update waits for.
+    var activityBlockers: Set<AppActivity.Blocker> {
+        #if GCS_ENABLED
+        let uploading = isCurrentlyUploading
+        #else
+        let uploading = false
+        #endif
+        return Self.activityBlockers(isRecording: isCurrentlyRecording,
+                                     isFinalizing: isFinalizingRecording,
+                                     isUploading: uploading)
+    }
+
+    /// A take counts until its file is closed, not only while the state says
+    /// recording: the two end together today, and this keeps it so.
+    static func activityBlockers(isRecording: Bool, isFinalizing: Bool, isUploading: Bool) -> Set<AppActivity.Blocker> {
+        var blockers: Set<AppActivity.Blocker> = []
+        if isRecording || isFinalizing { blockers.insert(.recording) }
+        if isUploading { blockers.insert(.uploading) }
+        return blockers
+    }
+
     /// True when tapping RECORD will reliably produce a recording.
     /// Gates the RECORD button — STOP during an active recording is
     /// always allowed regardless, so the view should only consult this
@@ -613,9 +635,11 @@ class RecorderViewModel: ObservableObject {
         if InputRanking.isDockPort(audioEngine.inputCandidate(for: device)) { return }
         // User said "Keep Current" for this device earlier this session.
         if dismissedUSBDevices.contains(device.uniqueID) { return }
-        // Another alert is already on screen — the device will still appear
-        // in the picker; the user can switch manually after dismissing.
-        if isShowingModalAlert { return }
+        // Another dialog is already on screen, the view model's or anyone
+        // else's (the name prompt, a confirmation, the updater): the device
+        // will still appear in the picker; the user can switch manually after
+        // dismissing.
+        if isShowingModalAlert || ModalGate.isPresenting { return }
 
         // Refresh first-seen tracking so this device is timestamped — any
         // future launch with multiple USB devices will weight this one as
@@ -639,8 +663,11 @@ class RecorderViewModel: ObservableObject {
         // (force-quit only). runModal() spins its own nested event loop
         // independent of the parent window's style.
         isShowingModalAlert = true
-        let response = alert.runModal()
+        let shown = ModalGate.run(.prompt) { alert.runModal() }
         isShowingModalAlert = false
+        // Not shown: a dialog opened in between, or an update is replacing
+        // the app. The device is in the picker either way.
+        guard let response = shown else { return }
         if response == .alertFirstButtonReturn {
             // Defer to the next runloop tick so we're not running engine
             // teardown from inside the CoreAudio device-list listener's
@@ -699,6 +726,11 @@ class RecorderViewModel: ObservableObject {
     }
 
     private func requestPermissions() {
+        // The tests run inside this app and build the recorder. Asking here put
+        // the microphone prompt in front of the developer on every test run (an
+        // ad hoc build is a new app to privacy settings each time), and the
+        // answer was recorded against the app's own bundle identifier.
+        guard !AppLauncher.isHostingTests else { return }
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -758,6 +790,9 @@ class RecorderViewModel: ObservableObject {
     /// pre-recording name prompt pass the user's input here; other callers
     /// omit the argument and fall through to the timestamp scheme.
     func startRecording(nameOverride: String? = nil) {
+        // An update is replacing the app, and this process is about to quit:
+        // a take started now would be cut off with it.
+        guard !AppActivity.shared.isCommittingUpdate else { return }
         diskStopReason = nil
         remoteStopRequested = false
         currentTakeID = UUID().uuidString
@@ -1151,7 +1186,7 @@ class RecorderViewModel: ObservableObject {
         alert.informativeText = "\(reason). Your recording has been stopped and saved if possible. \(fallback)"
         alert.addButton(withTitle: "OK")
         isShowingModalAlert = true
-        alert.runModal()
+        ModalGate.run { alert.runModal() }
         isShowingModalAlert = false
     }
 
@@ -1165,7 +1200,7 @@ class RecorderViewModel: ObservableObject {
         alert.informativeText = "The selected input is no longer available. \(fallback)"
         alert.addButton(withTitle: "OK")
         isShowingModalAlert = true
-        alert.runModal()
+        ModalGate.run { alert.runModal() }
         isShowingModalAlert = false
     }
 
@@ -1374,6 +1409,12 @@ class RecorderViewModel: ObservableObject {
         status == 400 || status == 403
     }
 
+    /// A hop to the main queue that nothing waits for, for an upload's
+    /// bookkeeping. The queue is serial, so the hops land in the order sent.
+    private func onMainQueue(_ work: @escaping () -> Void) {
+        DispatchQueue.main.async { work() }
+    }
+
     /// Upload the saved local file via a resumable session, retrying with
     /// exponential backoff (2s, 4s, 8s). Each retry RESUMES from GCS's committed
     /// offset rather than restarting (FR-003). The pending record is persisted
@@ -1396,10 +1437,16 @@ class RecorderViewModel: ObservableObject {
 
         let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
         var attempt = 0
-        await MainActor.run { self.lastUploadError = nil }
+        // Nothing from here to the end of the transfer waits for the main
+        // queue: a modal dialog opened from one of its blocks ("Microphone
+        // disconnected", after the very stop that started this upload) holds
+        // it until someone clicks, and the upload must not sit behind that.
+        // These hops are fire-and-forget; the queue is serial, so they land
+        // in order, ahead of the state change that ends the upload.
+        onMainQueue { self.lastUploadError = nil }
 
         while true {
-            await MainActor.run { self.state = .uploading }
+            onMainQueue { self.state = .uploading }
             let attemptStart = Date()
             do {
                 // Establish or resume the resumable session. Once initiated, the
@@ -1448,7 +1495,7 @@ class RecorderViewModel: ObservableObject {
                 let elapsedText = String(format: "%.1fs", Date().timeIntervalSince(attemptStart))
                 // The same sanitized summary is all the heartbeat reports.
                 let uploadError = summary.status.map { "\(summary.label) \($0)" } ?? summary.label
-                await MainActor.run { self.lastUploadError = uploadError }
+                onMainQueue { self.lastUploadError = uploadError }
                 // Deterministic failures (integrity mismatch, credential/signing)
                 // won't fix by re-sending — fail now, keep the local file.
                 let nonRetryable = (error as? Uploader.UploaderError)?.isNonRetryable ?? false

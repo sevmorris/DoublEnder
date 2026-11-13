@@ -262,7 +262,9 @@ struct RecorderMainPanel: View {
 
         DispatchQueue.main.async { alert.window.makeFirstResponder(field) }
 
-        let response = alert.runModal()
+        // Through the gate: while the prompt is up the guest is about to
+        // record, and an update must not replace the app under them.
+        let response = ModalGate.run { alert.runModal() }
         guard response == .alertFirstButtonReturn else { return nil }
         let stem = RecorderViewModel.sanitizedRecordingName(from: field.stringValue)
         return stem.isEmpty ? nil : stem

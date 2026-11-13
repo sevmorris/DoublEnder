@@ -22,6 +22,9 @@ actor UpdateChecker {
         case available(version: String, downloadURL: URL, releaseURL: URL)
         /// Newer than this build, but it needs a newer macOS than this Mac has.
         case needsNewerMacOS(version: String, minimum: String, installed: String)
+        /// Cloud: newer than this build, but its rollout is paused. Nothing
+        /// installs it unasked, and Check for Updates… says it is on hold.
+        case onHold(version: String)
         case error(String)
     }
 
@@ -133,6 +136,37 @@ actor UpdateChecker {
         /// Written by release-cloud-lib.sh from the built app; absent from
         /// manifests published before it.
         let minimumSystemVersion: String?
+        /// Set by release-cloud-lib.sh's `pause` to hold a rollout. Copies from
+        /// before it ignore the key, which is why a pause also points the
+        /// manifest back at the previous version.
+        let paused: Bool?
+    }
+
+    /// What a Cloud manifest means for a copy at `installedVersion` on `os`.
+    nonisolated static func cloudResult(manifestData data: Data, installedVersion: String,
+                                        os: OperatingSystemVersion) -> Result {
+        let manifest: CloudManifest
+        do {
+            manifest = try JSONDecoder().decode(CloudManifest.self, from: data)
+        } catch {
+            return .error(error.localizedDescription)
+        }
+        guard !installedVersion.isEmpty else { return .error("Could not read app version.") }
+        guard let downloadURL = URL(string: manifest.url) else {
+            return .error("Invalid download URL in manifest.")
+        }
+        guard numericVersion(manifest.version).compare(numericVersion(installedVersion), options: .numeric) == .orderedDescending else {
+            return .upToDate(version: installedVersion)
+        }
+        // As for the public build: a guest's Mac below the minimum is told
+        // so, rather than offered a DMG whose app will not open there.
+        if let minimum = manifest.minimumSystemVersion.flatMap(macOSVersion), !runs(on: os, given: minimum) {
+            return .needsNewerMacOS(version: manifest.version, minimum: describe(minimum), installed: installedVersion)
+        }
+        if manifest.paused == true {
+            return .onHold(version: manifest.version)
+        }
+        return .available(version: manifest.version, downloadURL: downloadURL, releaseURL: downloadURL)
     }
 
     /// Cloud build: read a small JSON manifest published next to the DMG
@@ -161,27 +195,8 @@ actor UpdateChecker {
                 return .error("Update check failed (HTTP \(statusCode)). Try again later.")
             }
 
-            let manifest = try JSONDecoder().decode(CloudManifest.self, from: data)
-            let currentVersion = installedVersion
-            guard !currentVersion.isEmpty else { return .error("Could not read app version.") }
-            guard let downloadURL = URL(string: manifest.url) else {
-                return .error("Invalid download URL in manifest.")
-            }
-
-            if Self.numericVersion(manifest.version).compare(Self.numericVersion(currentVersion), options: .numeric) == .orderedDescending {
-                // As for the public build: a guest's Mac below the minimum is told
-                // so, rather than offered a DMG whose app will not open there.
-                if let minimum = manifest.minimumSystemVersion.flatMap(Self.macOSVersion),
-                   !Self.runs(on: ProcessInfo.processInfo.operatingSystemVersion, given: minimum) {
-                    return .needsNewerMacOS(version: manifest.version, minimum: Self.describe(minimum),
-                                            installed: currentVersion)
-                }
-                return .available(version: manifest.version,
-                                  downloadURL: downloadURL,
-                                  releaseURL: downloadURL)
-            } else {
-                return .upToDate(version: currentVersion)
-            }
+            return Self.cloudResult(manifestData: data, installedVersion: installedVersion,
+                                    os: ProcessInfo.processInfo.operatingSystemVersion)
         } catch {
             return .error(error.localizedDescription)
         }
@@ -189,83 +204,16 @@ actor UpdateChecker {
     #endif
 }
 
-/// Show an update dialog. When `silent` is true (launch check), only prompt if
-/// an update is actually available — don't bother the user with "you're up to date".
-/// Force secondary alerts into the dark "aqua" appearance regardless of
-/// the system setting — keeps every non-primary surface on the same dark
-/// palette as the SwiftUI dialogs.
-@MainActor
-private func makeLightAlert() -> NSAlert {
-    let alert = NSAlert()
-    alert.window.appearance = NSAppearance(named: .darkAqua)
-    return alert
-}
-
 #if GCS_ENABLED
-private let updaterAppName = "DoublEnder Cloud"
+let updaterAppName = "DoublEnder Cloud"
 #else
-private let updaterAppName = "DoublEnder"
+let updaterAppName = "DoublEnder"
 #endif
 
-/// True while quitting would have to ask first, so nothing relaunches then.
-@MainActor
-private var recorderIsBusy: Bool {
-    let recorder = RecorderViewModel.shared
-    #if GCS_ENABLED
-    return recorder.isCurrentlyRecording || recorder.isCurrentlyUploading
-    #else
-    return recorder.isCurrentlyRecording
-    #endif
-}
-
+/// Check for Updates…, and the check after launch (`silent`), which says
+/// nothing unless there is an update and opens no dialog over work in progress.
+/// `UpdateCoordinator` runs it.
 @MainActor
 func checkForUpdates(silent: Bool = false) async {
-    if SelfUpdateFlow.bringForward() { return }
-
-    let result = await UpdateChecker().check()
-
-    switch result {
-    case .upToDate(let version):
-        guard !silent else { return }
-        let alert = makeLightAlert()
-        alert.messageText = "You're up to date"
-        alert.informativeText = "\(updaterAppName) \(version) is the latest version."
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-
-    case .available(let version, let downloadURL, let releaseURL):
-        #if GCS_ENABLED
-        // Cloud has no GitHub release page, so no Release Notes button.
-        let notes: URL? = nil
-        _ = releaseURL
-        let busyMessage = "\(updaterAppName) can update when your recording has finished uploading."
-        #else
-        let notes: URL? = releaseURL
-        let busyMessage = "\(updaterAppName) can update when your recording has finished."
-        #endif
-        await SelfUpdateFlow.offer(SelfUpdatePrompt(appName: updaterAppName, version: version,
-                                                    downloadURL: downloadURL, releaseURL: notes,
-                                                    appearance: NSAppearance(named: .darkAqua),
-                                                    isBusy: { recorderIsBusy }, busyMessage: busyMessage),
-                                   silent: silent)
-
-    case .needsNewerMacOS(let version, let minimum, let installed):
-        // Nothing this Mac can install, so the check at launch says nothing.
-        guard !silent else { return }
-        let name = updaterAppName
-        let alert = makeLightAlert()
-        alert.messageText = "\(name) \(version) needs macOS \(minimum)"
-        alert.informativeText = "This Mac has macOS \(UpdateChecker.describe(ProcessInfo.processInfo.operatingSystemVersion)), "
-            + "so \(name) \(installed) is the newest version it can run."
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-
-    case .error(let message):
-        guard !silent else { return }
-        let alert = makeLightAlert()
-        alert.messageText = "Update Check Failed"
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
+    await UpdateCoordinator.shared.checkForUpdates(silent: silent)
 }

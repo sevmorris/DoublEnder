@@ -154,8 +154,10 @@ private enum ThemedConfirmation {
         window.level = .modalPanel
         centerOnAppScreen(window)
 
-        window.makeKeyAndOrderFront(nil)
-        NSApp.runModal(for: window)
+        ModalGate.run {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.runModal(for: window)
+        }
     }
 
     /// Size `window` to its content and centre it on the same screen that the
@@ -424,8 +426,10 @@ enum PendingUploadPrompt {
         window.level = .modalPanel
         UploadConfirmation.centerOnAppScreen(window)
 
-        window.makeKeyAndOrderFront(nil)
-        NSApp.runModal(for: window)
+        ModalGate.run {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.runModal(for: window)
+        }
         return choseUpload
     }
 }

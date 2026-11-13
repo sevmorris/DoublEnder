@@ -79,6 +79,8 @@ final class RecoveryModel: ObservableObject {
         phase = .working
         let sidecar = sidecarURL
         let mainFile = mainFileURL
+        // Until the WAV is whole, a relaunch would leave half of one.
+        AppActivity.shared.begin(.recovering)
 
         DispatchQueue.global(qos: .userInitiated).async {
             let outcome: Phase
@@ -92,7 +94,10 @@ final class RecoveryModel: ObservableObject {
                 // Failure — leave the sidecar in place so nothing is lost.
                 outcome = .failure(error.localizedDescription)
             }
-            DispatchQueue.main.async { self.phase = outcome }
+            DispatchQueue.main.async {
+                AppActivity.shared.end(.recovering)
+                self.phase = outcome
+            }
         }
     }
 
