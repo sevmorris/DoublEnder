@@ -414,12 +414,21 @@ final class SelfUpdaterTests: XCTestCase {
 
     private func stageFromStub(_ behaviour: StubDownload.Behaviour,
                                limits: SelfUpdater.DownloadLimits = SelfUpdater.DownloadLimits()) async throws -> URL {
+        try await SelfUpdaterTests.stageFromStub(behaviour, replacing: folder.appendingPathComponent("Installed.app"),
+                                                 expected: expected(), limits: limits)
+    }
+
+    /// Takes only Sendable values, so a task can run it without capturing the
+    /// test case, which a test target in Swift 6 mode refuses.
+    private static func stageFromStub(_ behaviour: StubDownload.Behaviour, replacing installed: URL,
+                                      expected: SelfUpdater.Expected,
+                                      limits: SelfUpdater.DownloadLimits) async throws -> URL {
         StubDownload.behaviour = behaviour
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubDownload.self]
         let request = URLRequest(url: URL(string: "https://downloads.doublender.test/update.dmg")!)
-        return try await SelfUpdater.stage(from: request, replacing: folder.appendingPathComponent("Installed.app"),
-                                           expected: expected(), limits: limits, configuration: configuration) { _ in }
+        return try await SelfUpdater.stage(from: request, replacing: installed, expected: expected,
+                                           limits: limits, configuration: configuration) { _ in }
     }
 
     private func leftoverScratchFolders() throws -> [String] {
@@ -471,7 +480,12 @@ final class SelfUpdaterTests: XCTestCase {
 
     func testCancellingStopsADownload() async throws {
         let before = try leftoverScratchFolders()
-        let staging = Task { try await self.stageFromStub(.stall, limits: SelfUpdater.DownloadLimits(stallTimeout: 60)) }
+        let installed = folder.appendingPathComponent("Installed.app")
+        let expected = expected()
+        let staging = Task {
+            try await SelfUpdaterTests.stageFromStub(.stall, replacing: installed, expected: expected,
+                                                     limits: SelfUpdater.DownloadLimits(stallTimeout: 60))
+        }
         try await Task.sleep(for: .milliseconds(300))
         let started = Date()
         staging.cancel()
