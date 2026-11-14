@@ -271,7 +271,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// its own keep-uploading/quit-anyway intercept (FR-002) — the states are
     /// mutually exclusive, so at most one alert presents.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        quitReply()
+        // Read now: the quit event is the current Apple event only while this runs.
+        quitIsForSystem = QuitDuringTake.isSystemQuit(reason: Self.currentQuitReason())
+        return quitReply()
+    }
+
+    /// The Mac is logging out, restarting or shutting down: the app goes, as
+    /// asked, whatever it would otherwise stay open for.
+    private var quitIsForSystem = false
+
+    /// Why the quit event in hand was sent, when the system says.
+    private static func currentQuitReason() -> OSType? {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == AEEventClass(kCoreEventClass),
+              event.eventID == AEEventID(kAEQuitApplication),
+              let reason = event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))
+                ?? event.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason)) else { return nil }
+        return reason.typeCodeValue != 0 ? reason.typeCodeValue : reason.enumCodeValue
     }
 
     private func quitReply() -> NSApplication.TerminateReply {
@@ -359,21 +375,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Recording in progress"
-        alert.informativeText = "Stopping now will save what has been recorded so far. Quitting without saving will lose the current recording."
+        let vm = RecorderViewModel.shared
+        #if GCS_ENABLED
+        let staysToUpload = vm.cloudUploadEnabled && !quitIsForSystem
+        #else
+        let staysToUpload = false
+        #endif
+        alert.informativeText = QuitDuringTake.message(appName: updaterAppName, staysToUpload: staysToUpload)
         alert.addButton(withTitle: "Stop & Save")           // .alertFirstButtonReturn
         alert.addButton(withTitle: "Quit Without Saving")   // .alertSecondButtonReturn
         alert.addButton(withTitle: "Cancel")                // .alertThirdButtonReturn
 
         let response = ModalGate.run { alert.runModal() }
-        let vm = RecorderViewModel.shared
+        let forSystem = quitIsForSystem
 
         switch QuitDuringTake.action(for: response,
                                      takeInProgress: AppActivity.shared.quitQuestion == .recording) {
         case .stopThenQuit:
             // Finalize the writer, then continue termination once the file
-            // is closed.
-            vm.stopRecording {
-                NSApp.reply(toApplicationShouldTerminate: true)
+            // is closed — unless the take is now uploading (Cloud), which the
+            // app stays open for.
+            vm.stopRecording { [weak self] in
+                let uploading = AppActivity.shared.quitQuestion == .uploading
+                let quits = QuitDuringTake.quitsAfterStop(uploading: uploading, forSystem: forSystem)
+                if !quits {
+                    // In front, so the guest sees why it is still open.
+                    NSApp.activate(ignoringOtherApps: true)
+                    self?.mainWindow?.makeKeyAndOrderFront(nil)
+                }
+                NSApp.reply(toApplicationShouldTerminate: quits)
             }
         case .discardThenQuit:
             // Cancel the writer and drop the partial file before quitting.
@@ -614,6 +644,38 @@ enum QuitDuringTake {
         case stay
         /// Nothing left to stop or discard: decide the quit afresh.
         case askAgain
+    }
+
+    /// The question's text. In Cloud with upload on, Stop & Save no longer
+    /// quits: the take uploads, and the app stays open for it.
+    static func message(appName: String, staysToUpload: Bool) -> String {
+        if staysToUpload {
+            return "Stop & Save saves what has been recorded so far, and \(appName) stays open to upload it. "
+                + "Quitting without saving will lose the current recording."
+        }
+        return "Stopping now will save what has been recorded so far. "
+            + "Quitting without saving will lose the current recording."
+    }
+
+    /// After Stop & Save has closed the file: whether the quit goes ahead.
+    ///
+    /// Cloud's upload starts the moment the file is closed, and the app used to
+    /// quit right then, so the take waited on the Desktop for the next launch
+    /// to offer it, which may be days, while the producer waited for it. The
+    /// app now stays open and uploads; quitting again asks about the upload.
+    /// A logout, restart or shutdown still goes ahead, as the system asked:
+    /// the take is recorded as pending and the next launch offers it.
+    static func quitsAfterStop(uploading: Bool, forSystem: Bool) -> Bool {
+        !uploading || forSystem
+    }
+
+    /// The reasons the system gives when it quits apps for a logout, a restart
+    /// or a shutdown (`kAEQuitReason`). A quit the person asked for has none.
+    static func isSystemQuit(reason: OSType?) -> Bool {
+        guard let reason else { return false }
+        let system: Set<OSType> = [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog,
+                                   kAERestart, kAEShutDown, kAEQuitAll]
+        return system.contains(reason)
     }
 
     /// `response` is nil when the question could not open (an update is

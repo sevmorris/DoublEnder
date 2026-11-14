@@ -395,7 +395,7 @@ The take can end while the question is up: the producer stops it from the dashbo
 
 There is deliberately **no** "wait for the upload to finish" option, so a stalled upload can never hang quit. The recording is already safe on the Desktop, and the pending-upload record was persisted before initiation — quitting only defers the upload to the next-launch prompt, which resumes from the committed offset (§8).
 
-**Stop & Save in Cloud** does not reach that question: the app quits as soon as the file is closed, which is the moment the upload starts. The take is recorded as pending first, on the main thread (§8, "The pending record"), so the next launch offers it.
+**Stop & Save in Cloud** does not quit while the take uploads. The upload starts the moment the file is closed, and the app used to quit right then, so the take waited on the Desktop for the next launch, which might be days, while the producer waited for it. Now, with upload on, the question says that Stop & Save keeps the app open to upload, and when the file is closed and the upload has started, the quit is cancelled (`QuitDuringTake.quitsAfterStop`) and the recorder comes to the front showing the upload. Quitting again asks "Upload in progress", as above. With upload off, or nothing captured, it quits as before. A logout, restart or shutdown (`kAEQuitReason` on the quit event) is not held up: it quits once the file is closed, and the take, recorded as pending before the upload started (§8, "The pending record"), is offered at the next launch.
 
 ### Disk space fail-closed
 

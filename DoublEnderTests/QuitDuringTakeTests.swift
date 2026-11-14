@@ -29,4 +29,40 @@ final class QuitDuringTakeTests: XCTestCase {
         XCTAssertEqual(QuitDuringTake.action(for: nil, takeInProgress: true), .stay)
         XCTAssertEqual(QuitDuringTake.action(for: nil, takeInProgress: false), .stay)
     }
+
+    // MARK: - Cloud: staying open to upload
+
+    /// The take uploads now: the app stays open for it, and quitting again
+    /// asks about the upload.
+    func testStopAndSaveStaysOpenWhileTheTakeUploads() {
+        XCTAssertFalse(QuitDuringTake.quitsAfterStop(uploading: true, forSystem: false))
+    }
+
+    /// Nothing to upload (upload off, Local, nothing captured): it quits, as before.
+    func testStopAndSaveQuitsWithNothingToUpload() {
+        XCTAssertTrue(QuitDuringTake.quitsAfterStop(uploading: false, forSystem: false))
+        XCTAssertTrue(QuitDuringTake.quitsAfterStop(uploading: false, forSystem: true))
+    }
+
+    /// A logout, restart or shutdown is not held up: the take is recorded as
+    /// pending, and the next launch offers it.
+    func testTheSystemQuittingIsNotHeldUp() {
+        XCTAssertTrue(QuitDuringTake.quitsAfterStop(uploading: true, forSystem: true))
+    }
+
+    func testOnlyTheSystemsReasonsCountAsTheSystemQuitting() {
+        for reason in [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog,
+                       kAERestart, kAEShutDown, kAEQuitAll] {
+            XCTAssertTrue(QuitDuringTake.isSystemQuit(reason: reason), "\(reason)")
+        }
+        XCTAssertFalse(QuitDuringTake.isSystemQuit(reason: nil))
+        XCTAssertFalse(QuitDuringTake.isSystemQuit(reason: kAEQuitApplication))
+    }
+
+    /// The question says what Stop & Save will do.
+    func testTheQuestionSaysTheAppStaysOpenToUpload() {
+        XCTAssertTrue(QuitDuringTake.message(appName: "DoublEnder Cloud", staysToUpload: true)
+            .contains("DoublEnder Cloud stays open to upload it"))
+        XCTAssertFalse(QuitDuringTake.message(appName: "DoublEnder", staysToUpload: false).contains("upload"))
+    }
 }
