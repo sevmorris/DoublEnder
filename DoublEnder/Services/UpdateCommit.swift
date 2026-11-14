@@ -157,3 +157,24 @@ extension UpdateCommit {
             })
     }
 }
+
+extension UpdateCommit {
+    /// The install as the app quits, for a copy staged behind the recorder
+    /// (`UpdateCoordinator.installAtQuit`). The same steps, less three that a
+    /// quit already settles: nothing is asked about what is under way (the quit
+    /// has asked, and is ending it), nothing is arranged to reopen the app
+    /// (the guest quit it), and nothing quits (it is quitting). The staged copy
+    /// is still vetted again, the app at the path must still be this one, and
+    /// the previous version goes on probation, so the next launch can go back.
+    @MainActor
+    static func liveAtQuit(store: UpdateStateStore, activity: AppActivity, expected: SelfUpdater.Expected,
+                           runningExecutable: FileIdentity? = AppLauncher.runningExecutable,
+                           executableName: String? = AppLauncher.executableName) -> UpdateCommit {
+        var commit = live(store: store, activity: activity, expected: expected,
+                          runningExecutable: runningExecutable, executableName: executableName)
+        commit.isBlocked = { false }
+        commit.prepareRelaunch = { _ in Undo(cancel: {}) }
+        commit.terminate = {}
+        return commit
+    }
+}

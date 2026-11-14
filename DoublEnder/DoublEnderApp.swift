@@ -207,14 +207,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func startUp() {
         #if GCS_ENABLED
         let recovered = runCrashRecoveryIfNeeded()
-        runPendingUploadCheckIfNeeded()
-        offerUploadOfRecoveredTake(recovered)
-        guard checkForUpdatesAfterLaunch else { return }
+        offerWaitingUploads(recovered: recovered)
+        // A launch install that ran out of time or failed, or a check that
+        // did, is finished behind the recorder and installed at quit, rather
+        // than offered in a prompt the guest has to answer. Only what this copy
+        // cannot install by itself is still offered.
+        if checkForUpdatesAfterLaunch {
+            UpdateCoordinator.shared.startBackgroundUpdate(promptIfStuck: true)
+        }
+        scheduleUpdatesWhileOpen()
         #else
         runCrashRecoveryIfNeeded()
-        #endif
         Task { await checkForUpdates(silent: true) }
+        #endif
     }
+
+    #if GCS_ENABLED
+    private var updateTimer: Timer?
+
+    /// A guest who leaves the app open for days is updated too: every few
+    /// hours, and soon after a wake, a check runs while nothing is under way,
+    /// and what it finds is installed when the app quits.
+    private func scheduleUpdatesWhileOpen() {
+        let timer = Timer(timeInterval: BackgroundUpdateSchedule.tick, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.considerUpdateWhileOpen(afterWake: false) }
+        }
+        timer.tolerance = 60
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                MainRunLoop.perform(after: BackgroundUpdateSchedule.afterWake) {
+                    self?.considerUpdateWhileOpen(afterWake: true)
+                }
+            }
+        }
+    }
+
+    private func considerUpdateWhileOpen(afterWake: Bool) {
+        let coordinator = UpdateCoordinator.shared
+        guard BackgroundUpdateSchedule.isDue(now: Date(), lastCheck: coordinator.lastCheck, afterWake: afterWake),
+              !AppActivity.shared.blocksHeavyWork else { return }
+        coordinator.startBackgroundUpdate(promptIfStuck: false)
+    }
+    #endif
 
     func applicationDidBecomeActive(_ notification: Notification) {
         // The recorder can become key, so AppKit restores the key window on
@@ -256,7 +293,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             UpdateRollback.noteCleanQuitBeforeHealthy(runningVersion: Self.runningVersion,
                                                       installed: Bundle.main.bundleURL, store: .app)
         }
-        // A staged update waiting for its turn goes with the app.
+        // A copy staged behind the recorder is installed now, and the next
+        // launch runs it. Anything else staged goes with the app.
+        UpdateCoordinator.shared.installAtQuit()
         UpdateCoordinator.shared.cleanUpForQuit()
         // Without a recorder there are no session settings beyond what
         // applicationWillFinishLaunching already erased.
@@ -271,7 +310,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// its own keep-uploading/quit-anyway intercept (FR-002) — the states are
     /// mutually exclusive, so at most one alert presents.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        quitReply()
+        // Read now: the quit event is the current Apple event only while this runs.
+        quitIsForSystem = QuitDuringTake.isSystemQuit(reason: Self.currentQuitReason())
+        return quitReply()
+    }
+
+    /// The Mac is logging out, restarting or shutting down: the app goes, as
+    /// asked, whatever it would otherwise stay open for.
+    private var quitIsForSystem = false
+
+    /// Why the quit event in hand was sent, when the system says.
+    private static func currentQuitReason() -> OSType? {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == AEEventClass(kCoreEventClass),
+              event.eventID == AEEventID(kAEQuitApplication),
+              let reason = event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))
+                ?? event.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason)) else { return nil }
+        return reason.typeCodeValue != 0 ? reason.typeCodeValue : reason.enumCodeValue
     }
 
     private func quitReply() -> NSApplication.TerminateReply {
@@ -359,21 +414,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .warning
         alert.messageText = "Recording in progress"
-        alert.informativeText = "Stopping now will save what has been recorded so far. Quitting without saving will lose the current recording."
+        let vm = RecorderViewModel.shared
+        #if GCS_ENABLED
+        let staysToUpload = vm.cloudUploadEnabled && !quitIsForSystem
+        #else
+        let staysToUpload = false
+        #endif
+        alert.informativeText = QuitDuringTake.message(appName: updaterAppName, staysToUpload: staysToUpload)
         alert.addButton(withTitle: "Stop & Save")           // .alertFirstButtonReturn
         alert.addButton(withTitle: "Quit Without Saving")   // .alertSecondButtonReturn
         alert.addButton(withTitle: "Cancel")                // .alertThirdButtonReturn
 
         let response = ModalGate.run { alert.runModal() }
-        let vm = RecorderViewModel.shared
+        let forSystem = quitIsForSystem
 
         switch QuitDuringTake.action(for: response,
                                      takeInProgress: AppActivity.shared.quitQuestion == .recording) {
         case .stopThenQuit:
             // Finalize the writer, then continue termination once the file
-            // is closed.
-            vm.stopRecording {
-                NSApp.reply(toApplicationShouldTerminate: true)
+            // is closed — unless the take is now uploading (Cloud), which the
+            // app stays open for.
+            vm.stopRecording { [weak self] in
+                let uploading = AppActivity.shared.quitQuestion == .uploading
+                let quits = QuitDuringTake.quitsAfterStop(uploading: uploading, forSystem: forSystem)
+                if !quits {
+                    // In front, so the guest sees why it is still open. It
+                    // quits once the upload is through and the guest has seen
+                    // it go; quitting again asks about the upload.
+                    #if GCS_ENABLED
+                    vm.quitWhenUploaded = true
+                    #endif
+                    NSApp.activate(ignoringOtherApps: true)
+                    self?.mainWindow?.makeKeyAndOrderFront(nil)
+                }
+                NSApp.reply(toApplicationShouldTerminate: quits)
             }
         case .discardThenQuit:
             // Cancel the writer and drop the partial file before quitting.
@@ -473,53 +547,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     #if GCS_ENABLED
-    /// A persisted pending-upload path means a prior session's upload was
-    /// interrupted. If the local file is still on disk, offer to finish it;
-    /// stale/missing entries are cleared silently.
-    private func runPendingUploadCheckIfNeeded() {
+    /// One question at launch for every take still to be uploaded: uploads an
+    /// earlier run left unfinished, takes put off with LATER or with SKIP last
+    /// time, and takes crash recovery has just put back together (their session
+    /// ended before an upload could start). UPLOAD sends them one after
+    /// another. SKIP keeps them: they are offered again at the next launch, and
+    /// do not upload by themselves before it. SKIP used to forget an
+    /// interrupted upload for good, and a recovered take was never offered
+    /// again; a take is now forgotten only when its file is gone.
+    private func offerWaitingUploads(recovered: [URL]) {
         let vm = RecorderViewModel.shared
-        // Local-only mode: stay silent, but deliberately leave the pending
-        // record intact so turning cloud back on still offers to finish it.
+        // Local-only mode: say nothing, and keep everything for when cloud is
+        // switched back on.
         guard vm.cloudUploadEnabled else { return }
-        guard let path = vm.persistedPendingUploadPath else { return }
-
-        guard FileManager.default.fileExists(atPath: path) else {
-            vm.clearPendingUpload()
-            return
+        for take in recovered where FileManager.default.fileExists(atPath: take.path) {
+            vm.waitToUpload(take)
         }
+        let waiting = vm.takesWaitingToUpload()
+        guard let first = waiting.first else { return }
 
-        let url = URL(fileURLWithPath: path)
         mainWindow?.orderOut(nil)
-        let shouldUpload = PendingUploadPrompt.present(fileName: url.lastPathComponent)
+        let upload = PendingUploadPrompt.present(fileName: first.lastPathComponent, count: waiting.count)
         mainWindow?.makeKeyAndOrderFront(nil)
 
-        if shouldUpload {
-            vm.resumePendingUpload(fileURL: url)
+        if upload {
+            vm.uploadWaitingTakes()
         } else {
-            vm.clearPendingUpload()
-        }
-    }
-
-    /// A take recovered at launch never reached the cloud: its session ended
-    /// before the upload could start. Offer it with the same prompt as an
-    /// interrupted upload ("A recording wasn't uploaded last session"); Skip
-    /// leaves the WAV on the Desktop, as before. Only one upload runs at a
-    /// time, so when an interrupted upload was resumed a moment ago this
-    /// offers nothing, and the recovered WAV stays on the Desktop. Launch
-    /// recovery finds one sidecar per crashed session, so there is in
-    /// practice a single take to offer.
-    private func offerUploadOfRecoveredTake(_ recovered: [URL]) {
-        let vm = RecorderViewModel.shared
-        guard vm.cloudUploadEnabled, !vm.isCurrentlyUploading,
-              let url = recovered.first(where: { FileManager.default.fileExists(atPath: $0.path) })
-        else { return }
-
-        mainWindow?.orderOut(nil)
-        let shouldUpload = PendingUploadPrompt.present(fileName: url.lastPathComponent)
-        mainWindow?.makeKeyAndOrderFront(nil)
-
-        if shouldUpload {
-            vm.resumePendingUpload(fileURL: url)
+            vm.putOffWaitingTakesUntilNextLaunch()
         }
     }
     #endif
@@ -614,6 +668,41 @@ enum QuitDuringTake {
         case stay
         /// Nothing left to stop or discard: decide the quit afresh.
         case askAgain
+    }
+
+    /// The question's text. In Cloud with upload on, Stop & Save no longer
+    /// quits: the take uploads, and the app stays open for it.
+    static func message(appName: String, staysToUpload: Bool) -> String {
+        if staysToUpload {
+            return "Stop & Save saves what has been recorded so far, and \(appName) stays open to upload it, "
+                + "then quits. Quitting without saving will lose the current recording."
+        }
+        return "Stopping now will save what has been recorded so far. "
+            + "Quitting without saving will lose the current recording."
+    }
+
+    /// After Stop & Save has closed the file: whether the quit goes ahead now.
+    ///
+    /// Cloud's upload starts the moment the file is closed, and the app used to
+    /// quit right then, so the take waited on the Desktop for the next launch
+    /// to offer it, which may be days, while the producer waited for it. The
+    /// app now stays open and uploads, and quits once the guest has seen the
+    /// upload succeed (`RecorderViewModel.quitWhenUploaded`). A failed upload
+    /// keeps it open. Quitting again asks about the upload, whose Quit Anyway
+    /// quits at once: nothing can hold a quit for ever.
+    /// A logout, restart or shutdown still goes ahead, as the system asked:
+    /// the take is recorded as pending and the next launch offers it.
+    static func quitsAfterStop(uploading: Bool, forSystem: Bool) -> Bool {
+        !uploading || forSystem
+    }
+
+    /// The reasons the system gives when it quits apps for a logout, a restart
+    /// or a shutdown (`kAEQuitReason`). A quit the person asked for has none.
+    static func isSystemQuit(reason: OSType?) -> Bool {
+        guard let reason else { return false }
+        let system: Set<OSType> = [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog,
+                                   kAERestart, kAEShutDown, kAEQuitAll]
+        return system.contains(reason)
     }
 
     /// `response` is nil when the question could not open (an update is

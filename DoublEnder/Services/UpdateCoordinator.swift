@@ -74,6 +74,10 @@ enum UpdateFailure: LocalizedError, Equatable {
 ///     told once the take is over.
 ///   - The install itself is one synchronous step (`UpdateCommit`), with no
 ///     suspension from its last check to the quit.
+///   - Cloud also updates behind the recorder (`startBackgroundUpdate`): after a
+///     launch install that was slow or failed, and when a check while idle finds
+///     a new version. That flow never opens a dialog or relaunches: the copy it
+///     stages is installed as the app quits (`installAtQuit`).
 @MainActor
 final class UpdateCoordinator {
 
@@ -87,6 +91,8 @@ final class UpdateCoordinator {
         case confirming
         case committing
         case relaunching
+        /// A copy staged behind the recorder, to be installed when the app quits.
+        case readyAtQuit
     }
 
     enum Mode: Equatable {
@@ -94,6 +100,8 @@ final class UpdateCoordinator {
         case interactive
         /// Cloud's install at launch, unprompted, before the recorder exists.
         case launch
+        /// Cloud, behind the recorder: no window, no dialog, installed at quit.
+        case background
     }
 
     enum InstallOutcome: Equatable {
@@ -101,6 +109,8 @@ final class UpdateCoordinator {
         case cancelled
         case declined
         case failed(String)
+        /// Staged, and kept for the quit.
+        case heldForQuit
     }
 
     enum LaunchOutcome: Equatable {
@@ -123,6 +133,9 @@ final class UpdateCoordinator {
                                _ progress: @escaping @Sendable (Double) -> Void) async throws -> URL
         /// `UpdateCommit`, or a stand-in. Returns only if the app is not quitting.
         var commit: @MainActor (StagedUpdate) throws -> Void
+        /// `UpdateCommit.liveAtQuit`, or a stand-in: the install as the app quits,
+        /// with no relaunch. One that is not given installs nothing.
+        var commitAtQuit: @MainActor (StagedUpdate) throws -> Void = { _ in throw UpdateCommit.Refusal.busy }
         var removeFolder: @MainActor (URL) -> Void
         var activity: AppActivity
         var presenter: UpdatePresenting
@@ -147,6 +160,12 @@ final class UpdateCoordinator {
     /// busy. Read by `runAtLaunch`, which only rests after failures that would
     /// repeat.
     private var lastFailureMayPass = false
+    /// The copy staged behind the recorder, for the quit.
+    private(set) var stagedForQuit: StagedUpdate?
+    /// The flow behind the recorder, while it runs.
+    private var backgroundTask: Task<Void, Never>?
+    /// When a check last got an answer, for the checks while idle.
+    private(set) var lastCheck: Date?
 
     init(environment: Environment) {
         env = environment
@@ -161,6 +180,19 @@ final class UpdateCoordinator {
     // MARK: - The menu, and the check after launch
 
     func checkForUpdates(silent: Bool) async {
+        if let background = backgroundTask {
+            // The quiet flow is not interrupted by one that is just as quiet.
+            guard !silent else { return }
+            // Asked for: the quiet flow gives way. A download stops; a copy
+            // already staged stays.
+            cancel()
+            await background.value
+        }
+        if phase == .readyAtQuit {
+            guard !silent, let update = stagedForQuit else { return }
+            await offerToInstallNow(update)
+            return
+        }
         guard phase == .idle else {
             progress?.bringForward()
             return
@@ -170,8 +202,14 @@ final class UpdateCoordinator {
         cancelRequested = false
         phase = .checking
         let result = await env.check()
+        noteAnswer(result)
         await handle(result, silent: silent)
         if phase != .relaunching { phase = .idle }
+    }
+
+    private func noteAnswer(_ result: UpdateChecker.Result) {
+        if case .error = result { return }
+        lastCheck = Date()
     }
 
     private func handle(_ result: UpdateChecker.Result, silent: Bool) async {
@@ -289,6 +327,7 @@ final class UpdateCoordinator {
             logger.notice("Launch update check took longer than \(checkTimeout, privacy: .public)")
             return .openRecorder(checkAfterLaunch: true)
         }
+        noteAnswer(result)
         // Skipped while it was checking: the recorder is already open.
         if cancelRequested { return .openRecorder(checkAfterLaunch: false) }
 
@@ -324,7 +363,8 @@ final class UpdateCoordinator {
             switch outcome {
             case .committed:
                 return .relaunching
-            case .cancelled, .declined:
+            case .cancelled, .declined, .heldForQuit:
+                // (A launch install is never held for the quit.)
                 if budgetExpired {
                     logger.notice("Launch update took longer than \(budget, privacy: .public)")
                 }
@@ -357,6 +397,105 @@ final class UpdateCoordinator {
             let first = await group.next() ?? nil
             group.cancelAll()
             return first
+        }
+    }
+
+    // MARK: - Cloud, behind the recorder
+
+    /// Starts the quiet flow, unless one is under way: check, then download and
+    /// stage while nothing else is, and keep the copy for the quit. It never
+    /// opens a window or a dialog and never relaunches, with one exception:
+    /// `promptIfStuck`, for the check after launch, which still offers what it
+    /// offered before when this copy cannot install the update by itself (it
+    /// cannot replace itself, or automatic installs of that version are
+    /// resting after failures). False when nothing was started.
+    @discardableResult
+    func startBackgroundUpdate(promptIfStuck: Bool) -> Bool {
+        guard backgroundTask == nil, phase == .idle || phase == .readyAtQuit else { return false }
+        backgroundTask = Task { @MainActor in
+            await self.updateInBackground(promptIfStuck: promptIfStuck)
+            self.backgroundTask = nil
+        }
+        return true
+    }
+
+    /// The flow `startBackgroundUpdate` runs, for a caller that waits for it.
+    func updateInBackground(promptIfStuck: Bool) async {
+        guard phase == .idle || phase == .readyAtQuit else { return }
+        let settle = { [self] in
+            if phase != .relaunching { phase = stagedForQuit == nil ? .idle : .readyAtQuit }
+        }
+        cancelRequested = false
+        phase = .checking
+        let result = await env.check()
+        noteAnswer(result)
+        guard !cancelRequested, case .available(let version, let downloadURL, _) = result else { return settle() }
+        if UpdateRollback.isSkipped(version, store: env.store) { return settle() }
+        // Already holding this version, or a newer one.
+        if let held = stagedForQuit, !MoveToApplications.isOlder(held.version, than: version) { return settle() }
+
+        let resting = !UpdateRollback.shouldInstallAutomatically(version, store: env.store)
+        let obstacle = resting ? nil : await env.obstacle()
+        if cancelRequested { return settle() }
+        if resting || obstacle != nil {
+            // Nothing this flow can install by itself.
+            if promptIfStuck && stagedForQuit == nil {
+                await handle(result, silent: true)
+            }
+            return settle()
+        }
+
+        // An older copy kept for the quit gives way to this one.
+        discardStagedForQuit()
+        let outcome = await install(version: version, downloadURL: downloadURL, mode: .background)
+        if case .failed(let message) = outcome {
+            logger.notice("Update behind the recorder failed: \(message, privacy: .public)")
+            if !lastFailureMayPass { UpdateRollback.recordFailure(of: version, store: env.store) }
+        }
+        settle()
+    }
+
+    /// The app is quitting: a copy staged behind the recorder is installed now,
+    /// with no relaunch, and the next launch runs it (on probation, as after any
+    /// update). True when it was installed. Synchronous, like the quit.
+    @discardableResult
+    func installAtQuit() -> Bool {
+        guard phase == .readyAtQuit, let update = stagedForQuit else { return false }
+        phase = .committing
+        do {
+            try env.commitAtQuit(update)
+        } catch {
+            logger.error("Update at quit not installed: \(error.localizedDescription, privacy: .public)")
+            discardStagedForQuit()
+            phase = .idle
+            return false
+        }
+        // The previous version is in the folder now, and probation owns it.
+        if let holder { env.store.journal.removeAll { $0 == holder.path } }
+        holder = nil
+        stagedForQuit = nil
+        phase = .idle
+        return true
+    }
+
+    private func discardStagedForQuit() {
+        guard stagedForQuit != nil else { return }
+        stagedForQuit = nil
+        discardHolder()
+    }
+
+    /// Check for Updates… with a copy waiting for the quit: install it now, or
+    /// keep it for the quit.
+    private func offerToInstallNow(_ update: StagedUpdate) async {
+        let outcome = await finishInstall(update, mode: .interactive, waited: true, keepOnDecline: true)
+        switch outcome {
+        case .committed:
+            return
+        case .declined, .cancelled:
+            if stagedForQuit != nil { phase = .readyAtQuit }
+        default:
+            stagedForQuit = nil
+            if phase != .relaunching { phase = .idle }
         }
     }
 
@@ -441,7 +580,7 @@ final class UpdateCoordinator {
         while true {
             if cancelRequested { return .cancelled }
             if env.activity.blocksHeavyWork {
-                guard mode == .interactive else { return failed(UpdateFailure.busy) }
+                guard mode != .launch else { return failed(UpdateFailure.busy) }
                 waited = true
                 showWaiting()
                 guard await pause() else { return .cancelled }
@@ -471,8 +610,26 @@ final class UpdateCoordinator {
             }
         }
 
-        // 2. Wait for the app to be idle, ask when it had to wait, and install.
         let update = StagedUpdate(version: version, staged: staged, installed: env.installedURL)
+        // Behind the recorder, the copy waits for the quit.
+        if mode == .background {
+            stagedForQuit = update
+            phase = .readyAtQuit
+            return .heldForQuit
+        }
+        return await finishInstall(update, mode: mode, waited: waited, keepOnDecline: false)
+    }
+
+    /// 2. Wait for the app to be idle, ask when it had to wait, and install.
+    /// `keepOnDecline` keeps the staged copy through Not Now and a cancel: a
+    /// copy that was waiting for the quit goes on waiting.
+    private func finishInstall(_ update: StagedUpdate, mode: Mode, waited: Bool,
+                               keepOnDecline: Bool) async -> InstallOutcome {
+        var waited = waited
+        let discardHolder = { [self] in
+            if keepOnDecline { return }
+            self.discardHolder()
+        }
         while true {
             if cancelRequested {
                 discardHolder()
@@ -509,9 +666,11 @@ final class UpdateCoordinator {
                 // The previous version is in the folder now, and probation owns it.
                 if let holder { env.store.journal.removeAll { $0 == holder.path } }
                 holder = nil
+                stagedForQuit = nil
                 return .committed
             case .failed(let message):
-                discardHolder()
+                self.discardHolder()
+                stagedForQuit = nil
                 return .failed(message)
             }
         }
@@ -564,7 +723,7 @@ final class UpdateCoordinator {
         let interval = env.pollInterval
         return try await withThrowingTaskGroup(of: URL?.self) { group in
             group.addTask { @MainActor in try await stage(downloadURL, holder, mode, report) }
-            if mode == .interactive {
+            if mode != .launch {
                 // A take that starts now stops the download or the copy.
                 group.addTask { @MainActor in
                     while true {
@@ -672,6 +831,9 @@ extension UpdateCoordinator.Environment {
             },
             commit: { update in
                 try UpdateCommit.live(store: store, activity: activity, expected: expected)(update)
+            },
+            commitAtQuit: { update in
+                try UpdateCommit.liveAtQuit(store: store, activity: activity, expected: expected)(update)
             },
             removeFolder: { try? FileManager.default.removeItem(at: $0) },
             activity: activity,

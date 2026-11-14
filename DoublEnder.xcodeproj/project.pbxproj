@@ -31,11 +31,13 @@
 		51EBE56CF1802A8263F7FEB5 /* LaunchUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A9BA83E118BA475A640B32 /* LaunchUpdate.swift */; };
 		56959E8CD4A22DA5DBD483B5 /* WaitingOffersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403580E5862548F6E68D3201 /* WaitingOffersTests.swift */; };
 		62B83210B97CD5001AA40DA4 /* UpdateRelauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F738C3F5C85F37F59E41DEC /* UpdateRelauncher.swift */; };
+		66A3086BC5730427145B80AD /* MoveToApplications.swift in Sources */ = {isa = PBXBuildFile; fileRef = B59F5D046BC0124F31968AC4 /* MoveToApplications.swift */; };
 		6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C757981FB56F560204E52311 /* CRC32CTests.swift */; };
 		6EB0D5A376CBB74A6C557288 /* UpdateRollbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8E3F019B6408050DDD43847 /* UpdateRollbackTests.swift */; };
 		6F4FF4F2A1C8C7519DA7A0CF /* FaceplateComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001800BC7CE8C65D7460DD27 /* FaceplateComponents.swift */; };
 		7081DB90411131912ADC4E4C /* UpdateRelauncherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 874B98F97CB3DE436A24E2E3 /* UpdateRelauncherTests.swift */; };
 		77D11C23C2B47CA193279224 /* FlagWaitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6BA1C4794679F4F8A3C4885 /* FlagWaitTests.swift */; };
+		786BCCC84D1180ACE8178886 /* MoveToApplicationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F80DF6F12F2500C4B70DD79 /* MoveToApplicationsTests.swift */; };
 		79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */; };
 		7D3F9C2963E04A6FE935A308 /* MainRunLoopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90C92497EBD2386F06F4EEB /* MainRunLoopTests.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
@@ -53,6 +55,7 @@
 		D060CDC1B0B5AFCB111C784F /* UpdateCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 691D8DD7C6E61CE1248AB1E1 /* UpdateCoordinatorTests.swift */; };
 		D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */; };
 		D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90248FE45395766ECDFF5C6 /* HelpView.swift */; };
+		D71457B702BBCDA0DD846D2C /* BackgroundUpdateSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CB9F4878215202FE50730 /* BackgroundUpdateSchedule.swift */; };
 		D8AD0355B7BADD119291A9F9 /* PendingUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F4779D2DA515B85F7C9E9D /* PendingUpload.swift */; };
 		D9046CCBF20C26AAD2467905 /* WaitingOffers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4962F00964F107E3BDEDC74 /* WaitingOffers.swift */; };
 		DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */; };
@@ -95,6 +98,7 @@
 		403580E5862548F6E68D3201 /* WaitingOffersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitingOffersTests.swift; sourceTree = "<group>"; };
 		440F6F24F552E455E0696937 /* MainRunLoop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainRunLoop.swift; sourceTree = "<group>"; };
 		4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskSpaceChecker.swift; sourceTree = "<group>"; };
+		4F80DF6F12F2500C4B70DD79 /* MoveToApplicationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToApplicationsTests.swift; sourceTree = "<group>"; };
 		5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderMainPanel.swift; sourceTree = "<group>"; };
 		5F0DD72F85B1B95FCC7848E6 /* ModalGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModalGate.swift; sourceTree = "<group>"; };
 		64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Saira-Regular.ttf"; sourceTree = "<group>"; };
@@ -118,6 +122,8 @@
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
 		ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfUpdaterTests.swift; sourceTree = "<group>"; };
 		ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRanking.swift; sourceTree = "<group>"; };
+		B08CB9F4878215202FE50730 /* BackgroundUpdateSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUpdateSchedule.swift; sourceTree = "<group>"; };
+		B59F5D046BC0124F31968AC4 /* MoveToApplications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToApplications.swift; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C757981FB56F560204E52311 /* CRC32CTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32CTests.swift; sourceTree = "<group>"; };
 		C814F2CBA3187B24794D880C /* UpdateRollback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateRollback.swift; sourceTree = "<group>"; };
@@ -183,10 +189,12 @@
 			children = (
 				22C9A57A92C703BA565C04FC /* AppActivity.swift */,
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
+				B08CB9F4878215202FE50730 /* BackgroundUpdateSchedule.swift */,
 				A37A0E4755F9A4E548944F49 /* FlagWait.swift */,
 				E4A9BA83E118BA475A640B32 /* LaunchUpdate.swift */,
 				440F6F24F552E455E0696937 /* MainRunLoop.swift */,
 				5F0DD72F85B1B95FCC7848E6 /* ModalGate.swift */,
+				B59F5D046BC0124F31968AC4 /* MoveToApplications.swift */,
 				1B8331841FA32B270066E651 /* NotificationService.swift */,
 				1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */,
 				C9F4779D2DA515B85F7C9E9D /* PendingUpload.swift */,
@@ -226,6 +234,7 @@
 				EBDA327BB738E9F05AA1691C /* InputRankingTests.swift */,
 				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				C90C92497EBD2386F06F4EEB /* MainRunLoopTests.swift */,
+				4F80DF6F12F2500C4B70DD79 /* MoveToApplicationsTests.swift */,
 				839944B9F2CD3A9B38C54663 /* PCMSidecarTests.swift */,
 				77E2C3273CE97A833283FA89 /* PendingUploadTests.swift */,
 				749CA49C0405D61E894D40C3 /* QuitDuringTakeTests.swift */,
@@ -395,6 +404,7 @@
 			files = (
 				43F4389F52B73A4531AC45AA /* AppActivity.swift in Sources */,
 				EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */,
+				D71457B702BBCDA0DD846D2C /* BackgroundUpdateSchedule.swift in Sources */,
 				FB3C04C5129AA1C6A4751208 /* CRC32C.swift in Sources */,
 				7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */,
 				0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */,
@@ -409,6 +419,7 @@
 				A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */,
 				45FA766DD924CBE9C162D274 /* MainRunLoop.swift in Sources */,
 				364895B45C5F79F00605ADB9 /* ModalGate.swift in Sources */,
+				66A3086BC5730427145B80AD /* MoveToApplications.swift in Sources */,
 				E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */,
 				9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */,
 				D8AD0355B7BADD119291A9F9 /* PendingUpload.swift in Sources */,
@@ -442,6 +453,7 @@
 				F1B041B5952B893872D4F0E3 /* InputRankingTests.swift in Sources */,
 				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				7D3F9C2963E04A6FE935A308 /* MainRunLoopTests.swift in Sources */,
+				786BCCC84D1180ACE8178886 /* MoveToApplicationsTests.swift in Sources */,
 				041166CA17A60E9CCC332E71 /* PCMSidecarTests.swift in Sources */,
 				08F8D383EA1EB823BFF7EBB5 /* PendingUploadTests.swift in Sources */,
 				4FA23C5150D6099A08F2049E /* QuitDuringTakeTests.swift in Sources */,

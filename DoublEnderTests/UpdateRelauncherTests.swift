@@ -86,6 +86,49 @@ final class UpdateRelauncherTests: XCTestCase {
         XCTAssertEqual(openedLines, ["-W \(app.path)"])
     }
 
+    /// A copy that ran from its disk image handed over to the one it put in
+    /// Applications: once that is open, the image is ejected.
+    func testItEjectsAVolumeOnceTheAppIsOpen() throws {
+        let ejected = folder.appendingPathComponent("ejected.log")
+        let ejector = folder.appendingPathComponent("ejector.sh")
+        try """
+            #!/bin/sh
+            echo "$@" >> "\(ejected.path)"
+            """.write(to: ejector, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ejector.path)
+        let volume = URL(fileURLWithPath: "/Volumes/Some App")
+
+        let old = try startOldApp(seconds: 0.1)
+        let helper = try UpdateRelauncher.prepare(toOpen: app, after: old.processIdentifier, marker: nil,
+                                                  opener: try opener("exit 0"), ejecting: volume,
+                                                  ejector: ejector.path)
+        XCTAssertEqual(waitForExit(helper), 0)
+        XCTAssertEqual(openedLines, [app.path])
+        let lines = ((try? String(contentsOf: ejected, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines, ["detach \(volume.path) -quiet"])
+    }
+
+    /// Nothing to eject, or the app did not open: nothing is ejected.
+    func testItEjectsNothingUnlessAskedAndTheAppOpened() throws {
+        let ejected = folder.appendingPathComponent("ejected.log")
+        let ejector = folder.appendingPathComponent("ejector.sh")
+        try """
+            #!/bin/sh
+            echo "$@" >> "\(ejected.path)"
+            """.write(to: ejector, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ejector.path)
+
+        let first = try UpdateRelauncher.prepare(toOpen: app, after: try startOldApp(seconds: 0.1).processIdentifier,
+                                                 marker: nil, opener: try opener("exit 0"), ejector: ejector.path)
+        XCTAssertEqual(waitForExit(first), 0)
+        let second = try UpdateRelauncher.prepare(toOpen: app, after: try startOldApp(seconds: 0.1).processIdentifier,
+                                                  marker: nil, opener: try opener("exit 1"),
+                                                  ejecting: URL(fileURLWithPath: "/Volumes/Some App"),
+                                                  ejector: ejector.path)
+        XCTAssertEqual(waitForExit(second), 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ejected.path))
+    }
+
     /// The swap failed: the helper is stopped before it opens anything.
     func testACancelledHelperOpensNothing() throws {
         let old = try startOldApp(seconds: 1)

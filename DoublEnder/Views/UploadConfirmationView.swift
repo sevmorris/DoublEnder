@@ -312,16 +312,29 @@ enum UploadConfirmation {
 /// choices, themed to match the confirmation/recovery dialogs.
 struct PendingUploadView: View {
     let fileName: String
+    /// How many takes are waiting, `fileName` the first.
+    var count = 1
     let onUpload: () -> Void
     let onSkip: () -> Void
+
+    /// The question, for one take or several. SKIP keeps them for next time.
+    static func question(count: Int) -> String {
+        count == 1
+            ? "A recording wasn't uploaded last session. Upload it now? Skip keeps it for next time."
+            : "\(count) recordings weren't uploaded last session. Upload them now? Skip keeps them for next time."
+    }
+
+    static func names(first: String, count: Int) -> String {
+        count > 1 ? "\(first) and \(count - 1) more" : first
+    }
 
     var body: some View {
         VStack(spacing: 14) {
             Spacer(minLength: 0)
             icon("arrow.up.circle")
             title("DoublEnder Cloud")
-            bodyText("A recording wasn't uploaded last session. Upload now?")
-            fileNameText(fileName)
+            bodyText(Self.question(count: count))
+            fileNameText(Self.names(first: fileName, count: count))
             HStack(spacing: 10) {
                 pillButton("UPLOAD") { onUpload() }
                 pillButton("SKIP") { onSkip() }
@@ -397,7 +410,7 @@ struct PendingUploadView: View {
 /// Presents the pending-upload prompt as a blocking modal and returns
 /// `true` if the user chose Upload, `false` if Skip. Call on the main actor.
 enum PendingUploadPrompt {
-    static func present(fileName: String) -> Bool {
+    static func present(fileName: String, count: Int = 1) -> Bool {
         var choseUpload = false
         let window = UploadConfirmationWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 240),
@@ -407,6 +420,7 @@ enum PendingUploadPrompt {
         )
         let view = PendingUploadView(
             fileName: fileName,
+            count: count,
             onUpload: { [weak window] in
                 choseUpload = true
                 NSApp.stopModal()

@@ -225,3 +225,52 @@ final class StopFailureMessageTests: XCTestCase {
         )
     }
 }
+
+/// The input the guest chose, and USB inputs that turn up during a take.
+final class InputChoiceTests: XCTestCase {
+
+    /// The chosen input comes back only when nothing would be cut short.
+    func testTheChosenInputComesBackOnlyBetweenTakes() {
+        XCTAssertTrue(RecorderViewModel.mayReturnToChosenInput(recording: false, finalizing: false,
+                                                               starting: false, rebuilding: false))
+        XCTAssertFalse(RecorderViewModel.mayReturnToChosenInput(recording: true, finalizing: false,
+                                                                starting: false, rebuilding: false), "during a take")
+        XCTAssertFalse(RecorderViewModel.mayReturnToChosenInput(recording: false, finalizing: true,
+                                                                starting: false, rebuilding: false), "while it is saved")
+        XCTAssertFalse(RecorderViewModel.mayReturnToChosenInput(recording: false, finalizing: false,
+                                                                starting: true, rebuilding: false), "RECORD waiting")
+        XCTAssertFalse(RecorderViewModel.mayReturnToChosenInput(recording: false, finalizing: false,
+                                                                starting: false, rebuilding: true), "mid-rebuild")
+    }
+
+    func testTheFaceplateSaysTheInputCameBack() {
+        XCTAssertEqual(RecorderViewModel.returnedInputNotice("Shure MV7"), "Back on Shure MV7")
+    }
+
+    /// Only the guest's own pick counts, and a later pick wins. The launch's
+    /// built-in default is not a choice. No capture session is involved: a
+    /// pick of a UID no device has changes nothing but the choice.
+    func testAChoiceIsTheGuestsLatestPick() {
+        let vm = RecorderViewModel.shared
+        let before = vm.selectedInputDeviceID
+        defer { vm.selectedInputDeviceID = before }
+        vm.chooseInput("first-pick")
+        vm.chooseInput("second-pick")
+        XCTAssertEqual(vm.chosenInputUID, "second-pick")
+    }
+
+    /// A USB input plugged in during a take, or during its upload, is offered
+    /// after the take and its confirmation, not over them.
+    func testAnOfferWaitsForTheTakeItsUploadAndItsConfirmation() {
+        XCTAssertTrue(RecorderViewModel.offerMayOpen(recording: false, finalizing: false, uploading: false,
+                                                     dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: true, finalizing: false, uploading: false,
+                                                      dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: false, finalizing: true, uploading: false,
+                                                      dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: false, finalizing: false, uploading: true,
+                                                      dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: false, finalizing: false, uploading: false,
+                                                      dialogInTheWay: true))
+    }
+}

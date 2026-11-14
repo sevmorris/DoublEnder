@@ -35,7 +35,9 @@ struct RecorderMainPanel: View {
                             microphones: viewModel.hardwareInputDevices,
                             selectedID: viewModel.selectedInputDeviceID,
                             onSelect: { id in
-                                viewModel.selectedInputDeviceID = id
+                                // The guest's choice: it comes back by itself
+                                // if it drops out and returns.
+                                viewModel.chooseInput(id)
                                 popovers.closeInput()
                             }
                         ))
