@@ -960,6 +960,14 @@ class RecorderViewModel: ObservableObject {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
+    /// The uploaded confirmation's note, saying the app quits after it when
+    /// the guest quit to get here.
+    static func uploadedNote(_ note: String?, quitsAfter: Bool) -> String? {
+        guard quitsAfter else { return note }
+        let quit = "\(updaterAppName) quits when you click OK."
+        return note.map { "\($0)\n\(quit)" } ?? quit
+    }
+
     #if GCS_ENABLED
     /// The producer asked the dashboard to stop this take. The same stop as the
     /// button, so the file is saved and uploaded as usual. Nothing happens if the
@@ -1498,6 +1506,11 @@ class RecorderViewModel: ObservableObject {
         status == 400 || status == 403
     }
 
+    /// Set when the guest quit during a take and chose Stop & Save: the app
+    /// stayed open for the upload, and quits once the guest has seen it
+    /// succeed. A failure calls it off. Main thread.
+    var quitWhenUploaded = false
+
     /// A hop to the main queue that nothing waits for, for an upload's
     /// bookkeeping. The queue is serial, so the hops land in the order sent.
     private func onMainQueue(_ work: @escaping () -> Void) {
@@ -1568,11 +1581,15 @@ class RecorderViewModel: ObservableObject {
                     self.lastUploadError = nil
                     self.recordingTime = 0
                     self.state = .ready
+                    let quitting = self.quitWhenUploaded
+                    self.quitWhenUploaded = false
                     // Persistent, app-controlled confirmation — blocks until
                     // the user clicks OK (notifications can't guarantee this).
                     UploadConfirmation.present(success: true,
                                                fileName: fileURL.lastPathComponent,
-                                               note: note)
+                                               note: Self.uploadedNote(note, quitsAfter: quitting))
+                    // The guest asked to quit, and the app stayed for this.
+                    if quitting { NSApp.terminate(nil) }
                 }
                 return
             } catch {
@@ -1603,6 +1620,9 @@ class RecorderViewModel: ObservableObject {
                         logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
                     }
                     MainRunLoop.deliver {
+                        // The quit that waited for this is called off: the
+                        // card says what happened, and RETRY UPLOAD is there.
+                        self.quitWhenUploaded = false
                         self.state = .uploadFailed(fileURL)
                         UploadConfirmation.present(success: false,
                                                    fileName: fileURL.lastPathComponent,

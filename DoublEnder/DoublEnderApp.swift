@@ -399,7 +399,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let uploading = AppActivity.shared.quitQuestion == .uploading
                 let quits = QuitDuringTake.quitsAfterStop(uploading: uploading, forSystem: forSystem)
                 if !quits {
-                    // In front, so the guest sees why it is still open.
+                    // In front, so the guest sees why it is still open. It
+                    // quits once the upload is through and the guest has seen
+                    // it go; quitting again asks about the upload.
+                    #if GCS_ENABLED
+                    vm.quitWhenUploaded = true
+                    #endif
                     NSApp.activate(ignoringOtherApps: true)
                     self?.mainWindow?.makeKeyAndOrderFront(nil)
                 }
@@ -650,19 +655,22 @@ enum QuitDuringTake {
     /// quits: the take uploads, and the app stays open for it.
     static func message(appName: String, staysToUpload: Bool) -> String {
         if staysToUpload {
-            return "Stop & Save saves what has been recorded so far, and \(appName) stays open to upload it. "
-                + "Quitting without saving will lose the current recording."
+            return "Stop & Save saves what has been recorded so far, and \(appName) stays open to upload it, "
+                + "then quits. Quitting without saving will lose the current recording."
         }
         return "Stopping now will save what has been recorded so far. "
             + "Quitting without saving will lose the current recording."
     }
 
-    /// After Stop & Save has closed the file: whether the quit goes ahead.
+    /// After Stop & Save has closed the file: whether the quit goes ahead now.
     ///
     /// Cloud's upload starts the moment the file is closed, and the app used to
     /// quit right then, so the take waited on the Desktop for the next launch
     /// to offer it, which may be days, while the producer waited for it. The
-    /// app now stays open and uploads; quitting again asks about the upload.
+    /// app now stays open and uploads, and quits once the guest has seen the
+    /// upload succeed (`RecorderViewModel.quitWhenUploaded`). A failed upload
+    /// keeps it open. Quitting again asks about the upload, whose Quit Anyway
+    /// quits at once: nothing can hold a quit for ever.
     /// A logout, restart or shutdown still goes ahead, as the system asked:
     /// the take is recorded as pending and the next launch offers it.
     static func quitsAfterStop(uploading: Bool, forSystem: Bool) -> Bool {

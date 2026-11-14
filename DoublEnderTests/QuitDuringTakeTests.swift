@@ -62,7 +62,18 @@ final class QuitDuringTakeTests: XCTestCase {
     /// The question says what Stop & Save will do.
     func testTheQuestionSaysTheAppStaysOpenToUpload() {
         XCTAssertTrue(QuitDuringTake.message(appName: "DoublEnder Cloud", staysToUpload: true)
-            .contains("DoublEnder Cloud stays open to upload it"))
+            .contains("DoublEnder Cloud stays open to upload it, then quits"))
         XCTAssertFalse(QuitDuringTake.message(appName: "DoublEnder", staysToUpload: false).contains("upload"))
+    }
+
+    /// The app stayed open for the upload: its confirmation says the app quits
+    /// when it is dismissed, after whatever else it had to say.
+    func testTheUploadedConfirmationSaysTheAppWillQuit() {
+        let quit = "\(updaterAppName) quits when you click OK."
+        XCTAssertEqual(RecorderViewModel.uploadedNote(nil, quitsAfter: true), quit)
+        XCTAssertEqual(RecorderViewModel.uploadedNote("Your producer stopped this recording.", quitsAfter: true),
+                       "Your producer stopped this recording.\n\(quit)")
+        XCTAssertNil(RecorderViewModel.uploadedNote(nil, quitsAfter: false))
+        XCTAssertEqual(RecorderViewModel.uploadedNote("note", quitsAfter: false), "note")
     }
 }
