@@ -614,6 +614,53 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(h.stager.starts, UpdateRollback.maximumFailures)
     }
 
+    /// A connection that stalled or dropped says nothing about the next launch.
+    /// Two launches on bad Wi-Fi used to rest the automatic install for a day,
+    /// leaving the guest the prompt, which needs a click.
+    @MainActor
+    func testAtLaunchNetworkFailuresDoNotRestTheAutomaticInstall() async {
+        let h = Harness()
+        for failure in [URLError(.timedOut), URLError(.networkConnectionLost), URLError(.notConnectedToInternet)] {
+            h.stager.failure = failure
+            let outcome = await launch(h)
+            XCTAssertEqual(outcome, .openRecorder(checkAfterLaunch: true))
+        }
+        XCTAssertTrue(h.store.load().failures.isEmpty)
+        XCTAssertTrue(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
+
+        // The network is back: the next launch installs.
+        h.stager.failure = nil
+        let outcome = await launch(h)
+        XCTAssertEqual(outcome, .relaunching)
+        XCTAssertEqual(h.stager.starts, 4)
+    }
+
+    /// A network failure does not wipe out what a real one recorded.
+    @MainActor
+    func testAtLaunchAFailureThatWouldRepeatStillCounts() async {
+        let h = Harness()
+        h.stager.failure = SelfUpdater.Failure.noSpace
+        _ = await launch(h)
+        h.stager.failure = URLError(.timedOut)
+        _ = await launch(h)
+        h.stager.failure = UpdateFailure.selfTest
+        _ = await launch(h)
+        XCTAssertEqual(h.store.load().failures["9.0.0"]?.count, 2)
+        XCTAssertFalse(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
+    }
+
+    func testWhichFailuresMayPassByThemselves() {
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(URLError(.timedOut)))
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(URLError(.cannotFindHost)))
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(UpdateFailure.busy))
+        for failure in [SelfUpdater.Failure.diskImage, .copy, .untrusted, .noSpace, .timedOut, .http(404),
+                        .wrongArchitecture, .swap("EACCES")] {
+            XCTAssertFalse(UpdateCoordinator.mayPassByItself(failure), "\(failure)")
+        }
+        XCTAssertFalse(UpdateCoordinator.mayPassByItself(UpdateFailure.selfTest))
+        XCTAssertFalse(UpdateCoordinator.mayPassByItself(UpdateCommit.Refusal.appMoved))
+    }
+
     @MainActor
     func testAtLaunchSkipStopsTheDownload() async {
         let h = Harness()
