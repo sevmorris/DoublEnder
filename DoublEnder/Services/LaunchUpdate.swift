@@ -20,6 +20,13 @@ import AppKit
 /// The work is `UpdateCoordinator`'s, the same flow Check for Updates… uses, so
 /// the menu during this brings this window forward rather than starting a
 /// second download. This is the window, and the decision to open the recorder.
+///
+/// Before the check, a copy that can never update itself where it is (on its
+/// disk image, or translocated from Downloads) is offered a move to the
+/// Applications folder (`MoveToApplications`), and a copy as new as this one
+/// that is already there is opened instead. Not Now opens the recorder at once:
+/// the check would only find a copy that cannot install anything, and the
+/// prompt after launch could only offer a download.
 @MainActor
 final class LaunchUpdate {
     /// How long the manifest check may hold up the recorder.
@@ -31,8 +38,12 @@ final class LaunchUpdate {
 
     private let window = UpdatePanel(title: appName, buttonTitle: "Skip")
     private let coordinator: UpdateCoordinator
+    private let moving: LaunchMove
     private let launch: (_ checkAfterLaunch: Bool) -> Void
     private var finished = false
+    /// Copying the app to Applications, or handing over to it: Skip would open
+    /// the recorder under a quit.
+    private var handingOver = false
 
     /// Starts the check, with its window on screen before this returns, so
     /// SwiftUI finds a window at launch and presents no scene of its own.
@@ -40,22 +51,24 @@ final class LaunchUpdate {
     /// update check after launch still has something to offer.
     /// It is not called when the update installs, since the app relaunches.
     @discardableResult
-    static func run(coordinator: UpdateCoordinator? = nil,
+    static func run(coordinator: UpdateCoordinator? = nil, moving: LaunchMove? = nil,
                     then launch: @escaping (_ checkAfterLaunch: Bool) -> Void) -> LaunchUpdate {
-        let update = LaunchUpdate(coordinator: coordinator ?? .shared, launch: launch)
+        let update = LaunchUpdate(coordinator: coordinator ?? .shared, moving: moving ?? .live(), launch: launch)
         update.start()
         return update
     }
 
-    private init(coordinator: UpdateCoordinator, launch: @escaping (_ checkAfterLaunch: Bool) -> Void) {
+    private init(coordinator: UpdateCoordinator, moving: LaunchMove,
+                 launch: @escaping (_ checkAfterLaunch: Bool) -> Void) {
         self.coordinator = coordinator
+        self.moving = moving
         self.launch = launch
     }
 
     private func start() {
         window.showProgress("Checking for updates…", fraction: nil)
         window.onButton = { [weak self] in
-            guard let self else { return }
+            guard let self, !self.handingOver else { return }
             // Stops the download or the copy where it is. The install itself is
             // one step in one pass of the run loop, so Skip lands before it or
             // not at all.
@@ -66,6 +79,7 @@ final class LaunchUpdate {
         window.show()
         // The task holds self until it ends, and it ends in finish or a relaunch.
         Task { @MainActor in
+            if await settleWhereItRuns() { return }
             let outcome = await coordinator.runAtLaunch(window: window, checkTimeout: Self.checkTimeout,
                                                         budget: Self.installBudget)
             switch outcome {
@@ -75,6 +89,59 @@ final class LaunchUpdate {
                 finish(checkAfterLaunch: checkAfterLaunch)
             }
         }
+    }
+
+    /// A copy that cannot update itself where it is: hand over to the installed
+    /// copy, or offer the move. True when that settled the launch: the app is
+    /// quitting for the other copy, or the recorder is opening.
+    private func settleWhereItRuns() async -> Bool {
+        let decision = await moving.decide()
+        // Skipped while it looked: the recorder is open already.
+        if finished { return true }
+        switch decision {
+        case .stay:
+            return false
+
+        case .openInstalled(let installed, let volume):
+            setHandingOver(true)
+            window.showProgress("Opening \(Self.appName)…", fraction: nil)
+            if moving.handOff(installed, volume) { return true }
+            // The other copy could not be opened: this one carries on.
+            setHandingOver(false)
+            window.showProgress("Checking for updates…", fraction: nil)
+            return false
+
+        case .offer(let offer):
+            let move = await ModalGate.runFromRunLoop { self.moving.ask(offer) } ?? false
+            guard move else {
+                finish(checkAfterLaunch: false)
+                return true
+            }
+            setHandingOver(true)
+            window.showProgress("Moving \(Self.appName) to Applications…", fraction: nil)
+            switch await moving.move(offer) {
+            case .success(let installed):
+                window.showProgress("Opening \(Self.appName)…", fraction: nil)
+                if moving.handOff(installed, offer.origin.volumeToEject) { return true }
+                await ModalGate.runFromRunLoop {
+                    self.moving.tell("\(Self.appName) Is in Your Applications Folder",
+                                     "Open it from there next time. This time it carries on from where it is.")
+                }
+            case .failure(let error):
+                await ModalGate.runFromRunLoop {
+                    self.moving.tell("Couldn't Move \(Self.appName)",
+                                     "\(error.localizedDescription) \(Self.appName) carries on from where it is.")
+                }
+            }
+            setHandingOver(false)
+            finish(checkAfterLaunch: false)
+            return true
+        }
+    }
+
+    private func setHandingOver(_ on: Bool) {
+        handingOver = on
+        window.setButtonEnabled(!on)
     }
 
     /// Opens the recorder, once. This window leaves the screen first: building the
@@ -100,6 +167,74 @@ final class LaunchUpdate {
             self.launch(checkAfterLaunch)
             self.window.close()
         }
+    }
+}
+/// What Cloud's launch does about a copy that cannot update itself where it is.
+struct LaunchMove {
+    var decide: @MainActor () async -> MoveToApplications.Decision
+    /// The question. True for Move to Applications.
+    var ask: @MainActor (MoveToApplications.Offer) -> Bool
+    var move: @MainActor (MoveToApplications.Offer) async -> Result<URL, Error>
+    /// Arranges for `app` to open once this process has gone, ejecting
+    /// `volume` after it, and quits. False when that could not be arranged.
+    var handOff: @MainActor (_ app: URL, _ ejecting: URL?) -> Bool
+    var tell: @MainActor (_ title: String, _ text: String) -> Void
+
+    static func live() -> LaunchMove {
+        let app = Bundle.main.bundleURL
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        let tools = MoveToApplications.Tools.live(bundleID: Bundle.main.bundleIdentifier ?? "")
+        let defaults = UserDefaults.app
+        return LaunchMove(
+            decide: {
+                let lastMove = defaults.object(forKey: MoveToApplications.lastMoveKey) as? Date
+                // It checks signatures: off the main thread.
+                return await Task.detached(priority: .userInitiated) {
+                    MoveToApplications.decide(app: app, appName: updaterAppName, version: version,
+                                              lastMove: lastMove, tools: tools)
+                }.value
+            },
+            ask: { offer in
+                let alert = NSAlert()
+                alert.window.appearance = NSAppearance(named: .darkAqua)
+                alert.messageText = "Move \(offer.appName) to Applications?"
+                alert.informativeText = MoveToApplications.explanation(for: offer)
+                alert.addButton(withTitle: "Move to Applications")
+                alert.addButton(withTitle: "Not Now").keyEquivalent = "\u{1b}"
+                return alert.runModal() == .alertFirstButtonReturn
+            },
+            move: { offer in
+                await Task.detached(priority: .userInitiated) {
+                    Result { try MoveToApplications.move(offer, version: version, tools: tools) }
+                }.value
+            },
+            handOff: { target, volume in
+                // An installed copy put there by hand may still carry its
+                // download mark, and would be translocated, stuck, again. It
+                // was checked: a signed release of this app.
+                if MoveToApplications.hasQuarantine(target) {
+                    MoveToApplications.removeQuarantine(under: target)
+                }
+                do {
+                    _ = try UpdateRelauncher.prepare(toOpen: target, marker: nil, ejecting: volume)
+                } catch {
+                    return false
+                }
+                // On the main thread, which is the one that exits: written
+                // from any other, it could be lost.
+                defaults.set(Date(), forKey: MoveToApplications.lastMoveKey)
+                // No recorder, no update under way: nothing for a quit to ask.
+                NSApp.terminate(nil)
+                return true
+            },
+            tell: { title, text in
+                let alert = NSAlert()
+                alert.window.appearance = NSAppearance(named: .darkAqua)
+                alert.messageText = title
+                alert.informativeText = text
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            })
     }
 }
 #endif

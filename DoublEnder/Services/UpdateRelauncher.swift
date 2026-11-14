@@ -16,12 +16,16 @@ import Foundation
 ///     copy that ends while the marker is still there never became healthy, so
 ///     it is opened again, up to three times in all: a version that cannot
 ///     stay up then reaches its own rollback without anyone clicking.
+///   - It can eject a disk image once the app it opened is up: the copy that
+///     quit was running from it (`MoveToApplications`).
 enum UpdateRelauncher {
 
     /// $1: PID to wait for. $2: the app to open. $3: the probation marker, or
     /// empty for none. $4: the opener, `/usr/bin/open` outside of tests.
+    /// $5: a volume to eject once the app is open, or empty. $6: the ejector,
+    /// `/usr/bin/hdiutil` outside of tests.
     static let script = """
-        pid="$1"; app="$2"; marker="$3"; opener="$4"
+        pid="$1"; app="$2"; marker="$3"; opener="$4"; volume="$5"; ejector="$6"
         i=0
         while kill -0 "$pid" 2>/dev/null; do
             i=$((i + 1))
@@ -33,7 +37,10 @@ enum UpdateRelauncher {
         while [ "$tries" -lt 3 ]; do
             tries=$((tries + 1))
             if [ -z "$marker" ]; then
-                "$opener" "$app" && exit 0
+                if "$opener" "$app"; then
+                    [ -n "$volume" ] && "$ejector" detach "$volume" -quiet
+                    exit 0
+                fi
                 sleep 1
                 continue
             fi
@@ -55,10 +62,12 @@ enum UpdateRelauncher {
     /// Starts the helper. It does nothing until `pid` has gone, and `cancel`
     /// on the result stops it before then.
     static func prepare(toOpen app: URL, after pid: Int32 = ProcessInfo.processInfo.processIdentifier,
-                        marker: URL?, opener: String = "/usr/bin/open") throws -> Process {
+                        marker: URL?, opener: String = "/usr/bin/open",
+                        ejecting volume: URL? = nil, ejector: String = "/usr/bin/hdiutil") throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script, "sh", String(pid), app.path, marker?.path ?? "", opener]
+        process.arguments = ["-c", script, "sh", String(pid), app.path, marker?.path ?? "", opener,
+                             volume?.path ?? "", ejector]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

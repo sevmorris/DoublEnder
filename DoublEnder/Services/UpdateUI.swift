@@ -22,6 +22,7 @@ final class UpdatePanel: NSObject, UpdateProgressShowing {
     private let window: NSWindow
     private let label = NSTextField(wrappingLabelWithString: "")
     private let bar = NSProgressIndicator()
+    private var button: NSButton?
     var onButton: (() -> Void)?
     /// Closed or turned transparent: never brought back.
     private var retired = false
@@ -42,6 +43,7 @@ final class UpdatePanel: NSObject, UpdateProgressShowing {
         let button = NSButton(title: buttonTitle, target: self, action: #selector(buttonPressed))
         button.bezelStyle = .push
         button.keyEquivalent = "\u{1b}"
+        self.button = button
 
         guard let content = window.contentView else { return }
         for view in [label, bar, button] as [NSView] {
@@ -113,6 +115,11 @@ final class UpdatePanel: NSObject, UpdateProgressShowing {
             bar.isIndeterminate = true
             bar.startAnimation(nil)
         }
+    }
+
+    /// Off while pressing it would do harm: Skip while the app is being moved.
+    func setButtonEnabled(_ enabled: Bool) {
+        button?.isEnabled = enabled
     }
 
     @objc private func buttonPressed() {
