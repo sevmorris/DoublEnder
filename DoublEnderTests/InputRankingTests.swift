@@ -138,3 +138,49 @@ final class InputRankingTests: XCTestCase {
         XCTAssertEqual(InputRanking.defaultInput(among: [apollo, usbMic]), apollo)
     }
 }
+
+/// What the engine makes of its bound input while no take is in progress.
+final class IdleInputCheckTests: XCTestCase {
+
+    func testAConnectedListedInputIsUsable() {
+        for notified in [false, true] {
+            for rebuilding in [false, true] {
+                XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: true, listedConnected: true,
+                                                          lossNotified: notified, rebuilding: rebuilding), .usable)
+            }
+        }
+    }
+
+    /// Gone: the recorder is told once.
+    func testALostInputIsReportedOnce() {
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: false, listedConnected: false,
+                                                  lossNotified: false, rebuilding: false), .lost)
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: false, listedConnected: false,
+                                                  lossNotified: true, rebuilding: false), .stillLost)
+        // The object says connected but the list no longer has it.
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: true, listedConnected: false,
+                                                  lossNotified: false, rebuilding: false), .lost)
+    }
+
+    /// A Mac with no other input: the only microphone unplugged and plugged
+    /// back in. The session is bound to an object that will never deliver
+    /// again, while the list holds a new one with the same UID. Until the
+    /// engine rebuilt on it, the input showed by name over a dead session and
+    /// RECORD failed five seconds in.
+    func testAnInputThatComesBackIsBoundAgain() {
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: false, listedConnected: true,
+                                                  lossNotified: true, rebuilding: false), .returned)
+        // Unplugged and back before the first look at the list.
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: false, listedConnected: true,
+                                                  lossNotified: false, rebuilding: false), .returned)
+    }
+
+    /// The recorder has already asked for another input (its fallback after
+    /// the loss): the engine does not put the old one back under it.
+    func testARebuildUnderWayIsLeftToWhoeverAskedForIt() {
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: false, listedConnected: true,
+                                                  lossNotified: true, rebuilding: true), .stillLost)
+        XCTAssertEqual(AudioEngine.idleInputCheck(boundConnected: false, listedConnected: true,
+                                                  lossNotified: false, rebuilding: true), .lost)
+    }
+}

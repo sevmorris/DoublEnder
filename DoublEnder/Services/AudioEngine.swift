@@ -747,19 +747,58 @@ class AudioEngine: NSObject, ObservableObject {
         handleRecordingCaptureFailure(reason: reason, kind: .inputLost)
     }
 
+    /// How the bound input stands while no take is in progress.
+    enum IdleInputCheck: Equatable {
+        case usable
+        /// It has gone, and the recorder has not been told yet.
+        case lost
+        /// It has gone, and the recorder knows.
+        case stillLost
+        /// It went and is back: the session is bound to a device that will
+        /// never deliver again, and the one to bind is in the list.
+        case returned
+    }
+
+    /// `boundConnected` is the bound device object's own word, which never
+    /// turns true again once it has been false: a device that is plugged back
+    /// in is a new object with the same UID. `listedConnected` says whether
+    /// such an object is in the list now.
+    static func idleInputCheck(boundConnected: Bool, listedConnected: Bool,
+                               lossNotified: Bool, rebuilding: Bool) -> IdleInputCheck {
+        if boundConnected && listedConnected { return .usable }
+        // A rebuild under way is about to replace the bound input anyway, and
+        // whoever asked for it decides what the session ends up on.
+        if !boundConnected && listedConnected && !rebuilding { return .returned }
+        return lossNotified ? .stillLost : .lost
+    }
+
     /// When idle, rebuild if the bound input is gone so the user isn't left
     /// on a ghost device that can't actually capture.
     private func notifyIfActiveInputLostWhileIdle() {
         guard !isRecording else { return }
         guard let bound = currentInput?.device else { return }
         let uid = bound.uniqueID
-        let stillUsable = bound.isConnected
-            && availableInputDevices.contains(where: { $0.uniqueID == uid && $0.isConnected })
-        if stillUsable {
+        let listed = availableInputDevices.first(where: { $0.uniqueID == uid && $0.isConnected })
+        switch Self.idleInputCheck(boundConnected: bound.isConnected, listedConnected: listed != nil,
+                                   lossNotified: idleInputLossNotified, rebuilding: isRebuilding) {
+        case .usable:
             idleInputLossNotified = false
             return
+        case .stillLost:
+            return
+        case .returned:
+            // On a Mac with no other input (a Mac mini, a laptop closed on a
+            // display) the recorder had nothing to fall back to, so the
+            // selection still names this device. Plugged back in, it showed
+            // by name over a session that could not capture, and RECORD
+            // failed five seconds in with "The microphone delivered no audio".
+            guard let listed else { return }
+            logger.info("Bound input is back: rebuilding the session on it")
+            setDevice(listed)
+            return
+        case .lost:
+            break
         }
-        guard !idleInputLossNotified else { return }
         idleInputLossNotified = true
         logger.warning("Active input lost while idle: \(bound.localizedName, privacy: .public)")
         // From the run loop: the recorder answers with a dialog, which must
