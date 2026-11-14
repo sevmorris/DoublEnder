@@ -55,6 +55,7 @@
 		D060CDC1B0B5AFCB111C784F /* UpdateCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 691D8DD7C6E61CE1248AB1E1 /* UpdateCoordinatorTests.swift */; };
 		D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */; };
 		D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90248FE45395766ECDFF5C6 /* HelpView.swift */; };
+		D71457B702BBCDA0DD846D2C /* BackgroundUpdateSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CB9F4878215202FE50730 /* BackgroundUpdateSchedule.swift */; };
 		D8AD0355B7BADD119291A9F9 /* PendingUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F4779D2DA515B85F7C9E9D /* PendingUpload.swift */; };
 		D9046CCBF20C26AAD2467905 /* WaitingOffers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4962F00964F107E3BDEDC74 /* WaitingOffers.swift */; };
 		DAEB895DBC7EAC349E5C635F /* RecorderMainPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5697D75469F0FD10D1D0153F /* RecorderMainPanel.swift */; };
@@ -121,6 +122,7 @@
 		A664098C4701B731F134D15A /* DoublEnderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoublEnderApp.swift; sourceTree = "<group>"; };
 		ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfUpdaterTests.swift; sourceTree = "<group>"; };
 		ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRanking.swift; sourceTree = "<group>"; };
+		B08CB9F4878215202FE50730 /* BackgroundUpdateSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUpdateSchedule.swift; sourceTree = "<group>"; };
 		B59F5D046BC0124F31968AC4 /* MoveToApplications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToApplications.swift; sourceTree = "<group>"; };
 		BEFC981AFE64B7F016D02E37 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C757981FB56F560204E52311 /* CRC32CTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32CTests.swift; sourceTree = "<group>"; };
@@ -187,6 +189,7 @@
 			children = (
 				22C9A57A92C703BA565C04FC /* AppActivity.swift */,
 				26F427670EB2DAF640994599 /* AudioEngine.swift */,
+				B08CB9F4878215202FE50730 /* BackgroundUpdateSchedule.swift */,
 				A37A0E4755F9A4E548944F49 /* FlagWait.swift */,
 				E4A9BA83E118BA475A640B32 /* LaunchUpdate.swift */,
 				440F6F24F552E455E0696937 /* MainRunLoop.swift */,
@@ -401,6 +404,7 @@
 			files = (
 				43F4389F52B73A4531AC45AA /* AppActivity.swift in Sources */,
 				EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */,
+				D71457B702BBCDA0DD846D2C /* BackgroundUpdateSchedule.swift in Sources */,
 				FB3C04C5129AA1C6A4751208 /* CRC32C.swift in Sources */,
 				7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */,
 				0CA44217B30555E1CB72AE7B /* DiskSpaceChecker.swift in Sources */,

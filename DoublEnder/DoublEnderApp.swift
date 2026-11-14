@@ -216,12 +216,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if checkForUpdatesAfterLaunch {
             UpdateCoordinator.shared.startBackgroundUpdate(promptIfStuck: true)
         }
+        scheduleUpdatesWhileOpen()
         #else
         runCrashRecoveryIfNeeded()
         Task { await checkForUpdates(silent: true) }
         #endif
     }
 
+    #if GCS_ENABLED
+    private var updateTimer: Timer?
+
+    /// A guest who leaves the app open for days is updated too: every few
+    /// hours, and soon after a wake, a check runs while nothing is under way,
+    /// and what it finds is installed when the app quits.
+    private func scheduleUpdatesWhileOpen() {
+        let timer = Timer(timeInterval: BackgroundUpdateSchedule.tick, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.considerUpdateWhileOpen(afterWake: false) }
+        }
+        timer.tolerance = 60
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                MainRunLoop.perform(after: BackgroundUpdateSchedule.afterWake) {
+                    self?.considerUpdateWhileOpen(afterWake: true)
+                }
+            }
+        }
+    }
+
+    private func considerUpdateWhileOpen(afterWake: Bool) {
+        let coordinator = UpdateCoordinator.shared
+        guard BackgroundUpdateSchedule.isDue(now: Date(), lastCheck: coordinator.lastCheck, afterWake: afterWake),
+              !AppActivity.shared.blocksHeavyWork else { return }
+        coordinator.startBackgroundUpdate(promptIfStuck: false)
+    }
+    #endif
 
     func applicationDidBecomeActive(_ notification: Notification) {
         // The recorder can become key, so AppKit restores the key window on

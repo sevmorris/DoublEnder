@@ -754,6 +754,19 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertFalse(h.coordinator.installAtQuit())
     }
 
+    func testChecksWhileOpenAreDueEveryFewHoursAndSoonAfterAWake() {
+        let now = Date()
+        XCTAssertTrue(BackgroundUpdateSchedule.isDue(now: now, lastCheck: nil, afterWake: false))
+        XCTAssertFalse(BackgroundUpdateSchedule.isDue(now: now, lastCheck: now.addingTimeInterval(-3 * 3600),
+                                                      afterWake: false))
+        XCTAssertTrue(BackgroundUpdateSchedule.isDue(now: now, lastCheck: now.addingTimeInterval(-4 * 3600),
+                                                     afterWake: false))
+        XCTAssertFalse(BackgroundUpdateSchedule.isDue(now: now, lastCheck: now.addingTimeInterval(-30 * 60),
+                                                      afterWake: true))
+        XCTAssertTrue(BackgroundUpdateSchedule.isDue(now: now, lastCheck: now.addingTimeInterval(-61 * 60),
+                                                     afterWake: true))
+    }
+
     /// The launch check counts as a check; one that failed does not.
     @MainActor
     func testOnlyAnAnsweredCheckCounts() async {
