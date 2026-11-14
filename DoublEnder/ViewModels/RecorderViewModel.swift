@@ -1064,6 +1064,7 @@ class RecorderViewModel: ObservableObject {
                 self.recordingTime = 0
                 self.uploadProgress = 0
                 self.state = .uploading
+                self.rememberUpload(of: url)
                 Task { await self.performUpload(note: takeNote) }
                 #else
                 self.recordingTime = 0
@@ -1097,6 +1098,7 @@ class RecorderViewModel: ObservableObject {
                         self.recordedFileURL = recovered
                         self.uploadProgress = 0
                         self.state = .uploading
+                        self.rememberUpload(of: recovered)
                         Task { await self.performUpload(note: takeNote) }
                     } else {
                         self.recordedFileURL = nil
@@ -1400,26 +1402,11 @@ class RecorderViewModel: ObservableObject {
     }
 
     #if GCS_ENABLED
-    /// A recording whose upload is pending or has failed, persisted across quit
-    /// so the next launch can finish it. `sessionURI`/`crc32c` are set once a
-    /// resumable session has been initiated: with them, a resume continues from
-    /// GCS's committed offset instead of restarting; without them (a crash
-    /// before initiation, or a legacy record) the upload restarts (FR-003).
-    private struct PendingUpload: Codable {
-        let path: String
-        var sessionURI: String?
-        var crc32c: String?
-    }
-
-    /// The persisted pending upload, or nil. Tolerates a legacy bare-path value
-    /// written by a pre-FR-003 build (treated as "no session → restart").
+    /// The persisted pending upload (`PendingUpload`), or nil. Tolerates a
+    /// legacy bare-path value written by a pre-FR-003 build (treated as "no
+    /// session → restart").
     private var persistedPendingUpload: PendingUpload? {
-        guard let raw = defaults.string(forKey: Self.pendingUploadKey) else { return nil }
-        if let data = raw.data(using: .utf8),
-           let record = try? JSONDecoder().decode(PendingUpload.self, from: data) {
-            return record
-        }
-        return PendingUpload(path: raw, sessionURI: nil, crc32c: nil)
+        PendingUpload.decode(defaults.string(forKey: Self.pendingUploadKey))
     }
 
     /// Path of a recording whose upload is pending/failed, if any. Read by
@@ -1428,9 +1415,20 @@ class RecorderViewModel: ObservableObject {
 
     /// Persist (or update) the pending-upload record.
     private func setPendingUpload(_ record: PendingUpload) {
-        guard let data = try? JSONEncoder().encode(record),
-              let json = String(data: data, encoding: .utf8) else { return }
+        guard let json = record.encoded else { return }
         defaults.set(json, forKey: Self.pendingUploadKey)
+    }
+
+    /// Records `file` as waiting to be uploaded, before its upload starts.
+    /// Called on the main thread by everything that starts one, so the record
+    /// is there whatever happens next. `performUpload` used to be the only
+    /// place it was written, from its background task; a quit during a take
+    /// answered "Stop & Save" ends the app in the same moment that task
+    /// starts, and a write made from another thread as the process exits is
+    /// lost. The take was then on the Desktop with nothing to say it had
+    /// never been uploaded.
+    private func rememberUpload(of file: URL) {
+        setPendingUpload(PendingUpload.starting(file, existing: persistedPendingUpload))
     }
 
     /// Forget the pending upload (called on success, or when the user skips
@@ -1443,12 +1441,13 @@ class RecorderViewModel: ObservableObject {
     /// untouched — re-attempt only the upload, no new recording.
     func retryUpload() {
         guard cloudUploadEnabled else { return }
-        guard recordedFileURL != nil else {
+        guard let fileURL = recordedFileURL else {
             state = .error("No recording found to upload")
             return
         }
         uploadProgress = 0
         state = .uploading
+        rememberUpload(of: fileURL)
         Task { await performUpload() }
     }
 
@@ -1458,6 +1457,7 @@ class RecorderViewModel: ObservableObject {
         recordedFileURL = fileURL
         uploadProgress = 0
         state = .uploading
+        rememberUpload(of: fileURL)
         Task { await performUpload() }
     }
 
@@ -1517,12 +1517,11 @@ class RecorderViewModel: ObservableObject {
             return
         }
 
-        // Preserve the pre-initiation restart guarantee: if no resumable session
-        // exists yet, record the path now so a crash before init still leaves
-        // something for the next-launch prompt.
-        if persistedPendingUpload?.sessionURI == nil {
-            setPendingUpload(PendingUpload(path: fileURL.path, sessionURI: nil, crc32c: nil))
-        }
+        // Whoever started this upload has recorded the file already
+        // (`rememberUpload`), on the main thread. Once more here costs nothing
+        // and keeps the guarantee where the upload is: a crash before a
+        // session opens still leaves something for the next-launch prompt.
+        rememberUpload(of: fileURL)
 
         let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
         var attempt = 0
@@ -1543,12 +1542,11 @@ class RecorderViewModel: ObservableObject {
                 // loop or a relaunch) resumes from GCS's committed offset.
                 let sessionURI: URL
                 let crc: String
-                if let record = persistedPendingUpload,
-                   let uriString = record.sessionURI,
-                   let uri = URL(string: uriString),
-                   let storedCRC = record.crc32c {
-                    sessionURI = uri
-                    crc = storedCRC
+                // Only a session opened for this very file: another file's
+                // holds that file's bytes and checksum.
+                if let session = persistedPendingUpload?.session(for: fileURL) {
+                    sessionURI = session.uri
+                    crc = session.crc32c
                 } else {
                     let began = try await uploader.beginUpload(fileURL: fileURL)
                     sessionURI = began.sessionURI
@@ -1588,6 +1586,14 @@ class RecorderViewModel: ObservableObject {
                 // The same sanitized summary is all the heartbeat reports.
                 let uploadError = summary.status.map { "\(summary.label) \($0)" } ?? summary.label
                 onMainQueue { self.lastUploadError = uploadError }
+                // Cloud Storage no longer has the session (they last a week):
+                // nothing sent to it will ever succeed. Forget it, and the
+                // next attempt opens a new one and sends the file again.
+                if PendingUpload.sessionIsGone(status: summary.status),
+                   let record = persistedPendingUpload, record.sessionURI != nil {
+                    logger.warning("Upload session gone (HTTP \(statusText, privacy: .public)); the next attempt starts a new one.")
+                    setPendingUpload(record.withoutSession)
+                }
                 // Deterministic failures (integrity mismatch, credential/signing)
                 // won't fix by re-sending — fail now, keep the local file.
                 let nonRetryable = (error as? Uploader.UploaderError)?.isNonRetryable ?? false
