@@ -762,7 +762,9 @@ class AudioEngine: NSObject, ObservableObject {
         guard !idleInputLossNotified else { return }
         idleInputLossNotified = true
         logger.warning("Active input lost while idle: \(bound.localizedName, privacy: .public)")
-        DispatchQueue.main.async { self.onActiveInputLostWhileIdle?() }
+        // From the run loop: the recorder answers with a dialog, which must
+        // not hold the main queue while it waits for a click (`MainRunLoop`).
+        MainRunLoop.deliver { self.onActiveInputLostWhileIdle?() }
     }
 
     /// Unified path for disconnect, runtime error, and unrecoverable interruption
@@ -1267,9 +1269,14 @@ class AudioEngine: NSObject, ObservableObject {
         pendingFileURL = nil
         writerLock.unlock()
 
+        // Every completion below goes through `MainRunLoop.deliver`, not
+        // `DispatchQueue.main.async`: the recorder answers a finished take with
+        // a dialog (the saved confirmation, "Microphone disconnected"), and
+        // one opened from a block of the main queue holds that queue until
+        // someone clicks. It still arrives after everything queued before it.
         guard let writer = writer else {
             sidecar?.close()
-            DispatchQueue.main.async {
+            MainRunLoop.deliver {
                 completion(.failure(RecordingError.noActiveRecording))
             }
             return
@@ -1283,14 +1290,14 @@ class AudioEngine: NSObject, ObservableObject {
             logger.info("stopRecording with zero samples appended — silently discarding")
             sidecar?.discard()
             writer.cancelWriting()
-            DispatchQueue.main.async { completion(.success(nil)) }
+            MainRunLoop.deliver { completion(.success(nil)) }
             return
         }
 
         // We have at least one appended sample — finalize normally.
         input?.markAsFinished()
         writer.finishWriting {
-            DispatchQueue.main.async {
+            MainRunLoop.deliver {
                 if writer.status == .completed {
                     sidecar?.discard()
                     completion(.success(writer.outputURL))

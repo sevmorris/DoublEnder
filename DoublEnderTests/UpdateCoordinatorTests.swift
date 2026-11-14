@@ -260,6 +260,39 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .idle)
     }
 
+    /// A dialog is not work. The USB offer is on screen at most launches with a
+    /// USB microphone, and the check after launch answers under it: the update
+    /// is offered when the dialog has closed, not put off to the next launch.
+    @MainActor
+    func testTheSilentOfferWaitsForADialogToClose() async {
+        let h = Harness()
+        h.presenter.offerChoice = .notNow
+        h.activity.begin(.modal)
+        let flow = Task { await h.coordinator.checkForUpdates(silent: true) }
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(h.presenter.offers.isEmpty, "it opened over the dialog")
+        XCTAssertEqual(h.coordinator.phase, .checking, "it gave up until the next launch")
+
+        h.activity.end(.modal)
+        await flow.value
+        XCTAssertEqual(h.presenter.offers.count, 1)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
+    /// The dialog closed into a take (the name prompt, answered): nothing opens over it.
+    @MainActor
+    func testTheSilentOfferThatWaitedStaysAwayFromATake() async {
+        let h = Harness()
+        h.activity.begin(.modal)
+        let flow = Task { await h.coordinator.checkForUpdates(silent: true) }
+        try? await Task.sleep(for: .milliseconds(100))
+        h.recording(true)
+        h.activity.end(.modal)
+        await flow.value
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
     @MainActor
     func testTheSilentCheckDoesNotOfferAVersionThisCopyRolledBackFrom() async {
         let h = Harness()

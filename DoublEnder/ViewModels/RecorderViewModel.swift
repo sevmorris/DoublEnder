@@ -1563,7 +1563,10 @@ class RecorderViewModel: ObservableObject {
                                                   crc32cBase64: crc)
 
                 self.clearPendingUpload()
-                await MainActor.run {
+                // From the run loop, not a main actor job: the confirmation is
+                // modal, and from a job it would hold the main queue for as
+                // long as it went unanswered (`MainRunLoop`).
+                MainRunLoop.deliver {
                     self.lastUploadError = nil
                     self.recordingTime = 0
                     self.state = .ready
@@ -1593,7 +1596,7 @@ class RecorderViewModel: ObservableObject {
                     if Self.statusSuggestsClockSkew(summary.status) {
                         logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
                     }
-                    await MainActor.run {
+                    MainRunLoop.deliver {
                         self.state = .uploadFailed(fileURL)
                         UploadConfirmation.present(success: false,
                                                    fileName: fileURL.lastPathComponent,

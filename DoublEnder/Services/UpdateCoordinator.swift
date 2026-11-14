@@ -200,6 +200,14 @@ final class UpdateCoordinator {
                                     hasReleaseNotes: env.showsReleaseNotes)
             let presenter = env.presenter
             let activity = env.activity
+            // A dialog is not work. The check at launch waits for one to close
+            // (the USB offer is up at most launches with a USB microphone)
+            // rather than give up until the next launch.
+            if silent {
+                while activity.blockers == [.modal] {
+                    guard (try? await env.sleep(env.pollInterval)) != nil else { return }
+                }
+            }
             // The check at launch can answer after work has begun. Asked in the
             // same pass of the run loop as the dialog opens, so RECORD pressed
             // while the copy was being checked keeps it away.
