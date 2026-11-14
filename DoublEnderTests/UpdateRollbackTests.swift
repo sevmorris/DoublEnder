@@ -147,7 +147,8 @@ final class UpdateRollbackTests: XCTestCase {
     func testHealthyDiscardsThePreviousVersion() {
         arm()
         var discarded: [URL] = []
-        UpdateRollback.markHealthy(runningVersion: "2.9.0lr", store: store, discard: { discarded.append($0) })
+        UpdateRollback.markHealthy(runningVersion: "2.9.0lr", installed: installed, store: store,
+                                   discard: { discarded.append($0) })
         XCTAssertEqual(discarded, [previous])
         XCTAssertNil(store.load().probation)
         XCTAssertFalse(markerExists)
@@ -158,9 +159,82 @@ final class UpdateRollbackTests: XCTestCase {
     func testTheOldVersionsQuitLeavesProbationAlone() {
         arm()
         var discarded: [URL] = []
-        UpdateRollback.markHealthy(runningVersion: "2.8.3lr", store: store, discard: { discarded.append($0) })
+        UpdateRollback.markHealthy(runningVersion: "2.8.3lr", installed: installed, store: store,
+                                   discard: { discarded.append($0) })
         XCTAssertTrue(discarded.isEmpty)
         XCTAssertNotNil(store.load().probation)
+        XCTAssertTrue(markerExists)
+    }
+
+    /// A second copy of the new version, run from a disk image or another
+    /// folder, shares this state. Its good health says nothing about the copy
+    /// that was replaced, and must not delete what that copy can go back to.
+    func testAnotherCopysHealthLeavesProbationAlone() {
+        arm()
+        var discarded: [URL] = []
+        UpdateRollback.markHealthy(runningVersion: "2.9.0lr", installed: URL(fileURLWithPath: "/Volumes/DMG/App.app"),
+                                   store: store, discard: { discarded.append($0) })
+        XCTAssertTrue(discarded.isEmpty)
+        XCTAssertNotNil(store.load().probation)
+        XCTAssertTrue(markerExists)
+    }
+
+    // MARK: - A quit before the recorder opened
+
+    private func start(_ calls: Calls) -> UpdateRollback.LaunchDecision {
+        UpdateRollback.atLaunch(runningVersion: "2.9.0lr", installed: installed, store: store, tools: tools(calls))
+    }
+
+    private func quitBeforeTheRecorder(version: String = "2.9.0lr", installed copy: URL? = nil) {
+        UpdateRollback.noteCleanQuitBeforeHealthy(runningVersion: version, installed: copy ?? installed, store: store)
+    }
+
+    /// After the unprompted relaunch a guest quits while "Checking for
+    /// updates…" is still up, and again when the helper reopens the app. Those
+    /// starts ended because someone quit, not because the version cannot stay
+    /// up: however often it happens, nothing is rolled back.
+    func testQuittingBeforeTheRecorderOpensNeverRollsAGoodVersionBack() {
+        arm()
+        let calls = Calls()
+        for _ in 1...5 {
+            XCTAssertEqual(start(calls), .proceed)
+            quitBeforeTheRecorder()
+        }
+        XCTAssertTrue(calls.swaps.isEmpty, "a good version was rolled back because it was quit")
+        XCTAssertFalse(UpdateRollback.isSkipped("2.9.0lr", store: store))
+        XCTAssertEqual(store.load().probation?.launches, 0)
+    }
+
+    /// The marker is what the relaunch helper watches: gone, it leaves the app
+    /// closed instead of reopening one the guest just quit.
+    func testAQuitBeforeTheRecorderTellsTheHelperToStop() {
+        arm()
+        _ = start(Calls())
+        XCTAssertTrue(markerExists)
+        quitBeforeTheRecorder()
+        XCTAssertFalse(markerExists)
+        XCTAssertNotNil(store.load().probation, "the version has still to show it stays up")
+    }
+
+    /// Starts that ended by themselves still count, with quits in between.
+    func testCrashesStillCountAroundAQuit() {
+        arm()
+        let calls = Calls()
+        XCTAssertEqual(start(calls), .proceed)   // crashed
+        XCTAssertEqual(start(calls), .proceed)   // quit before the recorder
+        quitBeforeTheRecorder()
+        XCTAssertEqual(start(calls), .proceed)   // crashed
+        XCTAssertEqual(start(calls), .rolledBack)
+        XCTAssertEqual(calls.swaps.count, 1)
+    }
+
+    /// The old version quitting to make way, and a second copy of the new one.
+    func testOnlyTheCopyOnProbationsQuitIsNoted() {
+        arm()
+        _ = start(Calls())
+        quitBeforeTheRecorder(version: "2.8.3lr")
+        quitBeforeTheRecorder(installed: URL(fileURLWithPath: "/Volumes/DMG/App.app"))
+        XCTAssertEqual(store.load().probation?.launches, 1)
         XCTAssertTrue(markerExists)
     }
 

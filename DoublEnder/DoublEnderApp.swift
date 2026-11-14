@@ -247,8 +247,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Also wiped at `applicationWillFinishLaunching` to cover crashes.
     func applicationWillTerminate(_ notification: Notification) {
         // A clean quit is as healthy as a few seconds of recorder: a guest who
-        // quits at once must not count against the version.
-        if mainWindow != nil { Self.markUpdateHealthy() }
+        // quits at once must not count against the version. Before the recorder
+        // has opened the version has shown nothing either way, so the start is
+        // simply not counted.
+        if mainWindow != nil {
+            Self.markUpdateHealthy()
+        } else {
+            UpdateRollback.noteCleanQuitBeforeHealthy(runningVersion: Self.runningVersion,
+                                                      installed: Bundle.main.bundleURL, store: .app)
+        }
         // A staged update waiting for its turn goes with the app.
         UpdateCoordinator.shared.cleanUpForQuit()
         // Without a recorder there are no session settings beyond what
@@ -320,10 +327,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// How long the recorder stays up before a new version counts as healthy.
     private static let healthyAfter: TimeInterval = 5
 
+    private static var runningVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
     private static func markUpdateHealthy() {
-        UpdateRollback.markHealthy(
-            runningVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
-            store: .app, discard: { SelfUpdater.discard($0) })
+        UpdateRollback.markHealthy(runningVersion: runningVersion, installed: Bundle.main.bundleURL,
+                                   store: .app, discard: { SelfUpdater.discard($0) })
     }
 
     /// What an update cut short in an earlier run: a mounted image, a download,
