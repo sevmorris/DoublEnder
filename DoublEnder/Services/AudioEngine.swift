@@ -281,7 +281,8 @@ class AudioEngine: NSObject, ObservableObject {
     var onActiveInputLostWhileIdle: (() -> Void)?
 
     /// Called on the main thread when a USB input device appears in the
-    /// system while the app is running. Fires only for genuinely new UIDs;
+    /// system while the app is running, during a take as well: the recorder
+    /// decides when to offer it. Fires only for genuinely new UIDs;
     /// the engine seeds its known-UID set on its first device refresh, so
     /// the launch-time population does NOT trigger this callback.
     /// RecorderViewModel sets this to offer a "switch input?" prompt.
@@ -689,10 +690,12 @@ class AudioEngine: NSObject, ObservableObject {
         if hasSeededKnownDevices {
             let newUIDs = currentUIDs.subtracting(knownInputDeviceUIDs)
             knownInputDeviceUIDs = currentUIDs
+            // During a take too: the recorder keeps the offer until the take
+            // is over. This used to stay quiet during a take, and the device,
+            // known from then on, was never offered.
             for uid in newUIDs {
                 if let device = visibleDevices.first(where: { $0.uniqueID == uid }),
-                   isUSBDevice(device),
-                   !isRecording {
+                   isUSBDevice(device) {
                     onNewUSBDeviceDetected?(device)
                 }
             }

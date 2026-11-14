@@ -683,9 +683,14 @@ class RecorderViewModel: ObservableObject {
     private lazy var usbOffers = WaitingOffers<String>(
         canOpen: { [weak self] in
             guard let self else { return false }
-            // Not over a take: the device is in the picker, and the offer is
-            // made when the take is over.
-            return !self.isCurrentlyRecording && !self.isShowingModalAlert && ModalGate.canOpenOffer()
+            #if GCS_ENABLED
+            let uploading = self.isCurrentlyUploading
+            #else
+            let uploading = false
+            #endif
+            return Self.offerMayOpen(recording: self.isCurrentlyRecording, finalizing: self.isFinalizingRecording,
+                                     uploading: uploading,
+                                     dialogInTheWay: self.isShowingModalAlert || !ModalGate.canOpenOffer())
         },
         isWanted: { [weak self] uid in self?.usbDeviceToOffer(uid) != nil },
         present: { [weak self] uid in self?.presentUSBSwitchPrompt(uid: uid) })
@@ -717,6 +722,15 @@ class RecorderViewModel: ObservableObject {
         return Self.isWorthOffering(uid: uid, selected: selectedInputDeviceID, dismissed: dismissedUSBDevices,
                                     isDockPort: InputRanking.isDockPort(audioEngine.inputCandidate(for: device)))
             ? device : nil
+    }
+
+    /// Whether an offer may open now. Not over a take, nor while its file is
+    /// closed: a USB input plugged in during a take is offered once the take is
+    /// over. Not during an upload either, whose confirmation is the take's
+    /// own: the offer follows it rather than open under it. Not over another
+    /// dialog (`ModalGate`), the take's confirmation included.
+    static func offerMayOpen(recording: Bool, finalizing: Bool, uploading: Bool, dialogInTheWay: Bool) -> Bool {
+        !recording && !finalizing && !uploading && !dialogInTheWay
     }
 
     /// Whether a USB input that is present is worth an offer.

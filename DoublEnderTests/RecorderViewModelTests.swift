@@ -258,4 +258,19 @@ final class InputChoiceTests: XCTestCase {
         vm.chooseInput("second-pick")
         XCTAssertEqual(vm.chosenInputUID, "second-pick")
     }
+
+    /// A USB input plugged in during a take, or during its upload, is offered
+    /// after the take and its confirmation, not over them.
+    func testAnOfferWaitsForTheTakeItsUploadAndItsConfirmation() {
+        XCTAssertTrue(RecorderViewModel.offerMayOpen(recording: false, finalizing: false, uploading: false,
+                                                     dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: true, finalizing: false, uploading: false,
+                                                      dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: false, finalizing: true, uploading: false,
+                                                      dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: false, finalizing: false, uploading: true,
+                                                      dialogInTheWay: false))
+        XCTAssertFalse(RecorderViewModel.offerMayOpen(recording: false, finalizing: false, uploading: false,
+                                                      dialogInTheWay: true))
+    }
 }
