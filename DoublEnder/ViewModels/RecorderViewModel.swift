@@ -359,6 +359,8 @@ class RecorderViewModel: ObservableObject {
         if isCurrentlyRecording && audioEngine.sessionInterrupted {
             return "Input interrupted — reconnecting…"
         }
+        // The app changed the input by itself: say so for a few seconds.
+        if !isCurrentlyRecording, let inputNotice { return inputNotice }
         // SCO / low-quality input: show regardless of recording state so the
         // user can switch devices before pressing record.
         if audioEngine.lowQualityInput { return "Low-quality input (BT SCO?)" }
@@ -452,6 +454,12 @@ class RecorderViewModel: ObservableObject {
     init(defaults: UserDefaults = .app) {
         self.defaults = defaults
         audioEngine.$availableInputDevices.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        // An input the guest chose that comes back is chosen again. Through the
+        // main queue: the list is sent before it is set.
+        audioEngine.$availableInputDevices
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.returnToChosenInputIfBack() }
+            .store(in: &cancellables)
         // Forward engine warning flags so ContentView re-renders when they change.
         audioEngine.$lowQualityInput
             .receive(on: DispatchQueue.main)
@@ -524,6 +532,13 @@ class RecorderViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+                self?.returnToChosenInputIfBack()
+            }
+            .store(in: &cancellables)
+        // A take that ends may let the chosen input come back.
+        $state
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { MainRunLoop.perform { self?.returnToChosenInputIfBack() } }
             }
             .store(in: &cancellables)
         #if GCS_ENABLED
@@ -694,9 +709,11 @@ class RecorderViewModel: ObservableObject {
 
     /// The device to offer for this UID, or nil when there is nothing to
     /// offer: it has gone, it is the current input, it is a dock's audio port,
-    /// or the guest has said "Keep Current" this session.
+    /// the guest has said "Keep Current" this session, or it is the input the
+    /// guest chose, which comes back by itself (`returnToChosenInputIfBack`).
     private func usbDeviceToOffer(_ uid: String) -> AVCaptureDevice? {
-        guard let device = audioEngine.usbInputDevices().first(where: { $0.uniqueID == uid }) else { return nil }
+        guard uid != chosenInputUID,
+              let device = audioEngine.usbInputDevices().first(where: { $0.uniqueID == uid }) else { return nil }
         return Self.isWorthOffering(uid: uid, selected: selectedInputDeviceID, dismissed: dismissedUSBDevices,
                                     isDockPort: InputRanking.isDockPort(audioEngine.inputCandidate(for: device)))
             ? device : nil
@@ -753,10 +770,64 @@ class RecorderViewModel: ObservableObject {
             // and the switch had to be put off to the next tick. And the
             // session has to be seen rebuilding before the name prompt under
             // this offer can take a Return (`startRecordingWhenInputIsReady`).
-            selectedInputDeviceID = device.uniqueID
+            chooseInput(device.uniqueID)
         } else {
             dismissedUSBDevices.insert(device.uniqueID)
         }
+    }
+
+    // MARK: - The input the guest chose
+
+    /// The input the guest picked: in the picker, or with Switch on an offer.
+    /// Not one the app fell back to, nor the built-in mic every launch starts
+    /// on. Nil until they pick.
+    private(set) var chosenInputUID: String?
+    /// Said on the faceplate for a few seconds when the app changed the input
+    /// by itself, since nothing asked.
+    @Published private(set) var inputNotice: String?
+    private var inputNoticeClear: DispatchWorkItem?
+    static let inputNoticeSeconds: TimeInterval = 10
+
+    /// The guest picks an input. A later pick always wins: the input picked
+    /// before is not come back to.
+    func chooseInput(_ uid: String) {
+        guard !isCurrentlyRecording else { return }
+        chosenInputUID = uid
+        selectedInputDeviceID = uid
+    }
+
+    /// The input the guest chose went away (unplugged, out of Bluetooth range,
+    /// asleep with the Mac) and the app fell back to another. When it is back,
+    /// and no take is running or being saved, the app goes back to it without
+    /// asking, and says so on the faceplate. It used to be offered, if it was
+    /// USB, and otherwise left for the guest to notice.
+    private func returnToChosenInputIfBack() {
+        guard let chosen = chosenInputUID, chosen != selectedInputDeviceID,
+              let device = availableInputDevices.first(where: { $0.uniqueID == chosen && $0.isConnected }),
+              Self.mayReturnToChosenInput(recording: isCurrentlyRecording, finalizing: isFinalizingRecording,
+                                          starting: startWait != nil, rebuilding: audioEngine.isRebuilding)
+        else { return }
+        logger.info("The chosen input is back: switching to it")
+        selectedInputDeviceID = chosen
+        showInputNotice(Self.returnedInputNotice(device.localizedName))
+    }
+
+    /// Never during a take or while its file is being closed, nor while RECORD
+    /// waits for a rebuild, nor in the middle of another rebuild.
+    static func mayReturnToChosenInput(recording: Bool, finalizing: Bool, starting: Bool, rebuilding: Bool) -> Bool {
+        !recording && !finalizing && !starting && !rebuilding
+    }
+
+    static func returnedInputNotice(_ name: String) -> String {
+        "Back on \(name)"
+    }
+
+    private func showInputNotice(_ text: String) {
+        inputNoticeClear?.cancel()
+        inputNotice = text
+        let clear = DispatchWorkItem { [weak self] in self?.inputNotice = nil }
+        inputNoticeClear = clear
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.inputNoticeSeconds, execute: clear)
     }
 
     /// First hardware mic (built-in, USB, Bluetooth) in discovery order, with
