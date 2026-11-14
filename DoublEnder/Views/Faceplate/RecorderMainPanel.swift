@@ -202,7 +202,8 @@ struct RecorderMainPanel: View {
                     defaultName: viewModel.lastGuestName
                 ) {
                     viewModel.lastGuestName = stem
-                    viewModel.startRecording(nameOverride: stem)
+                    // The input may have changed while the prompt was up.
+                    viewModel.startRecordingWhenInputIsReady(nameOverride: stem)
                 }
             } else {
                 viewModel.startRecording()

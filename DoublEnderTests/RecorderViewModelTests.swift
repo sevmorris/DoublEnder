@@ -36,6 +36,55 @@ final class RecorderViewModelTests: XCTestCase {
         )
     }
 
+    // MARK: - Whether RECORD can start a take
+
+    /// On a first launch the system's microphone question can sit unanswered,
+    /// and the engine, which has built nothing yet, still calls itself healthy.
+    /// RECORD then led to the name prompt and "Audio engine is not running".
+    func testNoTakeStartsWhileTheMicrophoneIsStillBeingAskedFor() {
+        XCTAssertFalse(RecorderViewModel.canStart(askingForMicrophone: true, startPending: false,
+                                                  engineHealthy: true, deviceUsable: true, rebuilding: false))
+        XCTAssertTrue(RecorderViewModel.canStart(askingForMicrophone: false, startPending: false,
+                                                 engineHealthy: true, deviceUsable: true, rebuilding: false))
+    }
+
+    func testEachReasonAloneKeepsATakeFromStarting() {
+        typealias Row = (asking: Bool, pending: Bool, healthy: Bool, usable: Bool, rebuilding: Bool)
+        let rows: [Row] = [
+            (true, false, true, true, false),
+            (false, true, true, true, false),
+            (false, false, false, true, false),
+            (false, false, true, false, false),
+            (false, false, true, true, true),
+        ]
+        for row in rows {
+            XCTAssertFalse(RecorderViewModel.canStart(askingForMicrophone: row.asking, startPending: row.pending,
+                                                      engineHealthy: row.healthy, deviceUsable: row.usable,
+                                                      rebuilding: row.rebuilding), "\(row)")
+        }
+    }
+
+    /// A take that waited for the session to be rebuilt starts when it is. If
+    /// the rebuild failed, the engine has said why and a start would put "not
+    /// running" over that; if it never finished, the start fails as it used to.
+    func testATakeThatWaitedForARebuildStartsOnlyOnAWorkingSession() {
+        XCTAssertTrue(RecorderViewModel.shouldStart(afterWaitRebuilt: true, canStart: true))
+        XCTAssertFalse(RecorderViewModel.shouldStart(afterWaitRebuilt: true, canStart: false))
+        XCTAssertTrue(RecorderViewModel.shouldStart(afterWaitRebuilt: false, canStart: false))
+    }
+
+    // MARK: - Which USB input is offered
+
+    func testAUSBInputIsOfferedUnlessThereIsNothingToOffer() {
+        XCTAssertTrue(RecorderViewModel.isWorthOffering(uid: "usb", selected: "built-in", dismissed: [], isDockPort: false))
+        // Already the input.
+        XCTAssertFalse(RecorderViewModel.isWorthOffering(uid: "usb", selected: "usb", dismissed: [], isDockPort: false))
+        // A dock's audio port delivers noise with nothing plugged into it.
+        XCTAssertFalse(RecorderViewModel.isWorthOffering(uid: "usb", selected: "built-in", dismissed: [], isDockPort: true))
+        // "Keep Current", earlier this session.
+        XCTAssertFalse(RecorderViewModel.isWorthOffering(uid: "usb", selected: "built-in", dismissed: ["usb"], isDockPort: false))
+    }
+
     func testNoActiveRecordingErrorIsFinalizationRace() {
         let error = RecordingError.noActiveRecording
         XCTAssertEqual(

@@ -22,6 +22,9 @@ final class AppActivity {
         case recovering
         /// A dialog of the app's is up: someone is in the middle of answering.
         case modal
+        /// RECORD has been pressed and the take begins as soon as the capture
+        /// session has been rebuilt on the input that was just chosen.
+        case starting
     }
 
     /// What a quit has to ask about before it goes ahead.
@@ -55,9 +58,9 @@ final class AppActivity {
 
     /// True while the app does work that a download, a disk image being
     /// mounted and a copy being made must not compete with: a take writing to
-    /// the disk, an upload using the network, a recovery converting a file. A
-    /// dialog does not count: it does no work of its own.
-    var blocksHeavyWork: Bool { !blockers.isDisjoint(with: [.recording, .uploading, .recovering]) }
+    /// the disk, an upload using the network, a recovery converting a file, a
+    /// take about to begin. A dialog does not count: it does no work of its own.
+    var blocksHeavyWork: Bool { !blockers.isDisjoint(with: [.recording, .uploading, .recovering, .starting]) }
 
     /// Drawn from `blockers`, so whenever a quit would ask, a relaunch is
     /// blocked: an update can never reach the question, which it could not

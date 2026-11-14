@@ -41,10 +41,10 @@ final class AppActivityTests: XCTestCase {
         XCTAssertEqual(activity.blockers, [.modal])
     }
 
-    /// A dialog or a conversion blocks an update, though a quit asks nothing
-    /// about it: the person quitting has decided.
+    /// A dialog, a conversion or a take about to begin blocks an update, though
+    /// a quit asks nothing about it: the person quitting has decided.
     func testADialogOrAConversionBlocksARelaunchButAsksNothingAtQuit() {
-        for blocker in [AppActivity.Blocker.modal, .recovering] {
+        for blocker in [AppActivity.Blocker.modal, .recovering, .starting] {
             let activity = AppActivity()
             activity.begin(blocker)
             XCTAssertTrue(activity.blocksRelaunch)

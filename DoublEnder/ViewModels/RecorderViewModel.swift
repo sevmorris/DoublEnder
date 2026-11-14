@@ -331,10 +331,26 @@ class RecorderViewModel: ObservableObject {
     ///     is still running, starting a recording while the label says
     ///     "(no input)" would mislead the user about what's being captured
     ///   - The engine is mid-rebuild (isRebuilding)
+    ///   - The microphone has not been granted yet (`.selectingMic`): the
+    ///     engine has built nothing, though `engineHealthy` starts out true.
+    ///     On a first launch that lasts as long as the system's question
+    ///     goes unanswered, and RECORD then led to "Audio engine is not
+    ///     running".
+    ///   - A take is already waiting for a rebuild to finish
+    ///     (`startRecordingWhenInputIsReady`).
     var canStartRecording: Bool {
-        audioEngine.engineHealthy
-            && audioEngine.selectedDeviceUsable
-            && !audioEngine.isRebuilding
+        var askingForMicrophone = false
+        if case .selectingMic = state { askingForMicrophone = true }
+        return Self.canStart(askingForMicrophone: askingForMicrophone,
+                             startPending: startWait != nil,
+                             engineHealthy: audioEngine.engineHealthy,
+                             deviceUsable: audioEngine.selectedDeviceUsable,
+                             rebuilding: audioEngine.isRebuilding)
+    }
+
+    static func canStart(askingForMicrophone: Bool, startPending: Bool, engineHealthy: Bool,
+                         deviceUsable: Bool, rebuilding: Bool) -> Bool {
+        !askingForMicrophone && !startPending && engineHealthy && deviceUsable && !rebuilding
     }
 
     /// Non-fatal condition worth surfacing in the UI, or nil.
@@ -816,6 +832,46 @@ class RecorderViewModel: ObservableObject {
         }
         // Best-effort notification permission request alongside the mic prompt.
         Task { await NotificationService.shared.requestAuthorization() }
+    }
+
+    /// A take that waits for the capture session to be rebuilt.
+    private var startWait: FlagWait?
+    /// How long a take waits for a rebuild. A cold USB device has taken more
+    /// than a second; past this the session is not coming up.
+    static let rebuildPatience: TimeInterval = 5
+
+    /// RECORD, after the name prompt. `canStartRecording` was checked before
+    /// the prompt opened, and the input can change while it is up: the
+    /// selected one unplugged, or a USB input offered and taken. Either
+    /// rebuilds the capture session off the main thread, and a Return in that
+    /// moment used to end in "Audio engine is not running". The take now
+    /// starts when the rebuild is done.
+    func startRecordingWhenInputIsReady(nameOverride: String? = nil) {
+        guard startWait == nil else { return }
+        guard audioEngine.isRebuilding else {
+            startRecording(nameOverride: nameOverride)
+            return
+        }
+        // The take is as good as begun: an update must not replace the app
+        // in the moment before it does.
+        AppActivity.shared.begin(.starting)
+        objectWillChange.send()
+        startWait = FlagWait(audioEngine.$isRebuilding.eraseToAnyPublisher(),
+                             patience: Self.rebuildPatience) { [weak self] rebuilt in
+            AppActivity.shared.end(.starting)
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.startWait = nil
+            // A rebuild that failed has said why (`lastError`), and a start
+            // now would put "not running" over that. One still under way at
+            // the end of the wait fails the start, as it always did.
+            guard Self.shouldStart(afterWaitRebuilt: rebuilt, canStart: self.canStartRecording) else { return }
+            self.startRecording(nameOverride: nameOverride)
+        }
+    }
+
+    static func shouldStart(afterWaitRebuilt rebuilt: Bool, canStart: Bool) -> Bool {
+        !rebuilt || canStart
     }
 
     /// `nameOverride`, when non-nil and non-empty after sanitization, is
