@@ -271,6 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// its own keep-uploading/quit-anyway intercept (FR-002) — the states are
     /// mutually exclusive, so at most one alert presents.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        quitReply()
+    }
+
+    private func quitReply() -> NSApplication.TerminateReply {
         // What there is to ask about comes from AppActivity, which an update
         // reads too: it only replaces the app when there is nothing, so its
         // quit never meets a question. With no recorder yet (Cloud's launch
@@ -363,20 +367,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let response = ModalGate.run { alert.runModal() }
         let vm = RecorderViewModel.shared
 
-        switch response {
-        case .alertFirstButtonReturn:
+        switch QuitDuringTake.action(for: response,
+                                     takeInProgress: AppActivity.shared.quitQuestion == .recording) {
+        case .stopThenQuit:
             // Finalize the writer, then continue termination once the file
             // is closed.
             vm.stopRecording {
                 NSApp.reply(toApplicationShouldTerminate: true)
             }
-        case .alertSecondButtonReturn:
+        case .discardThenQuit:
             // Cancel the writer and drop the partial file before quitting.
             vm.abortRecording {
                 NSApp.reply(toApplicationShouldTerminate: true)
             }
-        default:
+        case .stay:
             NSApp.reply(toApplicationShouldTerminate: false)
+        case .askAgain:
+            // The take the question was about is over. The quit goes on from
+            // what the app is doing now: an upload gets its own question.
+            if quitReply() == .terminateNow {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
         }
     }
 
@@ -581,6 +592,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for name in ["DSEG7Classic-Regular", "Saira-Regular"] {
             guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else { continue }
             CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+    }
+}
+
+// MARK: - Quit during a take
+
+/// What to do with the answer to "Recording in progress".
+///
+/// The take can end while the question is up: the producer stops it from the
+/// dashboard, the microphone is unplugged, the disk fills, or a stop already
+/// under way closes the file. The answer is then about a take that no longer
+/// exists. "Stop & Save" used to run a second stop, which found nothing, put
+/// "No audio was captured" on the faceplate and quit over the upload that had
+/// just begun; "Quit Without Saving" deleted the file that had just been saved.
+enum QuitDuringTake {
+    enum Action: Equatable {
+        case stopThenQuit
+        case discardThenQuit
+        /// Cancel: the app stays open.
+        case stay
+        /// Nothing left to stop or discard: decide the quit afresh.
+        case askAgain
+    }
+
+    /// `response` is nil when the question could not open (an update is
+    /// replacing the app).
+    static func action(for response: NSApplication.ModalResponse?, takeInProgress: Bool) -> Action {
+        switch response {
+        case .alertFirstButtonReturn?:
+            return takeInProgress ? .stopThenQuit : .askAgain
+        case .alertSecondButtonReturn?:
+            return takeInProgress ? .discardThenQuit : .askAgain
+        default:
+            return .stay
         }
     }
 }
