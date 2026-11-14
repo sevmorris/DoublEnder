@@ -41,10 +41,10 @@ final class AppActivityTests: XCTestCase {
         XCTAssertEqual(activity.blockers, [.modal])
     }
 
-    /// A dialog or a conversion blocks an update, though a quit asks nothing
-    /// about it: the person quitting has decided.
+    /// A dialog, a conversion or a take about to begin blocks an update, though
+    /// a quit asks nothing about it: the person quitting has decided.
     func testADialogOrAConversionBlocksARelaunchButAsksNothingAtQuit() {
-        for blocker in [AppActivity.Blocker.modal, .recovering] {
+        for blocker in [AppActivity.Blocker.modal, .recovering, .starting] {
             let activity = AppActivity()
             activity.begin(blocker)
             XCTAssertTrue(activity.blocksRelaunch)
@@ -152,19 +152,65 @@ final class ModalGateTests: XCTestCase {
         XCTAssertFalse(activity.blocksRelaunch)
     }
 
-    /// The USB offer over the name prompt, or over the updater's dialog.
-    func testAPromptIsDroppedWhileAnotherDialogIsUp() {
+    /// The USB offer over a confirmation, or over the updater's dialog. It does
+    /// not open, and whoever made it is told it could not (`WaitingOffers`
+    /// keeps it for later).
+    func testAPromptDoesNotOpenWhileAnotherDialogIsUp() {
         let activity = AppActivity()
         var promptRan = false
+        XCTAssertTrue(ModalGate.canOpenOffer(activity: activity))
         ModalGate.run(activity: activity) {
+            XCTAssertFalse(ModalGate.canOpenOffer(activity: activity))
             let shown: Void? = ModalGate.run(.prompt, activity: activity) { promptRan = true }
             XCTAssertNil(shown)
         }
         XCTAssertFalse(promptRan)
 
         // With nothing else up, it opens.
+        XCTAssertTrue(ModalGate.canOpenOffer(activity: activity))
         XCTAssertNotNil(ModalGate.run(.prompt, activity: activity) { promptRan = true })
         XCTAssertTrue(promptRan)
+    }
+
+    /// The name prompt: the guest is on the way to a take, and an input that
+    /// has just appeared is worth asking about before it starts.
+    func testAnOfferOpensOverADialogThatAdmitsOffers() {
+        let activity = AppActivity()
+        var offers = 0
+        ModalGate.run(activity: activity, admitsOffers: true) {
+            XCTAssertTrue(ModalGate.canOpenOffer(activity: activity))
+            ModalGate.run(.prompt, activity: activity) {
+                offers += 1
+                // One offer at a time: a second waits for the first.
+                XCTAssertFalse(ModalGate.canOpenOffer(activity: activity))
+                XCTAssertNil(ModalGate.run(.prompt, activity: activity) { offers += 1 })
+            }
+            // A dialog over the name prompt that does not admit offers keeps them out.
+            ModalGate.run(activity: activity) {
+                XCTAssertFalse(ModalGate.canOpenOffer(activity: activity))
+            }
+        }
+        XCTAssertEqual(offers, 1)
+        XCTAssertEqual(ModalGate.depth, 0)
+    }
+
+    /// Whoever kept an offer back hears when a dialog has closed.
+    func testADialogClosingIsAnnounced() {
+        let activity = AppActivity()
+        var depthsWhenTold: [Int] = []
+        let token = NotificationCenter.default.addObserver(forName: ModalGate.didChange, object: nil, queue: nil) { _ in
+            depthsWhenTold.append(ModalGate.depth)
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        ModalGate.run(activity: activity) {
+            XCTAssertTrue(depthsWhenTold.isEmpty)
+        }
+        XCTAssertEqual(depthsWhenTold, [0], "told once, with the dialog already gone")
+        // A dialog that never opened closes nothing.
+        activity.beginCommittingUpdate()
+        ModalGate.run(activity: activity) {}
+        XCTAssertEqual(depthsWhenTold, [0])
     }
 
     /// "Microphone disconnected" over the quit question: both have to be seen.
@@ -189,6 +235,7 @@ final class ModalGateTests: XCTestCase {
         XCTAssertNil(ModalGate.run(activity: activity) { ran = true })
         XCTAssertNil(ModalGate.run(.prompt, activity: activity) { ran = true })
         XCTAssertFalse(ran)
+        XCTAssertFalse(ModalGate.canOpenOffer(activity: activity))
 
         activity.endCommittingUpdate()
         XCTAssertNotNil(ModalGate.run(activity: activity) { ran = true })

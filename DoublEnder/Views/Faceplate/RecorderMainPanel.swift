@@ -202,7 +202,8 @@ struct RecorderMainPanel: View {
                     defaultName: viewModel.lastGuestName
                 ) {
                     viewModel.lastGuestName = stem
-                    viewModel.startRecording(nameOverride: stem)
+                    // The input may have changed while the prompt was up.
+                    viewModel.startRecordingWhenInputIsReady(nameOverride: stem)
                 }
             } else {
                 viewModel.startRecording()
@@ -263,8 +264,10 @@ struct RecorderMainPanel: View {
         DispatchQueue.main.async { alert.window.makeFirstResponder(field) }
 
         // Through the gate: while the prompt is up the guest is about to
-        // record, and an update must not replace the app under them.
-        let response = ModalGate.run { alert.runModal() }
+        // record, and an update must not replace the app under them. An input
+        // plugged in meanwhile is offered over it, at once: an offer that
+        // waited for this to close would find the take already running.
+        let response = ModalGate.run(admitsOffers: true) { alert.runModal() }
         guard response == .alertFirstButtonReturn else { return nil }
         let stem = RecorderViewModel.sanitizedRecordingName(from: field.stringValue)
         return stem.isEmpty ? nil : stem

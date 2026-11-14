@@ -331,10 +331,26 @@ class RecorderViewModel: ObservableObject {
     ///     is still running, starting a recording while the label says
     ///     "(no input)" would mislead the user about what's being captured
     ///   - The engine is mid-rebuild (isRebuilding)
+    ///   - The microphone has not been granted yet (`.selectingMic`): the
+    ///     engine has built nothing, though `engineHealthy` starts out true.
+    ///     On a first launch that lasts as long as the system's question
+    ///     goes unanswered, and RECORD then led to "Audio engine is not
+    ///     running".
+    ///   - A take is already waiting for a rebuild to finish
+    ///     (`startRecordingWhenInputIsReady`).
     var canStartRecording: Bool {
-        audioEngine.engineHealthy
-            && audioEngine.selectedDeviceUsable
-            && !audioEngine.isRebuilding
+        var askingForMicrophone = false
+        if case .selectingMic = state { askingForMicrophone = true }
+        return Self.canStart(askingForMicrophone: askingForMicrophone,
+                             startPending: startWait != nil,
+                             engineHealthy: audioEngine.engineHealthy,
+                             deviceUsable: audioEngine.selectedDeviceUsable,
+                             rebuilding: audioEngine.isRebuilding)
+    }
+
+    static func canStart(askingForMicrophone: Bool, startPending: Bool, engineHealthy: Bool,
+                         deviceUsable: Bool, rebuilding: Bool) -> Bool {
+        !askingForMicrophone && !startPending && engineHealthy && deviceUsable && !rebuilding
     }
 
     /// Non-fatal condition worth surfacing in the UI, or nil.
@@ -597,49 +613,83 @@ class RecorderViewModel: ObservableObject {
         }
 
         // USB hot-plug: AudioEngine fires this on the main thread when a new
-        // USB input device appears while the app is running. We offer to
-        // switch unless recording (don't interrupt), it's already the
-        // selected device, it's a dock's audio port, or the user dismissed it
-        // this session.
+        // USB input device appears while the app is running and no take is
+        // in progress. We offer to switch unless it's already the selected
+        // device, it's a dock's audio port, or the user dismissed it this
+        // session.
         audioEngine.onNewUSBDeviceDetected = { [weak self] device in
-            self?.presentUSBSwitchPrompt(for: device)
+            self?.offerUSBInput(device)
         }
+        // An offer that had to wait is made when what it waited for is over:
+        // a dialog has closed, or a take has ended. The state is sent before
+        // it is set, which is early enough: the offer opens on a later pass
+        // of the run loop.
+        NotificationCenter.default.publisher(for: ModalGate.didChange)
+            .sink { [weak self] _ in self?.usbOffers.retry() }
+            .store(in: &cancellables)
+        $state
+            .sink { [weak self] _ in self?.usbOffers.retry() }
+            .store(in: &cancellables)
 
         requestPermissions()
     }
 
-    /// App-modal NSAlert offering to switch input to a newly-arrived USB
-    /// device. Bails silently for any guard miss so callers can fire this
-    /// unconditionally from the engine-side detection.
-    private func presentUSBSwitchPrompt(for device: AVCaptureDevice) {
-        // NSAlert MUST be driven from the main thread or button clicks
-        // never reach the response handler. CoreAudio listener already
-        // dispatches to DispatchQueue.main, but defend against any future
-        // caller that doesn't.
+    /// USB inputs waiting to be offered, by device UID. An offer waits while
+    /// a take is in progress or another dialog is up (the name prompt
+    /// excepted, see `ModalGate`), and opens from the run loop when neither is.
+    private lazy var usbOffers = WaitingOffers<String>(
+        canOpen: { [weak self] in
+            guard let self else { return false }
+            // Not over a take: the device is in the picker, and the offer is
+            // made when the take is over.
+            return !self.isCurrentlyRecording && !self.isShowingModalAlert && ModalGate.canOpenOffer()
+        },
+        isWanted: { [weak self] uid in self?.usbDeviceToOffer(uid) != nil },
+        present: { [weak self] uid in self?.presentUSBSwitchPrompt(uid: uid) })
+
+    /// Offers to switch to a USB input that has appeared. Callers fire this
+    /// unconditionally: an input not worth offering is forgotten, and one that
+    /// cannot be offered yet waits (`WaitingOffers`). 2.8.4 dropped the offer
+    /// whenever another dialog was up, so a guest whose launch had a crashed
+    /// take to recover or an upload to finish never got it.
+    private func offerUSBInput(_ device: AVCaptureDevice) {
+        // The CoreAudio listener already dispatches to the main queue, but
+        // defend against any future caller that doesn't.
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
-                self?.presentUSBSwitchPrompt(for: device)
+                self?.offerUSBInput(device)
             }
             return
         }
+        usbOffers.add(device.uniqueID)
+    }
 
-        // Don't interrupt a take in progress — the new device shows up in
-        // the picker dropdown immediately and the user can switch manually
-        // after stopping. (Per spec: "If currently recording, do nothing".)
-        if isCurrentlyRecording { return }
+    /// The device to offer for this UID, or nil when there is nothing to
+    /// offer: it has gone, it is the current input, it is a dock's audio port,
+    /// or the guest has said "Keep Current" this session.
+    private func usbDeviceToOffer(_ uid: String) -> AVCaptureDevice? {
+        guard let device = audioEngine.usbInputDevices().first(where: { $0.uniqueID == uid }) else { return nil }
+        return Self.isWorthOffering(uid: uid, selected: selectedInputDeviceID, dismissed: dismissedUSBDevices,
+                                    isDockPort: InputRanking.isDockPort(audioEngine.inputCandidate(for: device)))
+            ? device : nil
+    }
+
+    /// Whether a USB input that is present is worth an offer.
+    static func isWorthOffering(uid: String, selected: String, dismissed: Set<String>, isDockPort: Bool) -> Bool {
         // Already the current input — nothing to switch to.
-        if device.uniqueID == selectedInputDeviceID { return }
+        if uid == selected { return false }
         // Plugging in a dock isn't asking for its audio port, and nothing has
         // to be plugged into that port for it to deliver noise. It stays in
         // the picker for anyone who has a headset in it.
-        if InputRanking.isDockPort(audioEngine.inputCandidate(for: device)) { return }
+        if isDockPort { return false }
         // User said "Keep Current" for this device earlier this session.
-        if dismissedUSBDevices.contains(device.uniqueID) { return }
-        // Another dialog is already on screen, the view model's or anyone
-        // else's (the name prompt, a confirmation, the updater): the device
-        // will still appear in the picker; the user can switch manually after
-        // dismissing.
-        if isShowingModalAlert || ModalGate.isPresenting { return }
+        return !dismissed.contains(uid)
+    }
+
+    /// App-modal NSAlert offering to switch input to a USB device. Called by
+    /// `usbOffers`, from the run loop, when the offer can open.
+    private func presentUSBSwitchPrompt(uid: String) {
+        guard let device = usbDeviceToOffer(uid) else { return }
 
         // Refresh first-seen tracking so this device is timestamped — any
         // future launch with multiple USB devices will weight this one as
@@ -665,18 +715,17 @@ class RecorderViewModel: ObservableObject {
         isShowingModalAlert = true
         let shown = ModalGate.run(.prompt) { alert.runModal() }
         isShowingModalAlert = false
-        // Not shown: a dialog opened in between, or an update is replacing
-        // the app. The device is in the picker either way.
+        // Not shown: an update is replacing the app. The device is in the
+        // picker either way.
         guard let response = shown else { return }
         if response == .alertFirstButtonReturn {
-            // Defer to the next runloop tick so we're not running engine
-            // teardown from inside the CoreAudio device-list listener's
-            // call frame (which previously crashed via NSException out of
-            // SetOutputFormat).
-            let uid = device.uniqueID
-            DispatchQueue.main.async { [weak self] in
-                self?.selectedInputDeviceID = uid
-            }
+            // At once. This runs from the run loop, never from inside the
+            // CoreAudio device-list listener's call frame, where engine
+            // teardown once crashed (an NSException out of SetOutputFormat)
+            // and the switch had to be put off to the next tick. And the
+            // session has to be seen rebuilding before the name prompt under
+            // this offer can take a Return (`startRecordingWhenInputIsReady`).
+            selectedInputDeviceID = device.uniqueID
         } else {
             dismissedUSBDevices.insert(device.uniqueID)
         }
@@ -774,7 +823,7 @@ class RecorderViewModel: ObservableObject {
                     // "the one I just plugged in" intent across launches.
                     // A dock's audio port is never the one offered.
                     if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
-                        self.presentUSBSwitchPrompt(for: usbDevice)
+                        self.offerUSBInput(usbDevice)
                     }
                 } else {
                     self.state = .error("Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable DoublEnder.")
@@ -783,6 +832,46 @@ class RecorderViewModel: ObservableObject {
         }
         // Best-effort notification permission request alongside the mic prompt.
         Task { await NotificationService.shared.requestAuthorization() }
+    }
+
+    /// A take that waits for the capture session to be rebuilt.
+    private var startWait: FlagWait?
+    /// How long a take waits for a rebuild. A cold USB device has taken more
+    /// than a second; past this the session is not coming up.
+    static let rebuildPatience: TimeInterval = 5
+
+    /// RECORD, after the name prompt. `canStartRecording` was checked before
+    /// the prompt opened, and the input can change while it is up: the
+    /// selected one unplugged, or a USB input offered and taken. Either
+    /// rebuilds the capture session off the main thread, and a Return in that
+    /// moment used to end in "Audio engine is not running". The take now
+    /// starts when the rebuild is done.
+    func startRecordingWhenInputIsReady(nameOverride: String? = nil) {
+        guard startWait == nil else { return }
+        guard audioEngine.isRebuilding else {
+            startRecording(nameOverride: nameOverride)
+            return
+        }
+        // The take is as good as begun: an update must not replace the app
+        // in the moment before it does.
+        AppActivity.shared.begin(.starting)
+        objectWillChange.send()
+        startWait = FlagWait(audioEngine.$isRebuilding.eraseToAnyPublisher(),
+                             patience: Self.rebuildPatience) { [weak self] rebuilt in
+            AppActivity.shared.end(.starting)
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.startWait = nil
+            // A rebuild that failed has said why (`lastError`), and a start
+            // now would put "not running" over that. One still under way at
+            // the end of the wait fails the start, as it always did.
+            guard Self.shouldStart(afterWaitRebuilt: rebuilt, canStart: self.canStartRecording) else { return }
+            self.startRecording(nameOverride: nameOverride)
+        }
+    }
+
+    static func shouldStart(afterWaitRebuilt rebuilt: Bool, canStart: Bool) -> Bool {
+        !rebuilt || canStart
     }
 
     /// `nameOverride`, when non-nil and non-empty after sanitization, is
@@ -975,6 +1064,7 @@ class RecorderViewModel: ObservableObject {
                 self.recordingTime = 0
                 self.uploadProgress = 0
                 self.state = .uploading
+                self.rememberUpload(of: url)
                 Task { await self.performUpload(note: takeNote) }
                 #else
                 self.recordingTime = 0
@@ -1008,6 +1098,7 @@ class RecorderViewModel: ObservableObject {
                         self.recordedFileURL = recovered
                         self.uploadProgress = 0
                         self.state = .uploading
+                        self.rememberUpload(of: recovered)
                         Task { await self.performUpload(note: takeNote) }
                     } else {
                         self.recordedFileURL = nil
@@ -1311,26 +1402,11 @@ class RecorderViewModel: ObservableObject {
     }
 
     #if GCS_ENABLED
-    /// A recording whose upload is pending or has failed, persisted across quit
-    /// so the next launch can finish it. `sessionURI`/`crc32c` are set once a
-    /// resumable session has been initiated: with them, a resume continues from
-    /// GCS's committed offset instead of restarting; without them (a crash
-    /// before initiation, or a legacy record) the upload restarts (FR-003).
-    private struct PendingUpload: Codable {
-        let path: String
-        var sessionURI: String?
-        var crc32c: String?
-    }
-
-    /// The persisted pending upload, or nil. Tolerates a legacy bare-path value
-    /// written by a pre-FR-003 build (treated as "no session → restart").
+    /// The persisted pending upload (`PendingUpload`), or nil. Tolerates a
+    /// legacy bare-path value written by a pre-FR-003 build (treated as "no
+    /// session → restart").
     private var persistedPendingUpload: PendingUpload? {
-        guard let raw = defaults.string(forKey: Self.pendingUploadKey) else { return nil }
-        if let data = raw.data(using: .utf8),
-           let record = try? JSONDecoder().decode(PendingUpload.self, from: data) {
-            return record
-        }
-        return PendingUpload(path: raw, sessionURI: nil, crc32c: nil)
+        PendingUpload.decode(defaults.string(forKey: Self.pendingUploadKey))
     }
 
     /// Path of a recording whose upload is pending/failed, if any. Read by
@@ -1339,9 +1415,20 @@ class RecorderViewModel: ObservableObject {
 
     /// Persist (or update) the pending-upload record.
     private func setPendingUpload(_ record: PendingUpload) {
-        guard let data = try? JSONEncoder().encode(record),
-              let json = String(data: data, encoding: .utf8) else { return }
+        guard let json = record.encoded else { return }
         defaults.set(json, forKey: Self.pendingUploadKey)
+    }
+
+    /// Records `file` as waiting to be uploaded, before its upload starts.
+    /// Called on the main thread by everything that starts one, so the record
+    /// is there whatever happens next. `performUpload` used to be the only
+    /// place it was written, from its background task; a quit during a take
+    /// answered "Stop & Save" ends the app in the same moment that task
+    /// starts, and a write made from another thread as the process exits is
+    /// lost. The take was then on the Desktop with nothing to say it had
+    /// never been uploaded.
+    private func rememberUpload(of file: URL) {
+        setPendingUpload(PendingUpload.starting(file, existing: persistedPendingUpload))
     }
 
     /// Forget the pending upload (called on success, or when the user skips
@@ -1354,12 +1441,13 @@ class RecorderViewModel: ObservableObject {
     /// untouched — re-attempt only the upload, no new recording.
     func retryUpload() {
         guard cloudUploadEnabled else { return }
-        guard recordedFileURL != nil else {
+        guard let fileURL = recordedFileURL else {
             state = .error("No recording found to upload")
             return
         }
         uploadProgress = 0
         state = .uploading
+        rememberUpload(of: fileURL)
         Task { await performUpload() }
     }
 
@@ -1369,6 +1457,7 @@ class RecorderViewModel: ObservableObject {
         recordedFileURL = fileURL
         uploadProgress = 0
         state = .uploading
+        rememberUpload(of: fileURL)
         Task { await performUpload() }
     }
 
@@ -1428,12 +1517,11 @@ class RecorderViewModel: ObservableObject {
             return
         }
 
-        // Preserve the pre-initiation restart guarantee: if no resumable session
-        // exists yet, record the path now so a crash before init still leaves
-        // something for the next-launch prompt.
-        if persistedPendingUpload?.sessionURI == nil {
-            setPendingUpload(PendingUpload(path: fileURL.path, sessionURI: nil, crc32c: nil))
-        }
+        // Whoever started this upload has recorded the file already
+        // (`rememberUpload`), on the main thread. Once more here costs nothing
+        // and keeps the guarantee where the upload is: a crash before a
+        // session opens still leaves something for the next-launch prompt.
+        rememberUpload(of: fileURL)
 
         let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
         var attempt = 0
@@ -1454,12 +1542,11 @@ class RecorderViewModel: ObservableObject {
                 // loop or a relaunch) resumes from GCS's committed offset.
                 let sessionURI: URL
                 let crc: String
-                if let record = persistedPendingUpload,
-                   let uriString = record.sessionURI,
-                   let uri = URL(string: uriString),
-                   let storedCRC = record.crc32c {
-                    sessionURI = uri
-                    crc = storedCRC
+                // Only a session opened for this very file: another file's
+                // holds that file's bytes and checksum.
+                if let session = persistedPendingUpload?.session(for: fileURL) {
+                    sessionURI = session.uri
+                    crc = session.crc32c
                 } else {
                     let began = try await uploader.beginUpload(fileURL: fileURL)
                     sessionURI = began.sessionURI
@@ -1474,7 +1561,10 @@ class RecorderViewModel: ObservableObject {
                                                   crc32cBase64: crc)
 
                 self.clearPendingUpload()
-                await MainActor.run {
+                // From the run loop, not a main actor job: the confirmation is
+                // modal, and from a job it would hold the main queue for as
+                // long as it went unanswered (`MainRunLoop`).
+                MainRunLoop.deliver {
                     self.lastUploadError = nil
                     self.recordingTime = 0
                     self.state = .ready
@@ -1496,6 +1586,14 @@ class RecorderViewModel: ObservableObject {
                 // The same sanitized summary is all the heartbeat reports.
                 let uploadError = summary.status.map { "\(summary.label) \($0)" } ?? summary.label
                 onMainQueue { self.lastUploadError = uploadError }
+                // Cloud Storage no longer has the session (they last a week):
+                // nothing sent to it will ever succeed. Forget it, and the
+                // next attempt opens a new one and sends the file again.
+                if PendingUpload.sessionIsGone(status: summary.status),
+                   let record = persistedPendingUpload, record.sessionURI != nil {
+                    logger.warning("Upload session gone (HTTP \(statusText, privacy: .public)); the next attempt starts a new one.")
+                    setPendingUpload(record.withoutSession)
+                }
                 // Deterministic failures (integrity mismatch, credential/signing)
                 // won't fix by re-sending — fail now, keep the local file.
                 let nonRetryable = (error as? Uploader.UploaderError)?.isNonRetryable ?? false
@@ -1504,7 +1602,7 @@ class RecorderViewModel: ObservableObject {
                     if Self.statusSuggestsClockSkew(summary.status) {
                         logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
                     }
-                    await MainActor.run {
+                    MainRunLoop.deliver {
                         self.state = .uploadFailed(fileURL)
                         UploadConfirmation.present(success: false,
                                                    fileName: fileURL.lastPathComponent,

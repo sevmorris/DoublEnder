@@ -40,4 +40,23 @@ enum MainRunLoop {
             perform { continuation.resume(returning: body()) }
         }
     }
+
+    /// From any thread: runs `block` on the main thread, after everything
+    /// already sent to the main queue, and from the run loop rather than from
+    /// inside the queue. It is `DispatchQueue.main.async` for a callback that
+    /// may open a dialog.
+    ///
+    /// The audio engine tells the recorder that a take has been closed, or that
+    /// the input has gone, and the recorder answers with a dialog: the saved
+    /// confirmation, "Microphone disconnected". Sent with `DispatchQueue.main
+    /// .async`, that dialog ran inside a block of the main queue and held the
+    /// queue until someone clicked. A guest who had walked away left the
+    /// dashboard saying "recording" for a take that had ended, and an upload's
+    /// result unseen; a dialog that opened between STOP and the file closing
+    /// held the take's own hand-off.
+    nonisolated static func deliver(_ block: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { perform(block) }
+        }
+    }
 }

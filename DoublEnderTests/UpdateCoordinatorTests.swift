@@ -260,6 +260,39 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .idle)
     }
 
+    /// A dialog is not work. The USB offer is on screen at most launches with a
+    /// USB microphone, and the check after launch answers under it: the update
+    /// is offered when the dialog has closed, not put off to the next launch.
+    @MainActor
+    func testTheSilentOfferWaitsForADialogToClose() async {
+        let h = Harness()
+        h.presenter.offerChoice = .notNow
+        h.activity.begin(.modal)
+        let flow = Task { await h.coordinator.checkForUpdates(silent: true) }
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(h.presenter.offers.isEmpty, "it opened over the dialog")
+        XCTAssertEqual(h.coordinator.phase, .checking, "it gave up until the next launch")
+
+        h.activity.end(.modal)
+        await flow.value
+        XCTAssertEqual(h.presenter.offers.count, 1)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
+    /// The dialog closed into a take (the name prompt, answered): nothing opens over it.
+    @MainActor
+    func testTheSilentOfferThatWaitedStaysAwayFromATake() async {
+        let h = Harness()
+        h.activity.begin(.modal)
+        let flow = Task { await h.coordinator.checkForUpdates(silent: true) }
+        try? await Task.sleep(for: .milliseconds(100))
+        h.recording(true)
+        h.activity.end(.modal)
+        await flow.value
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
     @MainActor
     func testTheSilentCheckDoesNotOfferAVersionThisCopyRolledBackFrom() async {
         let h = Harness()
@@ -579,6 +612,53 @@ final class UpdateCoordinatorTests: XCTestCase {
         let outcome = await launch(h)
         XCTAssertEqual(outcome, .openRecorder(checkAfterLaunch: true))
         XCTAssertEqual(h.stager.starts, UpdateRollback.maximumFailures)
+    }
+
+    /// A connection that stalled or dropped says nothing about the next launch.
+    /// Two launches on bad Wi-Fi used to rest the automatic install for a day,
+    /// leaving the guest the prompt, which needs a click.
+    @MainActor
+    func testAtLaunchNetworkFailuresDoNotRestTheAutomaticInstall() async {
+        let h = Harness()
+        for failure in [URLError(.timedOut), URLError(.networkConnectionLost), URLError(.notConnectedToInternet)] {
+            h.stager.failure = failure
+            let outcome = await launch(h)
+            XCTAssertEqual(outcome, .openRecorder(checkAfterLaunch: true))
+        }
+        XCTAssertTrue(h.store.load().failures.isEmpty)
+        XCTAssertTrue(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
+
+        // The network is back: the next launch installs.
+        h.stager.failure = nil
+        let outcome = await launch(h)
+        XCTAssertEqual(outcome, .relaunching)
+        XCTAssertEqual(h.stager.starts, 4)
+    }
+
+    /// A network failure does not wipe out what a real one recorded.
+    @MainActor
+    func testAtLaunchAFailureThatWouldRepeatStillCounts() async {
+        let h = Harness()
+        h.stager.failure = SelfUpdater.Failure.noSpace
+        _ = await launch(h)
+        h.stager.failure = URLError(.timedOut)
+        _ = await launch(h)
+        h.stager.failure = UpdateFailure.selfTest
+        _ = await launch(h)
+        XCTAssertEqual(h.store.load().failures["9.0.0"]?.count, 2)
+        XCTAssertFalse(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
+    }
+
+    func testWhichFailuresMayPassByThemselves() {
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(URLError(.timedOut)))
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(URLError(.cannotFindHost)))
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(UpdateFailure.busy))
+        for failure in [SelfUpdater.Failure.diskImage, .copy, .untrusted, .noSpace, .timedOut, .http(404),
+                        .wrongArchitecture, .swap("EACCES")] {
+            XCTAssertFalse(UpdateCoordinator.mayPassByItself(failure), "\(failure)")
+        }
+        XCTAssertFalse(UpdateCoordinator.mayPassByItself(UpdateFailure.selfTest))
+        XCTAssertFalse(UpdateCoordinator.mayPassByItself(UpdateCommit.Refusal.appMoved))
     }
 
     @MainActor

@@ -247,16 +247,49 @@ enum UpdateRollback {
 
     // MARK: - Once the app is up
 
+    /// True when the copy at `installed`, running `version`, is the one on
+    /// probation. Another copy of that version (on a disk image, in another
+    /// folder) shares this state, and says nothing about the one that was
+    /// replaced.
+    private static func isOnProbation(_ probation: UpdateState.Probation, version: String, installed: URL) -> Bool {
+        guard probation.to == version else { return false }
+        guard let path = probation.installed else { return true }
+        return URL(fileURLWithPath: path).standardizedFileURL.path == installed.standardizedFileURL.path
+    }
+
     /// The running version has shown it can stay up. Nothing happens unless it
-    /// is the one on probation: the old version's own quit, right after it arms
-    /// probation for the new one, comes through here too.
-    static func markHealthy(runningVersion: String, store: UpdateStateStore, discard: (URL) -> Void) {
+    /// is the copy on probation: the old version's own quit, right after it
+    /// arms probation for the new one, comes through here too, and so does a
+    /// second copy of the new version, which used to clear the first copy's
+    /// probation and delete the version it could go back to.
+    static func markHealthy(runningVersion: String, installed: URL, store: UpdateStateStore, discard: (URL) -> Void) {
         var state = store.load()
-        guard let probation = state.probation, probation.to == runningVersion else { return }
+        guard let probation = state.probation,
+              isOnProbation(probation, version: runningVersion, installed: installed) else { return }
         state.probation = nil
         store.save(state)
         store.setMarker(false)
         discard(URL(fileURLWithPath: probation.previous))
+    }
+
+    /// The copy on probation was quit, cleanly, before it had shown anything:
+    /// before its recorder opened. That is someone changing their mind, not a
+    /// version that cannot stay up, so the start is not counted, and the
+    /// marker goes so the relaunch helper leaves the app closed.
+    ///
+    /// Counted, it took two quick quits to lose a good version: after the
+    /// unprompted relaunch a guest quits while "Checking for updates…" is
+    /// still up, the helper reopens the app they just quit, they quit again,
+    /// and the third start rolled back and marked the version as never to be
+    /// installed unasked.
+    static func noteCleanQuitBeforeHealthy(runningVersion: String, installed: URL, store: UpdateStateStore) {
+        var state = store.load()
+        guard var probation = state.probation,
+              isOnProbation(probation, version: runningVersion, installed: installed) else { return }
+        probation.launches = max(0, probation.launches - 1)
+        state.probation = probation
+        store.save(state)
+        store.setMarker(false)
     }
 
     // MARK: - What not to install unasked

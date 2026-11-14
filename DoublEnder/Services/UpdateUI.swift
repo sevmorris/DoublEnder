@@ -61,6 +61,13 @@ final class UpdatePanel: NSObject, UpdateProgressShowing {
         ])
     }
 
+    /// Brings the app forward, except in a test run, where it would take the
+    /// keyboard from whoever is working.
+    private static func activate() {
+        guard !AppLauncher.isHostingTests else { return }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     /// On the screen the app is on: `center()` always picks the primary one.
     func show() {
         let screen = NSApp.windows.first { $0.isVisible && $0.canBecomeMain && $0 !== window }?.screen ?? NSScreen.main
@@ -70,13 +77,13 @@ final class UpdatePanel: NSObject, UpdateProgressShowing {
         } else {
             window.center()
         }
-        NSApp.activate(ignoringOtherApps: true)
+        Self.activate()
         window.makeKeyAndOrderFront(nil)
     }
 
     func bringForward() {
         guard !retired else { return }
-        NSApp.activate(ignoringOtherApps: true)
+        Self.activate()
         window.makeKeyAndOrderFront(nil)
     }
 

@@ -413,6 +413,12 @@ class AudioEngine: NSObject, ObservableObject {
             logger.info("Refusing capture session rebuild during active recording")
             return
         }
+        // The tests run inside this app. A capture session bound to an input
+        // asks for the microphone, and every test build is a new app to
+        // privacy settings, so the question came up in front of whoever was
+        // working, on every run (RecorderViewModelTests' reset() starts the
+        // engine). No test needs a session: none is built.
+        guard !AppLauncher.isHostingTests else { return }
         // Set synchronously (called from main) so the UI reflects rebuilding
         // state before the first sessionQueue item runs.
         isRebuilding = true
@@ -747,22 +753,63 @@ class AudioEngine: NSObject, ObservableObject {
         handleRecordingCaptureFailure(reason: reason, kind: .inputLost)
     }
 
+    /// How the bound input stands while no take is in progress.
+    enum IdleInputCheck: Equatable {
+        case usable
+        /// It has gone, and the recorder has not been told yet.
+        case lost
+        /// It has gone, and the recorder knows.
+        case stillLost
+        /// It went and is back: the session is bound to a device that will
+        /// never deliver again, and the one to bind is in the list.
+        case returned
+    }
+
+    /// `boundConnected` is the bound device object's own word, which never
+    /// turns true again once it has been false: a device that is plugged back
+    /// in is a new object with the same UID. `listedConnected` says whether
+    /// such an object is in the list now.
+    static func idleInputCheck(boundConnected: Bool, listedConnected: Bool,
+                               lossNotified: Bool, rebuilding: Bool) -> IdleInputCheck {
+        if boundConnected && listedConnected { return .usable }
+        // A rebuild under way is about to replace the bound input anyway, and
+        // whoever asked for it decides what the session ends up on.
+        if !boundConnected && listedConnected && !rebuilding { return .returned }
+        return lossNotified ? .stillLost : .lost
+    }
+
     /// When idle, rebuild if the bound input is gone so the user isn't left
     /// on a ghost device that can't actually capture.
     private func notifyIfActiveInputLostWhileIdle() {
         guard !isRecording else { return }
         guard let bound = currentInput?.device else { return }
         let uid = bound.uniqueID
-        let stillUsable = bound.isConnected
-            && availableInputDevices.contains(where: { $0.uniqueID == uid && $0.isConnected })
-        if stillUsable {
+        let listed = availableInputDevices.first(where: { $0.uniqueID == uid && $0.isConnected })
+        switch Self.idleInputCheck(boundConnected: bound.isConnected, listedConnected: listed != nil,
+                                   lossNotified: idleInputLossNotified, rebuilding: isRebuilding) {
+        case .usable:
             idleInputLossNotified = false
             return
+        case .stillLost:
+            return
+        case .returned:
+            // On a Mac with no other input (a Mac mini, a laptop closed on a
+            // display) the recorder had nothing to fall back to, so the
+            // selection still names this device. Plugged back in, it showed
+            // by name over a session that could not capture, and RECORD
+            // failed five seconds in with "The microphone delivered no audio".
+            guard let listed else { return }
+            logger.info("Bound input is back: rebuilding the session on it")
+            setDevice(listed)
+            return
+        case .lost:
+            break
         }
-        guard !idleInputLossNotified else { return }
         idleInputLossNotified = true
         logger.warning("Active input lost while idle: \(bound.localizedName, privacy: .public)")
-        DispatchQueue.main.async { self.onActiveInputLostWhileIdle?() }
+        // From the run loop: the recorder answers with a dialog, which must
+        // not hold the main queue while it waits for a click (`MainRunLoop`).
+        MainRunLoop.deliver { self.onActiveInputLostWhileIdle?() }
     }
 
     /// Unified path for disconnect, runtime error, and unrecoverable interruption
@@ -1267,9 +1314,14 @@ class AudioEngine: NSObject, ObservableObject {
         pendingFileURL = nil
         writerLock.unlock()
 
+        // Every completion below goes through `MainRunLoop.deliver`, not
+        // `DispatchQueue.main.async`: the recorder answers a finished take with
+        // a dialog (the saved confirmation, "Microphone disconnected"), and
+        // one opened from a block of the main queue holds that queue until
+        // someone clicks. It still arrives after everything queued before it.
         guard let writer = writer else {
             sidecar?.close()
-            DispatchQueue.main.async {
+            MainRunLoop.deliver {
                 completion(.failure(RecordingError.noActiveRecording))
             }
             return
@@ -1283,20 +1335,24 @@ class AudioEngine: NSObject, ObservableObject {
             logger.info("stopRecording with zero samples appended — silently discarding")
             sidecar?.discard()
             writer.cancelWriting()
-            DispatchQueue.main.async { completion(.success(nil)) }
+            MainRunLoop.deliver { completion(.success(nil)) }
             return
         }
 
         // We have at least one appended sample — finalize normally.
         input?.markAsFinished()
         writer.finishWriting {
-            DispatchQueue.main.async {
-                if writer.status == .completed {
+            // Read here, where the writer has just finished: only what it
+            // said goes to the main thread, not the writer itself.
+            let completed = writer.status == .completed
+            let outputURL = writer.outputURL
+            let reason = writer.error?.localizedDescription ?? "status \(writer.status.rawValue)"
+            MainRunLoop.deliver {
+                if completed {
                     sidecar?.discard()
-                    completion(.success(writer.outputURL))
+                    completion(.success(outputURL))
                 } else {
                     sidecar?.close()
-                    let reason = writer.error?.localizedDescription ?? "status \(writer.status.rawValue)"
                     completion(.failure(RecordingError.writerFinishedWithError(reason)))
                 }
             }

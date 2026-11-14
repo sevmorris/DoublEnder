@@ -142,6 +142,11 @@ final class UpdateCoordinator {
     private var budgetExpired = false
     private var holder: URL?
     private var failureGeneration = 0
+    /// Whether the install that just failed may well work next time, with
+    /// nothing changed on this Mac: the network let it down, or the app was
+    /// busy. Read by `runAtLaunch`, which only rests after failures that would
+    /// repeat.
+    private var lastFailureMayPass = false
 
     init(environment: Environment) {
         env = environment
@@ -200,6 +205,14 @@ final class UpdateCoordinator {
                                     hasReleaseNotes: env.showsReleaseNotes)
             let presenter = env.presenter
             let activity = env.activity
+            // A dialog is not work. The check at launch waits for one to close
+            // (the USB offer is up at most launches with a USB microphone)
+            // rather than give up until the next launch.
+            if silent {
+                while activity.blockers == [.modal] {
+                    guard (try? await env.sleep(env.pollInterval)) != nil else { return }
+                }
+            }
             // The check at launch can answer after work has begun. Asked in the
             // same pass of the run loop as the dialog opens, so RECORD pressed
             // while the copy was being checked keeps it away.
@@ -318,7 +331,14 @@ final class UpdateCoordinator {
                 return .openRecorder(checkAfterLaunch: budgetExpired)
             case .failed(let message):
                 logger.error("Launch update failed: \(message, privacy: .public)")
-                UpdateRollback.recordFailure(of: version, store: env.store)
+                // Only a failure that would repeat counts towards the rest: a
+                // disk image this Mac will not open, no room, a copy that does
+                // not start. A connection that dropped says nothing about the
+                // next launch, and two launches on bad Wi-Fi used to put the
+                // automatic install off for a day.
+                if !lastFailureMayPass {
+                    UpdateRollback.recordFailure(of: version, store: env.store)
+                }
                 // The installed app is as it was. The prompt after launch offers
                 // the update again, and the download when it fails a second time.
                 return .openRecorder(checkAfterLaunch: true)
@@ -400,15 +420,28 @@ final class UpdateCoordinator {
         case failed(String)
     }
 
+    /// True for a failure that says nothing about the next attempt: the network
+    /// (a timeout, a lost connection, no route, a failed lookup), or the app
+    /// being busy.
+    nonisolated static func mayPassByItself(_ error: Error) -> Bool {
+        error is URLError || (error as? UpdateFailure) == .busy
+    }
+
+    private func failed(_ error: Error) -> InstallOutcome {
+        lastFailureMayPass = Self.mayPassByItself(error)
+        return .failed(error.localizedDescription)
+    }
+
     private func runInstall(version: String, downloadURL: URL, mode: Mode) async -> InstallOutcome {
         var waited = false
         let staged: URL
+        lastFailureMayPass = false
 
         // 1. Download and stage, while nothing that matters more is running.
         while true {
             if cancelRequested { return .cancelled }
             if env.activity.blocksHeavyWork {
-                guard mode == .interactive else { return .failed(UpdateFailure.busy.localizedDescription) }
+                guard mode == .interactive else { return failed(UpdateFailure.busy) }
                 waited = true
                 showWaiting()
                 guard await pause() else { return .cancelled }
@@ -434,7 +467,7 @@ final class UpdateCoordinator {
             } catch {
                 discardHolder()
                 if cancelRequested || error is CancellationError { return .cancelled }
-                return .failed(error.localizedDescription)
+                return failed(error)
             }
         }
 
@@ -448,7 +481,7 @@ final class UpdateCoordinator {
             if env.activity.blocksRelaunch {
                 guard mode == .interactive else {
                     discardHolder()
-                    return .failed(UpdateFailure.busy.localizedDescription)
+                    return failed(UpdateFailure.busy)
                 }
                 waited = true
                 showWaiting()
@@ -465,7 +498,7 @@ final class UpdateCoordinator {
                 waited = true
             case .busy:
                 discardHolder()
-                return .failed(UpdateFailure.busy.localizedDescription)
+                return failed(UpdateFailure.busy)
             case .cancelled:
                 discardHolder()
                 return .cancelled
