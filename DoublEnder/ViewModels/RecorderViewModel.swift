@@ -83,9 +83,6 @@ class RecorderViewModel: ObservableObject {
     /// by the user's actual hardware history).
     private static let usbFirstSeenKey = "usbDeviceFirstSeenAt"
     #if GCS_ENABLED
-    /// Path of a recording whose upload is pending or has failed. Survives
-    /// quit so the next launch can offer to finish it.
-    private static let pendingUploadKey = "pendingUploadURL"
     /// Legacy key: 2.1.0 persisted the cloud on/off preference here. Cloud is
     /// now always on at launch and the switch is session-scoped, so this key is
     /// never read — only removed, to clear it from installs that set it.
@@ -371,6 +368,13 @@ class RecorderViewModel: ObservableObject {
         if isCurrentlyRecording && audioEngine.sidecarFailedDuringRecording { return "Crash backup unavailable" }
         // Dropped frames: at least one buffer was discarded this take.
         if isCurrentlyRecording && audioEngine.droppedFrameWarning { return "Dropped frames — check disk" }
+        #if GCS_ENABLED
+        // Takes the guest put off with LATER, or that wait for the next
+        // launch: they are on the Desktop and have not reached the producer.
+        if case .ready = state, cloudUploadEnabled, waitingUploads > 0 {
+            return Self.waitingUploadsLine(waitingUploads)
+        }
+        #endif
         return nil
     }
 
@@ -544,6 +548,30 @@ class RecorderViewModel: ObservableObject {
         SessionHeartbeat.shared.onStopRequested = { [weak self] takeID in
             self?.stopForProducer(takeID: takeID)
         }
+        // Takes an earlier run left waiting are the launch question's: none of
+        // them uploads by itself before it has been answered.
+        putOffUntilNextLaunch = Set(uploads.current.paths)
+        // The connection coming back may let a waiting take upload by itself,
+        // and so may a dialog closing or the recorder going idle.
+        MainActor.assumeIsolated {
+            CloudConnectivity.shared.$isReady
+                .removeDuplicates()
+                .filter { $0 }
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.automaticUploadMayBePossible() }
+                .store(in: &cancellables)
+        }
+        NotificationCenter.default.publisher(for: ModalGate.didChange)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { MainRunLoop.perform { self?.considerAutomaticUpload() } }
+            }
+            .store(in: &cancellables)
+        $state
+            .sink { [weak self] _ in
+                // Sent before the state is set: look on a later pass.
+                MainActor.assumeIsolated { MainRunLoop.perform { self?.considerAutomaticUpload() } }
+            }
+            .store(in: &cancellables)
         #endif
 
         audioEngine.$lastError
@@ -960,6 +988,11 @@ class RecorderViewModel: ObservableObject {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
+    /// The faceplate's line for takes waiting to upload.
+    static func waitingUploadsLine(_ count: Int) -> String {
+        count == 1 ? "1 recording waiting to upload" : "\(count) recordings waiting to upload"
+    }
+
     /// The uploaded confirmation's note, saying the app quits after it when
     /// the guest quit to get here.
     static func uploadedNote(_ note: String?, quitsAfter: Bool) -> String? {
@@ -1070,10 +1103,7 @@ class RecorderViewModel: ObservableObject {
                 // button unblocks immediately via the completion call below.
                 // The upload's confirmation carries the note, once.
                 self.recordingTime = 0
-                self.uploadProgress = 0
-                self.state = .uploading
-                self.rememberUpload(of: url)
-                Task { await self.performUpload(note: takeNote) }
+                self.startUpload(of: url, automatic: false, note: takeNote)
                 #else
                 self.recordingTime = 0
                 self.recordedFileURL = nil  // m10: clear stale reference after save
@@ -1103,11 +1133,7 @@ class RecorderViewModel: ObservableObject {
                         // that finalized. The upload's confirmation carries the
                         // note, and performUpload records the file before it
                         // starts, so a quit mid-upload is offered next launch.
-                        self.recordedFileURL = recovered
-                        self.uploadProgress = 0
-                        self.state = .uploading
-                        self.rememberUpload(of: recovered)
-                        Task { await self.performUpload(note: takeNote) }
+                        self.startUpload(of: recovered, automatic: false, note: takeNote)
                     } else {
                         self.recordedFileURL = nil
                         self.state = .ready
@@ -1410,22 +1436,27 @@ class RecorderViewModel: ObservableObject {
     }
 
     #if GCS_ENABLED
-    /// The persisted pending upload (`PendingUpload`), or nil. Tolerates a
-    /// legacy bare-path value written by a pre-FR-003 build (treated as "no
-    /// session → restart").
-    private var persistedPendingUpload: PendingUpload? {
-        PendingUpload.decode(defaults.string(forKey: Self.pendingUploadKey))
-    }
+    /// Every take still to be uploaded (`PendingUploads`), kept across quits.
+    private lazy var uploads = PendingUploadStore(defaults: defaults)
 
-    /// Path of a recording whose upload is pending/failed, if any. Read by
-    /// AppDelegate at launch to offer to finish an interrupted upload.
-    var persistedPendingUploadPath: String? { persistedPendingUpload?.path }
-
-    /// Persist (or update) the pending-upload record.
-    private func setPendingUpload(_ record: PendingUpload) {
-        guard let json = record.encoded else { return }
-        defaults.set(json, forKey: Self.pendingUploadKey)
-    }
+    /// Takes not to upload by themselves before the next launch. At launch that
+    /// is every take an earlier run left: they are the launch question's to
+    /// offer, and UPLOAD takes them off. SKIP leaves them here, and the next
+    /// launch offers them again.
+    private var putOffUntilNextLaunch: Set<String> = []
+    /// Automatic attempts at each take, this run (`AutomaticUpload`).
+    private var automaticAttempts: [String: Int] = [:]
+    private var lastAutomaticStart: Date?
+    private var automaticRetryScheduled = false
+    /// Something happened that may let a waiting take upload by itself: the
+    /// connection came back, or an upload succeeded.
+    private var automaticUploadWanted = false
+    /// The upload under way started by itself, so LATER can put it off.
+    @Published private(set) var isAutomaticUpload = false
+    /// The upload under way, for LATER.
+    private var uploadTask: Task<Void, Never>?
+    /// Takes waiting to upload, besides the one uploading, for the faceplate.
+    @Published private(set) var waitingUploads = 0
 
     /// Records `file` as waiting to be uploaded, before its upload starts.
     /// Called on the main thread by everything that starts one, so the record
@@ -1436,14 +1467,51 @@ class RecorderViewModel: ObservableObject {
     /// lost. The take was then on the Desktop with nothing to say it had
     /// never been uploaded.
     private func rememberUpload(of file: URL) {
-        setPendingUpload(PendingUpload.starting(file, existing: persistedPendingUpload))
+        uploads.change { $0.add(file) }
     }
 
-    /// Forget the pending upload (called on success, or when the user skips
-    /// the launch prompt).
-    func clearPendingUpload() {
-        defaults.removeObject(forKey: Self.pendingUploadKey)
+    private func refreshWaitingUploads() {
+        var uploading: String?
+        if case .uploading = state { uploading = recordedFileURL?.path }
+        waitingUploads = uploads.current.paths.filter { $0 != uploading }.count
     }
+
+    // MARK: Launch
+
+    /// The takes an earlier run left waiting whose files are still there, for
+    /// the launch question. The others are forgotten.
+    func takesWaitingToUpload() -> [URL] {
+        let waiting = uploads.change { $0.dropMissing { FileManager.default.fileExists(atPath: $0) } }
+        refreshWaitingUploads()
+        return waiting.map { URL(fileURLWithPath: $0.path) }
+    }
+
+    /// A take recovered at launch joins the takes waiting: offered with them,
+    /// and kept, like them, until it is uploaded.
+    func waitToUpload(_ file: URL) {
+        rememberUpload(of: file)
+        putOffUntilNextLaunch.insert(file.path)
+        refreshWaitingUploads()
+    }
+
+    /// UPLOAD at launch: the takes waiting upload, one after another.
+    func uploadWaitingTakes() {
+        guard cloudUploadEnabled else { return }
+        let waiting = uploads.current.items.filter { FileManager.default.fileExists(atPath: $0.path) }
+        putOffUntilNextLaunch.subtract(waiting.map(\.path))
+        guard let first = waiting.first else { return }
+        // The rest follow by themselves, once this one is through.
+        startUpload(of: URL(fileURLWithPath: first.path), automatic: false)
+    }
+
+    /// SKIP at launch: the takes stay, are not uploaded before the next launch,
+    /// and are offered again then. SKIP used to forget them for good.
+    func putOffWaitingTakesUntilNextLaunch() {
+        putOffUntilNextLaunch.formUnion(uploads.current.paths)
+        refreshWaitingUploads()
+    }
+
+    // MARK: Uploading
 
     /// Manual retry from the upload-failed error view. The local file is
     /// untouched — re-attempt only the upload, no new recording.
@@ -1453,20 +1521,95 @@ class RecorderViewModel: ObservableObject {
             state = .error("No recording found to upload")
             return
         }
-        uploadProgress = 0
-        state = .uploading
-        rememberUpload(of: fileURL)
-        Task { await performUpload() }
+        startUpload(of: fileURL, automatic: false)
     }
 
-    /// Resume an upload the previous session left pending (launch prompt).
+    /// Resume an upload the previous session left pending.
     func resumePendingUpload(fileURL: URL) {
+        startUpload(of: fileURL, automatic: false)
+    }
+
+    /// Every upload starts here, on the main thread.
+    private func startUpload(of file: URL, automatic: Bool, note: String? = nil) {
         guard cloudUploadEnabled else { return }
-        recordedFileURL = fileURL
+        let before = state
+        recordedFileURL = file
         uploadProgress = 0
+        isAutomaticUpload = automatic
         state = .uploading
-        rememberUpload(of: fileURL)
-        Task { await performUpload() }
+        rememberUpload(of: file)
+        refreshWaitingUploads()
+        uploadTask = Task { await self.performUpload(note: note, automatic: automatic, before: before) }
+    }
+
+    /// LATER. On a failed upload's card it goes back to the recorder; on an
+    /// upload that started by itself it stops that upload. Either way the take
+    /// waits, and uploads by itself when the connection comes back or once
+    /// another upload succeeds. A take the guest has just stopped uploads
+    /// without a LATER, as it always did.
+    func uploadLater() {
+        switch state {
+        case .uploadFailed:
+            recordedFileURL = nil
+            state = .ready
+        case .uploading where isAutomaticUpload:
+            automaticUploadWanted = false
+            // performUpload sees the cancellation and goes back to the recorder.
+            uploadTask?.cancel()
+        default:
+            return
+        }
+        refreshWaitingUploads()
+    }
+
+    /// Starts the oldest waiting take, if one may upload by itself now
+    /// (`AutomaticUpload`). Main thread.
+    private func considerAutomaticUpload() {
+        guard automaticUploadWanted else { return }
+        var idle = false
+        switch state {
+        case .ready, .uploadFailed: idle = startWait == nil && !isFinalizingRecording
+        default: break
+        }
+        let now = Date()
+        let situation = AutomaticUpload.Situation(
+            cloudOn: cloudUploadEnabled, idle: idle, dialogUp: ModalGate.isPresenting,
+            networkReady: MainActor.assumeIsolated { CloudConnectivity.shared.isReady },
+            lastStart: lastAutomaticStart, now: now)
+        guard AutomaticUpload.mayStart(situation) else {
+            // Only too soon after the last one: try again when it is not.
+            var soon = situation
+            soon.lastStart = nil
+            if AutomaticUpload.mayStart(soon), let last = lastAutomaticStart, !automaticRetryScheduled {
+                automaticRetryScheduled = true
+                let wait = AutomaticUpload.minimumGap - now.timeIntervalSince(last)
+                MainActor.assumeIsolated {
+                    MainRunLoop.perform(after: max(wait, 1)) { [weak self] in
+                        self?.automaticRetryScheduled = false
+                        self?.considerAutomaticUpload()
+                    }
+                }
+            }
+            return
+        }
+        guard let next = AutomaticUpload.next(in: uploads.current, skipped: putOffUntilNextLaunch,
+                                              attempts: automaticAttempts,
+                                              exists: { FileManager.default.fileExists(atPath: $0) }) else {
+            automaticUploadWanted = false
+            return
+        }
+        automaticUploadWanted = false
+        lastAutomaticStart = now
+        automaticAttempts[next.path, default: 0] += 1
+        logger.info("Uploading a waiting take by itself")
+        startUpload(of: URL(fileURLWithPath: next.path), automatic: true)
+    }
+
+    /// The connection came back, or an upload went through: a waiting take
+    /// may upload now. Called on the main thread.
+    private func automaticUploadMayBePossible() {
+        automaticUploadWanted = true
+        considerAutomaticUpload()
     }
 
     /// Category + HTTP status distilled from an upload failure, for diagnostics
@@ -1524,10 +1667,29 @@ class RecorderViewModel: ObservableObject {
     /// next launch, then upgraded with the session URI so an interruption after
     /// initiation resumes. `note` goes on the confirmation that ends this call,
     /// success or failure; a later retry is a new call and doesn't repeat it.
-    private func performUpload(note: String? = nil) async {
+    ///
+    /// `automatic`: the upload started by itself (`considerAutomaticUpload`).
+    /// It tells nobody of a failure: the take goes on waiting, and the app goes
+    /// back to `before`. LATER stops it.
+    private func performUpload(note: String? = nil, automatic: Bool = false, before: AppState = .ready) async {
         guard let fileURL = recordedFileURL else {
             await MainActor.run { self.state = .error("No recording found to upload") }
             return
+        }
+        // Back to the recorder, or to the card that was up, with the take
+        // still waiting: LATER (`stopped`), or an automatic upload that failed.
+        let putOff = { (stopped: Bool) in
+            MainRunLoop.deliver {
+                self.isAutomaticUpload = false
+                if !stopped, automatic, case .uploadFailed(let earlier) = before {
+                    self.recordedFileURL = earlier
+                    self.state = .uploadFailed(earlier)
+                } else {
+                    self.recordedFileURL = nil
+                    self.state = .ready
+                }
+                self.refreshWaitingUploads()
+            }
         }
 
         // Whoever started this upload has recorded the file already
@@ -1547,6 +1709,10 @@ class RecorderViewModel: ObservableObject {
         onMainQueue { self.lastUploadError = nil }
 
         while true {
+            if Task.isCancelled {
+                putOff(true)
+                return
+            }
             onMainQueue { self.state = .uploading }
             let attemptStart = Date()
             do {
@@ -1557,30 +1723,36 @@ class RecorderViewModel: ObservableObject {
                 let crc: String
                 // Only a session opened for this very file: another file's
                 // holds that file's bytes and checksum.
-                if let session = persistedPendingUpload?.session(for: fileURL) {
+                if let session = uploads.current.record(for: fileURL)?.session(for: fileURL) {
                     sessionURI = session.uri
                     crc = session.crc32c
                 } else {
                     let began = try await uploader.beginUpload(fileURL: fileURL)
                     sessionURI = began.sessionURI
                     crc = began.crc32c
-                    setPendingUpload(PendingUpload(path: fileURL.path,
-                                                   sessionURI: sessionURI.absoluteString,
-                                                   crc32c: crc))
+                    uploads.change {
+                        $0.update(PendingUpload(path: fileURL.path, sessionURI: sessionURI.absoluteString,
+                                                crc32c: crc))
+                    }
                 }
 
                 try await uploader.continueUpload(fileURL: fileURL,
                                                   sessionURI: sessionURI,
                                                   crc32cBase64: crc)
 
-                self.clearPendingUpload()
+                // This take only: others may be waiting behind it.
+                uploads.change { $0.remove(fileURL) }
                 // From the run loop, not a main actor job: the confirmation is
                 // modal, and from a job it would hold the main queue for as
                 // long as it went unanswered (`MainRunLoop`).
                 MainRunLoop.deliver {
                     self.lastUploadError = nil
                     self.recordingTime = 0
+                    self.recordedFileURL = nil
+                    self.isAutomaticUpload = false
+                    self.automaticAttempts[fileURL.path] = nil
                     self.state = .ready
+                    self.refreshWaitingUploads()
                     let quitting = self.quitWhenUploaded
                     self.quitWhenUploaded = false
                     // Persistent, app-controlled confirmation — blocks until
@@ -1589,10 +1761,20 @@ class RecorderViewModel: ObservableObject {
                                                fileName: fileURL.lastPathComponent,
                                                note: Self.uploadedNote(note, quitsAfter: quitting))
                     // The guest asked to quit, and the app stayed for this.
-                    if quitting { NSApp.terminate(nil) }
+                    if quitting {
+                        NSApp.terminate(nil)
+                        return
+                    }
+                    // The connection works: a take waiting behind this one goes next.
+                    self.automaticUploadMayBePossible()
                 }
                 return
             } catch {
+                // LATER on an upload that started by itself.
+                if Task.isCancelled {
+                    putOff(true)
+                    return
+                }
                 // Diagnostics (FR-004): log a sanitized summary only — HTTP
                 // status, error category, attempt number, backoff, elapsed —
                 // never the signed URL, session URI, key material, response
@@ -1606,10 +1788,15 @@ class RecorderViewModel: ObservableObject {
                 // Cloud Storage no longer has the session (they last a week):
                 // nothing sent to it will ever succeed. Forget it, and the
                 // next attempt opens a new one and sends the file again.
-                if PendingUpload.sessionIsGone(status: summary.status),
-                   let record = persistedPendingUpload, record.sessionURI != nil {
-                    logger.warning("Upload session gone (HTTP \(statusText, privacy: .public)); the next attempt starts a new one.")
-                    setPendingUpload(record.withoutSession)
+                if PendingUpload.sessionIsGone(status: summary.status) {
+                    let dropped = uploads.change { uploads -> Bool in
+                        guard let record = uploads.record(for: fileURL), record.sessionURI != nil else { return false }
+                        uploads.update(record.withoutSession)
+                        return true
+                    }
+                    if dropped {
+                        logger.warning("Upload session gone (HTTP \(statusText, privacy: .public)); the next attempt starts a new one.")
+                    }
                 }
                 // Deterministic failures (integrity mismatch, credential/signing)
                 // won't fix by re-sending — fail now, keep the local file.
@@ -1619,10 +1806,18 @@ class RecorderViewModel: ObservableObject {
                     if Self.statusSuggestsClockSkew(summary.status) {
                         logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
                     }
+                    // An upload that started by itself says nothing: the take
+                    // goes on waiting.
+                    if automatic {
+                        putOff(false)
+                        return
+                    }
                     MainRunLoop.deliver {
                         // The quit that waited for this is called off: the
                         // card says what happened, and RETRY UPLOAD is there.
                         self.quitWhenUploaded = false
+                        self.isAutomaticUpload = false
+                        self.refreshWaitingUploads()
                         self.state = .uploadFailed(fileURL)
                         UploadConfirmation.present(success: false,
                                                    fileName: fileURL.lastPathComponent,

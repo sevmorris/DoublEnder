@@ -207,8 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func startUp() {
         #if GCS_ENABLED
         let recovered = runCrashRecoveryIfNeeded()
-        runPendingUploadCheckIfNeeded()
-        offerUploadOfRecoveredTake(recovered)
+        offerWaitingUploads(recovered: recovered)
         // A launch install that ran out of time or failed, or a check that
         // did, is finished behind the recorder and installed at quit, rather
         // than offered in a prompt the guest has to answer. Only what this copy
@@ -548,53 +547,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     #if GCS_ENABLED
-    /// A persisted pending-upload path means a prior session's upload was
-    /// interrupted. If the local file is still on disk, offer to finish it;
-    /// stale/missing entries are cleared silently.
-    private func runPendingUploadCheckIfNeeded() {
+    /// One question at launch for every take still to be uploaded: uploads an
+    /// earlier run left unfinished, takes put off with LATER or with SKIP last
+    /// time, and takes crash recovery has just put back together (their session
+    /// ended before an upload could start). UPLOAD sends them one after
+    /// another. SKIP keeps them: they are offered again at the next launch, and
+    /// do not upload by themselves before it. SKIP used to forget an
+    /// interrupted upload for good, and a recovered take was never offered
+    /// again; a take is now forgotten only when its file is gone.
+    private func offerWaitingUploads(recovered: [URL]) {
         let vm = RecorderViewModel.shared
-        // Local-only mode: stay silent, but deliberately leave the pending
-        // record intact so turning cloud back on still offers to finish it.
+        // Local-only mode: say nothing, and keep everything for when cloud is
+        // switched back on.
         guard vm.cloudUploadEnabled else { return }
-        guard let path = vm.persistedPendingUploadPath else { return }
-
-        guard FileManager.default.fileExists(atPath: path) else {
-            vm.clearPendingUpload()
-            return
+        for take in recovered where FileManager.default.fileExists(atPath: take.path) {
+            vm.waitToUpload(take)
         }
+        let waiting = vm.takesWaitingToUpload()
+        guard let first = waiting.first else { return }
 
-        let url = URL(fileURLWithPath: path)
         mainWindow?.orderOut(nil)
-        let shouldUpload = PendingUploadPrompt.present(fileName: url.lastPathComponent)
+        let upload = PendingUploadPrompt.present(fileName: first.lastPathComponent, count: waiting.count)
         mainWindow?.makeKeyAndOrderFront(nil)
 
-        if shouldUpload {
-            vm.resumePendingUpload(fileURL: url)
+        if upload {
+            vm.uploadWaitingTakes()
         } else {
-            vm.clearPendingUpload()
-        }
-    }
-
-    /// A take recovered at launch never reached the cloud: its session ended
-    /// before the upload could start. Offer it with the same prompt as an
-    /// interrupted upload ("A recording wasn't uploaded last session"); Skip
-    /// leaves the WAV on the Desktop, as before. Only one upload runs at a
-    /// time, so when an interrupted upload was resumed a moment ago this
-    /// offers nothing, and the recovered WAV stays on the Desktop. Launch
-    /// recovery finds one sidecar per crashed session, so there is in
-    /// practice a single take to offer.
-    private func offerUploadOfRecoveredTake(_ recovered: [URL]) {
-        let vm = RecorderViewModel.shared
-        guard vm.cloudUploadEnabled, !vm.isCurrentlyUploading,
-              let url = recovered.first(where: { FileManager.default.fileExists(atPath: $0.path) })
-        else { return }
-
-        mainWindow?.orderOut(nil)
-        let shouldUpload = PendingUploadPrompt.present(fileName: url.lastPathComponent)
-        mainWindow?.makeKeyAndOrderFront(nil)
-
-        if shouldUpload {
-            vm.resumePendingUpload(fileURL: url)
+            vm.putOffWaitingTakesUntilNextLaunch()
         }
     }
     #endif
