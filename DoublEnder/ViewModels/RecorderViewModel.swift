@@ -597,49 +597,83 @@ class RecorderViewModel: ObservableObject {
         }
 
         // USB hot-plug: AudioEngine fires this on the main thread when a new
-        // USB input device appears while the app is running. We offer to
-        // switch unless recording (don't interrupt), it's already the
-        // selected device, it's a dock's audio port, or the user dismissed it
-        // this session.
+        // USB input device appears while the app is running and no take is
+        // in progress. We offer to switch unless it's already the selected
+        // device, it's a dock's audio port, or the user dismissed it this
+        // session.
         audioEngine.onNewUSBDeviceDetected = { [weak self] device in
-            self?.presentUSBSwitchPrompt(for: device)
+            self?.offerUSBInput(device)
         }
+        // An offer that had to wait is made when what it waited for is over:
+        // a dialog has closed, or a take has ended. The state is sent before
+        // it is set, which is early enough: the offer opens on a later pass
+        // of the run loop.
+        NotificationCenter.default.publisher(for: ModalGate.didChange)
+            .sink { [weak self] _ in self?.usbOffers.retry() }
+            .store(in: &cancellables)
+        $state
+            .sink { [weak self] _ in self?.usbOffers.retry() }
+            .store(in: &cancellables)
 
         requestPermissions()
     }
 
-    /// App-modal NSAlert offering to switch input to a newly-arrived USB
-    /// device. Bails silently for any guard miss so callers can fire this
-    /// unconditionally from the engine-side detection.
-    private func presentUSBSwitchPrompt(for device: AVCaptureDevice) {
-        // NSAlert MUST be driven from the main thread or button clicks
-        // never reach the response handler. CoreAudio listener already
-        // dispatches to DispatchQueue.main, but defend against any future
-        // caller that doesn't.
+    /// USB inputs waiting to be offered, by device UID. An offer waits while
+    /// a take is in progress or another dialog is up (the name prompt
+    /// excepted, see `ModalGate`), and opens from the run loop when neither is.
+    private lazy var usbOffers = WaitingOffers<String>(
+        canOpen: { [weak self] in
+            guard let self else { return false }
+            // Not over a take: the device is in the picker, and the offer is
+            // made when the take is over.
+            return !self.isCurrentlyRecording && !self.isShowingModalAlert && ModalGate.canOpenOffer()
+        },
+        isWanted: { [weak self] uid in self?.usbDeviceToOffer(uid) != nil },
+        present: { [weak self] uid in self?.presentUSBSwitchPrompt(uid: uid) })
+
+    /// Offers to switch to a USB input that has appeared. Callers fire this
+    /// unconditionally: an input not worth offering is forgotten, and one that
+    /// cannot be offered yet waits (`WaitingOffers`). 2.8.4 dropped the offer
+    /// whenever another dialog was up, so a guest whose launch had a crashed
+    /// take to recover or an upload to finish never got it.
+    private func offerUSBInput(_ device: AVCaptureDevice) {
+        // The CoreAudio listener already dispatches to the main queue, but
+        // defend against any future caller that doesn't.
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
-                self?.presentUSBSwitchPrompt(for: device)
+                self?.offerUSBInput(device)
             }
             return
         }
+        usbOffers.add(device.uniqueID)
+    }
 
-        // Don't interrupt a take in progress — the new device shows up in
-        // the picker dropdown immediately and the user can switch manually
-        // after stopping. (Per spec: "If currently recording, do nothing".)
-        if isCurrentlyRecording { return }
+    /// The device to offer for this UID, or nil when there is nothing to
+    /// offer: it has gone, it is the current input, it is a dock's audio port,
+    /// or the guest has said "Keep Current" this session.
+    private func usbDeviceToOffer(_ uid: String) -> AVCaptureDevice? {
+        guard let device = audioEngine.usbInputDevices().first(where: { $0.uniqueID == uid }) else { return nil }
+        return Self.isWorthOffering(uid: uid, selected: selectedInputDeviceID, dismissed: dismissedUSBDevices,
+                                    isDockPort: InputRanking.isDockPort(audioEngine.inputCandidate(for: device)))
+            ? device : nil
+    }
+
+    /// Whether a USB input that is present is worth an offer.
+    static func isWorthOffering(uid: String, selected: String, dismissed: Set<String>, isDockPort: Bool) -> Bool {
         // Already the current input — nothing to switch to.
-        if device.uniqueID == selectedInputDeviceID { return }
+        if uid == selected { return false }
         // Plugging in a dock isn't asking for its audio port, and nothing has
         // to be plugged into that port for it to deliver noise. It stays in
         // the picker for anyone who has a headset in it.
-        if InputRanking.isDockPort(audioEngine.inputCandidate(for: device)) { return }
+        if isDockPort { return false }
         // User said "Keep Current" for this device earlier this session.
-        if dismissedUSBDevices.contains(device.uniqueID) { return }
-        // Another dialog is already on screen, the view model's or anyone
-        // else's (the name prompt, a confirmation, the updater): the device
-        // will still appear in the picker; the user can switch manually after
-        // dismissing.
-        if isShowingModalAlert || ModalGate.isPresenting { return }
+        return !dismissed.contains(uid)
+    }
+
+    /// App-modal NSAlert offering to switch input to a USB device. Called by
+    /// `usbOffers`, from the run loop, when the offer can open.
+    private func presentUSBSwitchPrompt(uid: String) {
+        guard let device = usbDeviceToOffer(uid) else { return }
 
         // Refresh first-seen tracking so this device is timestamped — any
         // future launch with multiple USB devices will weight this one as
@@ -665,18 +699,17 @@ class RecorderViewModel: ObservableObject {
         isShowingModalAlert = true
         let shown = ModalGate.run(.prompt) { alert.runModal() }
         isShowingModalAlert = false
-        // Not shown: a dialog opened in between, or an update is replacing
-        // the app. The device is in the picker either way.
+        // Not shown: an update is replacing the app. The device is in the
+        // picker either way.
         guard let response = shown else { return }
         if response == .alertFirstButtonReturn {
-            // Defer to the next runloop tick so we're not running engine
-            // teardown from inside the CoreAudio device-list listener's
-            // call frame (which previously crashed via NSException out of
-            // SetOutputFormat).
-            let uid = device.uniqueID
-            DispatchQueue.main.async { [weak self] in
-                self?.selectedInputDeviceID = uid
-            }
+            // At once. This runs from the run loop, never from inside the
+            // CoreAudio device-list listener's call frame, where engine
+            // teardown once crashed (an NSException out of SetOutputFormat)
+            // and the switch had to be put off to the next tick. And the
+            // session has to be seen rebuilding before the name prompt under
+            // this offer can take a Return (`startRecordingWhenInputIsReady`).
+            selectedInputDeviceID = device.uniqueID
         } else {
             dismissedUSBDevices.insert(device.uniqueID)
         }
@@ -774,7 +807,7 @@ class RecorderViewModel: ObservableObject {
                     // "the one I just plugged in" intent across launches.
                     // A dock's audio port is never the one offered.
                     if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
-                        self.presentUSBSwitchPrompt(for: usbDevice)
+                        self.offerUSBInput(usbDevice)
                     }
                 } else {
                     self.state = .error("Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable DoublEnder.")
