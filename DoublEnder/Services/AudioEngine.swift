@@ -413,6 +413,12 @@ class AudioEngine: NSObject, ObservableObject {
             logger.info("Refusing capture session rebuild during active recording")
             return
         }
+        // The tests run inside this app. A capture session bound to an input
+        // asks for the microphone, and every test build is a new app to
+        // privacy settings, so the question came up in front of whoever was
+        // working, on every run (RecorderViewModelTests' reset() starts the
+        // engine). No test needs a session: none is built.
+        guard !AppLauncher.isHostingTests else { return }
         // Set synchronously (called from main) so the UI reflects rebuilding
         // state before the first sessionQueue item runs.
         isRebuilding = true
@@ -1336,13 +1342,17 @@ class AudioEngine: NSObject, ObservableObject {
         // We have at least one appended sample — finalize normally.
         input?.markAsFinished()
         writer.finishWriting {
+            // Read here, where the writer has just finished: only what it
+            // said goes to the main thread, not the writer itself.
+            let completed = writer.status == .completed
+            let outputURL = writer.outputURL
+            let reason = writer.error?.localizedDescription ?? "status \(writer.status.rawValue)"
             MainRunLoop.deliver {
-                if writer.status == .completed {
+                if completed {
                     sidecar?.discard()
-                    completion(.success(writer.outputURL))
+                    completion(.success(outputURL))
                 } else {
                     sidecar?.close()
-                    let reason = writer.error?.localizedDescription ?? "status \(writer.status.rawValue)"
                     completion(.failure(RecordingError.writerFinishedWithError(reason)))
                 }
             }
