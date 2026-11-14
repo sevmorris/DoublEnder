@@ -103,6 +103,9 @@ private final class Harness {
     /// Installs that went ahead, and what was in progress at the time.
     var commits: [StagedUpdate] = []
     var blockersAtCommit: [Set<AppActivity.Blocker>] = []
+    /// Installs at quit, and whether the next one fails.
+    var quitCommits: [StagedUpdate] = []
+    var quitCommitFails = false
     var opened: [URL] = []
     var removed: [URL] = []
     var holders: [URL] = []
@@ -152,6 +155,10 @@ private final class Harness {
                 if activity.blocksRelaunch { throw UpdateCommit.Refusal.busy }
                 blockersAtCommit.append(activity.blockers)
                 commits.append(update)
+            },
+            commitAtQuit: { [unowned self] update in
+                if quitCommitFails { throw UpdateCommit.Refusal.appMoved }
+                quitCommits.append(update)
             },
             removeFolder: { [unowned self] in
                 removed.append($0)
@@ -527,6 +534,236 @@ final class UpdateCoordinatorTests: XCTestCase {
         h.coordinator.cancel()
         await flow.value
         XCTAssertTrue(h.commits.isEmpty)
+    }
+
+    // MARK: Cloud, behind the recorder
+
+    /// Nothing a guest sees: no window, no dialog, no install while the app
+    /// runs. The copy waits for the quit.
+    @MainActor
+    func testBehindTheRecorderItStagesQuietlyAndWaitsForTheQuit() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+        XCTAssertEqual(h.coordinator.stagedForQuit?.version, "9.0.0")
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+        XCTAssertTrue(h.presenter.windows.isEmpty)
+        XCTAssertTrue(h.presenter.confirms.isEmpty)
+        XCTAssertTrue(h.commits.isEmpty, "it installed while the app was open")
+        XCTAssertEqual(h.store.journal, h.holders.map(\.path), "the staged copy is swept if the app dies")
+        XCTAssertNotNil(h.coordinator.lastCheck)
+
+        XCTAssertTrue(h.coordinator.installAtQuit())
+        XCTAssertEqual(h.quitCommits.map(\.version), ["9.0.0"])
+        XCTAssertEqual(h.store.journal, [], "probation owns the previous version now")
+        XCTAssertNil(h.coordinator.stagedForQuit)
+        XCTAssertTrue(h.removed.isEmpty)
+    }
+
+    @MainActor
+    func testNothingStagedNothingInstalledAtQuit() {
+        let h = Harness()
+        XCTAssertFalse(h.coordinator.installAtQuit())
+        XCTAssertTrue(h.quitCommits.isEmpty)
+    }
+
+    /// The install at quit refused (the app was moved meanwhile): the copy goes,
+    /// and the app quits as it was.
+    @MainActor
+    func testAnInstallAtQuitThatFailsLeavesNothingBehind() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        h.quitCommitFails = true
+        XCTAssertFalse(h.coordinator.installAtQuit())
+        XCTAssertEqual(h.removed, [h.holders[0]])
+        XCTAssertEqual(h.store.journal, [])
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
+    /// It waits for a take to be over before it downloads anything, as long as
+    /// that takes, and a take that starts meanwhile stops it.
+    @MainActor
+    func testBehindTheRecorderItWaitsForATake() async {
+        let h = Harness()
+        h.recording(true)
+        let flow = Task { await h.coordinator.updateInBackground(promptIfStuck: false) }
+        await waitUntil { h.coordinator.phase == .waiting }
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(h.stager.starts, 0)
+        h.recording(false)
+        await flow.value
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+        XCTAssertTrue(h.presenter.windows.isEmpty)
+    }
+
+    @MainActor
+    func testBehindTheRecorderATakeThatStartsStopsTheDownload() async {
+        let h = Harness()
+        h.stager.duration = .seconds(2)
+        h.stager.onStart = { start in
+            if start == 1 {
+                MainRunLoop.perform(after: 0.05) { h.recording(true) }
+            } else {
+                h.stager.duration = .milliseconds(20)
+            }
+        }
+        let flow = Task { await h.coordinator.updateInBackground(promptIfStuck: false) }
+        await waitUntil { h.stager.cancellations == 1 }
+        h.recording(false)
+        await flow.value
+        XCTAssertEqual(h.stager.starts, 2)
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+    }
+
+    /// A failure says nothing; one that would repeat counts towards the rest,
+    /// and a dropped connection does not.
+    @MainActor
+    func testBehindTheRecorderAFailureIsSilent() async {
+        let h = Harness()
+        h.stager.failure = URLError(.networkConnectionLost)
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        h.stager.failure = SelfUpdater.Failure.diskImage
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(h.presenter.failures.isEmpty)
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+        XCTAssertEqual(h.store.load().failures["9.0.0"]?.count, 1)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
+    /// A copy that cannot replace itself: the check after launch still offers
+    /// the download, as before; a check while idle says nothing.
+    @MainActor
+    func testACopyThatCannotReplaceItselfIsOfferedOnlyAfterLaunch() async {
+        let h = Harness()
+        h.obstacle = .notWritable
+        h.presenter.offerChoice = .notNow
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+        await h.coordinator.updateInBackground(promptIfStuck: true)
+        XCTAssertEqual(h.presenter.offers.map(\.canInstall), [false])
+        XCTAssertEqual(h.stager.starts, 0)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
+    /// Automatic installs resting after two real failures: after launch the
+    /// prompt offers it, as before; while idle nothing happens.
+    @MainActor
+    func testARestingVersionIsOfferedOnlyAfterLaunch() async {
+        let h = Harness()
+        let now = Date()
+        UpdateRollback.recordFailure(of: "9.0.0", store: h.store, now: now)
+        UpdateRollback.recordFailure(of: "9.0.0", store: h.store, now: now)
+        h.presenter.offerChoice = .notNow
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+        XCTAssertEqual(h.stager.starts, 0)
+        await h.coordinator.updateInBackground(promptIfStuck: true)
+        XCTAssertEqual(h.presenter.offers.map(\.canInstall), [true])
+    }
+
+    @MainActor
+    func testAVersionAlreadyHeldIsNotFetchedAgain() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertEqual(h.stager.starts, 1)
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+    }
+
+    /// A newer version out while an older one waits: the older copy goes.
+    @MainActor
+    func testANewerVersionReplacesTheOneHeld() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        h.result = .available(version: "9.1.0", downloadURL: URL(string: "https://downloads.test/u.dmg")!,
+                              releaseURL: URL(string: "https://downloads.test/notes")!)
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertEqual(h.stager.starts, 2)
+        XCTAssertEqual(h.removed, [h.holders[0]])
+        XCTAssertEqual(h.coordinator.stagedForQuit?.version, "9.1.0")
+    }
+
+    @MainActor
+    func testAVersionThisCopyRolledBackFromIsNotFetched() async {
+        let h = Harness()
+        var state = UpdateState()
+        state.skipped = "9.0.0cr"
+        h.store.save(state)
+        await h.coordinator.updateInBackground(promptIfStuck: true)
+        XCTAssertEqual(h.stager.starts, 0)
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+    }
+
+    /// Check for Updates… with a copy waiting for the quit: install it now, or
+    /// keep it for the quit.
+    @MainActor
+    func testTheMenuWithACopyHeldOffersToInstallItNow() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        h.presenter.confirmAnswer = false
+        await h.coordinator.checkForUpdates(silent: false)
+        XCTAssertEqual(h.presenter.confirms, ["9.0.0"])
+        XCTAssertTrue(h.commits.isEmpty)
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit, "Not Now threw the copy away")
+        XCTAssertTrue(h.removed.isEmpty)
+
+        h.presenter.confirmAnswer = true
+        await h.coordinator.checkForUpdates(silent: false)
+        XCTAssertEqual(h.commits.map(\.version), ["9.0.0"])
+        XCTAssertEqual(h.coordinator.phase, .relaunching)
+    }
+
+    /// The silent check after launch leaves a held copy alone.
+    @MainActor
+    func testTheSilentCheckLeavesAHeldCopyAlone() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        await h.coordinator.checkForUpdates(silent: true)
+        XCTAssertTrue(h.presenter.confirms.isEmpty)
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+    }
+
+    /// Asked for while the quiet flow downloads: the quiet one gives way.
+    @MainActor
+    func testTheMenuDuringTheQuietDownloadTakesOver() async {
+        let h = Harness()
+        h.stager.duration = .seconds(5)
+        XCTAssertTrue(h.coordinator.startBackgroundUpdate(promptIfStuck: false))
+        XCTAssertFalse(h.coordinator.startBackgroundUpdate(promptIfStuck: false), "two quiet flows at once")
+        await waitUntil { h.coordinator.phase == .downloading }
+        h.stager.duration = .milliseconds(20)
+        h.presenter.offerChoice = .notNow
+        await h.coordinator.checkForUpdates(silent: false)
+        XCTAssertEqual(h.stager.cancellations, 1)
+        XCTAssertEqual(h.presenter.offers.count, 1)
+        XCTAssertEqual(h.coordinator.phase, .idle)
+    }
+
+    /// A quit during the quiet download stops it, as for any download.
+    @MainActor
+    func testAQuitDuringTheQuietDownloadWaitsForItToStop() async {
+        let h = Harness()
+        h.stager.duration = .seconds(5)
+        h.coordinator.startBackgroundUpdate(promptIfStuck: false)
+        await waitUntil { h.coordinator.phase == .downloading }
+        var replied = false
+        XCTAssertTrue(h.coordinator.cancelBeforeQuit(limit: 3) { replied = true })
+        await waitUntil { replied }
+        XCTAssertEqual(h.stager.cancellations, 1)
+        XCTAssertFalse(h.coordinator.installAtQuit())
+    }
+
+    /// The launch check counts as a check; one that failed does not.
+    @MainActor
+    func testOnlyAnAnsweredCheckCounts() async {
+        let h = Harness()
+        h.result = .error("offline")
+        await h.coordinator.checkForUpdates(silent: true)
+        XCTAssertNil(h.coordinator.lastCheck)
+        h.result = .upToDate(version: "9.0.0")
+        _ = await h.coordinator.runAtLaunch(window: FakeProgress(), checkTimeout: .seconds(2), budget: .seconds(5))
+        XCTAssertNotNil(h.coordinator.lastCheck)
     }
 
     // MARK: Cloud, at launch

@@ -209,12 +209,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let recovered = runCrashRecoveryIfNeeded()
         runPendingUploadCheckIfNeeded()
         offerUploadOfRecoveredTake(recovered)
-        guard checkForUpdatesAfterLaunch else { return }
+        // A launch install that ran out of time or failed, or a check that
+        // did, is finished behind the recorder and installed at quit, rather
+        // than offered in a prompt the guest has to answer. Only what this copy
+        // cannot install by itself is still offered.
+        if checkForUpdatesAfterLaunch {
+            UpdateCoordinator.shared.startBackgroundUpdate(promptIfStuck: true)
+        }
         #else
         runCrashRecoveryIfNeeded()
-        #endif
         Task { await checkForUpdates(silent: true) }
+        #endif
     }
+
 
     func applicationDidBecomeActive(_ notification: Notification) {
         // The recorder can become key, so AppKit restores the key window on
@@ -256,7 +263,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             UpdateRollback.noteCleanQuitBeforeHealthy(runningVersion: Self.runningVersion,
                                                       installed: Bundle.main.bundleURL, store: .app)
         }
-        // A staged update waiting for its turn goes with the app.
+        // A copy staged behind the recorder is installed now, and the next
+        // launch runs it. Anything else staged goes with the app.
+        UpdateCoordinator.shared.installAtQuit()
         UpdateCoordinator.shared.cleanUpForQuit()
         // Without a recorder there are no session settings beyond what
         // applicationWillFinishLaunching already erased.
