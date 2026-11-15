@@ -45,6 +45,7 @@
 		890A8F8091CCEAC72C1579A2 /* VoiceDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E69CCADF7F9187ED21667CB /* VoiceDetectorTests.swift */; };
 		8A58509D4AC0C6637C9EBA7E /* VoiceDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC531598BB72125AD559CD09 /* VoiceDetector.swift */; };
 		8E601DF8702C2656E0AD1D93 /* Saira-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */; };
+		9120562CB7FC6981B5E319A1 /* InUseLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1F5429C439B5F47972A28A /* InUseLock.swift */; };
 		9658943210B6034655DE9255 /* PCMSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC1AB8105037C3CEEE3E69 /* PCMSidecar.swift */; };
 		98D7CBA7118AD909811A08D7 /* VersionFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */; };
 		A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */; };
@@ -65,6 +66,7 @@
 		DE683368203B1791D5E8D132 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */; };
 		DEFEF410E23AD80FD16C8CE5 /* FaceplateStateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 180AFCEE6B660AE632E59EE7 /* FaceplateStateViews.swift */; };
 		DF7E5277F967AA00454980E9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CAF52AADEB00B9C16CE0B387 /* Assets.xcassets */; };
+		E51A36D1E8EE4659631AB8C2 /* InUseLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2430D18420F3D254E3E64CC /* InUseLockTests.swift */; };
 		E5D2D3C98ED6C38755C031F0 /* UpdateSweepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F581DE8D70AA6C6BDF5BD6C /* UpdateSweepTests.swift */; };
 		E9B6FD52FC26900815BA9091 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8331841FA32B270066E651 /* NotificationService.swift */; };
 		EC70E6949EADF54FB2D06447 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F427670EB2DAF640994599 /* AudioEngine.swift */; };
@@ -137,6 +139,7 @@
 		D6BA1C4794679F4F8A3C4885 /* FlagWaitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlagWaitTests.swift; sourceTree = "<group>"; };
 		D8C84AEB11CCD4AF3ADE23FB /* SelfUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfUpdater.swift; sourceTree = "<group>"; };
 		D8E3F019B6408050DDD43847 /* UpdateRollbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateRollbackTests.swift; sourceTree = "<group>"; };
+		DB1F5429C439B5F47972A28A /* InUseLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InUseLock.swift; sourceTree = "<group>"; };
 		DDAA6338C2BE441C3B2B29C7 /* UpdateCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCoordinator.swift; sourceTree = "<group>"; };
 		DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LevelMeter.swift; sourceTree = "<group>"; };
 		E4962F00964F107E3BDEDC74 /* WaitingOffers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitingOffers.swift; sourceTree = "<group>"; };
@@ -148,6 +151,7 @@
 		EC852F7502C76B7E658A7DA2 /* CRC32C.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CRC32C.swift; sourceTree = "<group>"; };
 		ED51B67AFF43A5CA03791B8C /* DoublEnderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoublEnderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F06B50BEB254BE0D646ACBFF /* RecorderViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderViewModel.swift; sourceTree = "<group>"; };
+		F2430D18420F3D254E3E64CC /* InUseLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InUseLockTests.swift; sourceTree = "<group>"; };
 		F5462AB7FD00980A0FA8C65E /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		F90248FE45395766ECDFF5C6 /* HelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpView.swift; sourceTree = "<group>"; };
 		FC531598BB72125AD559CD09 /* VoiceDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceDetector.swift; sourceTree = "<group>"; };
@@ -234,6 +238,7 @@
 				C757981FB56F560204E52311 /* CRC32CTests.swift */,
 				D6BA1C4794679F4F8A3C4885 /* FlagWaitTests.swift */,
 				EBDA327BB738E9F05AA1691C /* InputRankingTests.swift */,
+				F2430D18420F3D254E3E64CC /* InUseLockTests.swift */,
 				E9F7926E7EE707E412CC0B67 /* LevelMeterTests.swift */,
 				C90C92497EBD2386F06F4EEB /* MainRunLoopTests.swift */,
 				4F80DF6F12F2500C4B70DD79 /* MoveToApplicationsTests.swift */,
@@ -287,6 +292,7 @@
 				EC852F7502C76B7E658A7DA2 /* CRC32C.swift */,
 				4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */,
 				ADFC4246CB4A9686C9A47E76 /* InputRanking.swift */,
+				DB1F5429C439B5F47972A28A /* InUseLock.swift */,
 				DDBDEECEE5CD49E03BF1F022 /* LevelMeter.swift */,
 				9216FA96B5C7A0B47FBF4AC2 /* VersionFormatting.swift */,
 				FC531598BB72125AD559CD09 /* VoiceDetector.swift */,
@@ -417,6 +423,7 @@
 				DEFEF410E23AD80FD16C8CE5 /* FaceplateStateViews.swift in Sources */,
 				FFEFCAA1A0C846A7FBB416D1 /* FlagWait.swift in Sources */,
 				D70C724E20E5BE60FB268D94 /* HelpView.swift in Sources */,
+				9120562CB7FC6981B5E319A1 /* InUseLock.swift in Sources */,
 				2367AE382B10D902E7B40D1F /* InputRanking.swift in Sources */,
 				51EBE56CF1802A8263F7FEB5 /* LaunchUpdate.swift in Sources */,
 				A21E57FE038A49AA1CED77F8 /* LevelMeter.swift in Sources */,
@@ -453,6 +460,7 @@
 				11FB8236939569269BBC2F02 /* AppStateTests.swift in Sources */,
 				6D72B0682CEA9B7DF2AA887C /* CRC32CTests.swift in Sources */,
 				77D11C23C2B47CA193279224 /* FlagWaitTests.swift in Sources */,
+				E51A36D1E8EE4659631AB8C2 /* InUseLockTests.swift in Sources */,
 				F1B041B5952B893872D4F0E3 /* InputRankingTests.swift in Sources */,
 				DC3750FC3FC6980438282AB2 /* LevelMeterTests.swift in Sources */,
 				7D3F9C2963E04A6FE935A308 /* MainRunLoopTests.swift in Sources */,

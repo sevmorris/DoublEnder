@@ -201,14 +201,26 @@ enum AutomaticUpload {
     }
 
     /// The take to upload next: the oldest one waiting that the guest has not
-    /// put off until the next launch (`skipped`), whose file is there, and that
-    /// has attempts left.
+    /// put off until the next launch (`skipped`), whose file is there, that
+    /// has attempts left, and that no other copy of the app is uploading.
     static func next(in uploads: PendingUploads, skipped: Set<String>, attempts: [String: Int],
-                     exists: (String) -> Bool) -> PendingUpload? {
+                     exists: (String) -> Bool,
+                     uploadingElsewhere: (String) -> Bool = AutomaticUpload.isUploadingElsewhere) -> PendingUpload? {
         uploads.items.first { record in
             !skipped.contains(record.path)
                 && (attempts[record.path] ?? 0) < maximumAttempts
                 && exists(record.path)
+                && !uploadingElsewhere(record.path)
         }
+    }
+
+    /// Whether another copy of the app is uploading the take at `path`: each
+    /// copy locks a take for as long as it uploads it (`InUseLock`). Two copies
+    /// share the list of takes waiting (the installed one and one opened from
+    /// the disk image, say). Until 2026-11-15 the second offered a take the
+    /// first was uploading, and with no session stored yet each uploaded it
+    /// under a name of its own, so the producer got it twice.
+    static func isUploadingElsewhere(_ path: String) -> Bool {
+        InUseLock.isHeld(URL(fileURLWithPath: path))
     }
 }

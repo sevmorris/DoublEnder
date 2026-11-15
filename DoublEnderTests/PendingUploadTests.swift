@@ -211,6 +211,25 @@ final class PendingUploadsTests: XCTestCase {
         XCTAssertNil(AutomaticUpload.next(in: uploads, skipped: Set(uploads.paths), attempts: [:], exists: exists))
     }
 
+    /// Two copies of the app share the list of takes waiting (the installed
+    /// one and one opened from the disk image, say). The one uploading a take
+    /// holds it locked; the other used to start it too, under an object name
+    /// of its own when no session was stored yet, and the producer got it twice.
+    func testATakeAnotherCopyIsUploadingIsPassedOver() throws {
+        var uploads = PendingUploads()
+        for name in ["A.m4a", "B.m4a"] {
+            uploads.add(take(name))
+            try Data().write(to: take(name))
+        }
+        // The other copy's lock, taken with open(2), as it takes it.
+        let fd = open(take("A.m4a").path, O_RDONLY | O_EXLOCK | O_NONBLOCK | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+        let exists = { FileManager.default.fileExists(atPath: $0) }
+        XCTAssertEqual(AutomaticUpload.next(in: uploads, skipped: [], attempts: [:], exists: exists)?.path,
+                       take("B.m4a").path, "started a take another copy is uploading")
+    }
+
     // MARK: - Words
 
     func testTheFaceplateCountsTheTakesWaiting() {

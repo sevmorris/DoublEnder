@@ -153,7 +153,12 @@ final class UpdateCoordinator {
     /// pass of the run loop that installs.
     private var cancelRequested = false
     private var budgetExpired = false
-    private var holder: URL?
+    /// The staging folder in use, locked while it is (`holderLock`), so the
+    /// launch sweep of another copy of the app leaves it (`UpdateSweep`).
+    private var holder: URL? {
+        didSet { if holder != oldValue { holderLock = nil } }
+    }
+    private var holderLock: InUseLock?
     private var failureGeneration = 0
     /// Whether the install that just failed may well work next time, with
     /// nothing changed on this Mac: the network let it down, or the app was
@@ -618,6 +623,10 @@ final class UpdateCoordinator {
                 return .failed(error.localizedDescription)
             }
             holder = folder
+            // Locked before it goes on the journal, so no other copy's sweep
+            // can find it there unlocked. A folder that cannot be locked is
+            // staged into all the same, as it always was.
+            holderLock = InUseLock.take(folder).lock
             env.store.journal.append(folder.path)
             phase = .downloading
             progress?.showProgress("Downloading \(env.appName) \(version)…", fraction: 0)

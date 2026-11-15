@@ -10,7 +10,13 @@ import Foundation
 ///   - The folders this app stages into are recorded as they are made
 ///     (`UpdateStateStore.journal`), so the next launch knows them for its own
 ///     and removes them, except the one holding the previous version while the
-///     new one is on probation.
+///     new one is on probation, and any another copy of the app is still
+///     using: each copy locks its staging folder while it downloads, checks
+///     and holds an update in it (`InUseLock`). A copy opened from the disk
+///     image while the installed one runs shares the journal, and until
+///     2026-11-15 it took every folder on it, deleting the running copy's
+///     staged or half-downloaded update; a download cut short that way then
+///     counted as a failed install.
 ///   - The scratch folders `SelfUpdater.stage` downloads and mounts in live in
 ///     the shared temporary folder, where the sibling apps make theirs under
 ///     the same name. Only those older than this process and older than an
@@ -35,19 +41,29 @@ enum UpdateSweep {
             })
     }
 
-    /// The staging folders earlier runs left, taken off the journal. Called on
-    /// the main thread before this run stages anything, so none of its own can
-    /// be among them.
+    /// The staging folders that copies which have ended left, taken off the
+    /// journal. A folder another copy still holds locked stays on it, for that
+    /// copy to take off itself. Called on the main thread before this run
+    /// stages anything, so none of its own can be among them.
     @MainActor
-    static func takeLeftovers(store: UpdateStateStore) -> [URL] {
+    static func takeLeftovers(store: UpdateStateStore,
+                              isInUse: (URL) -> Bool = InUseLock.isHeld) -> [URL] {
         let keep = store.load().probation.map {
             URL(fileURLWithPath: $0.previous).deletingLastPathComponent().standardizedFileURL.path
         }
-        let paths = store.journal
-        store.journal = []
-        return paths
-            .map { URL(fileURLWithPath: $0).standardizedFileURL }
-            .filter { $0.path != keep }
+        var leftovers: [URL] = []
+        var stillInUse: [String] = []
+        for path in store.journal {
+            let folder = URL(fileURLWithPath: path).standardizedFileURL
+            if folder.path == keep { continue }
+            if isInUse(folder) {
+                stillInUse.append(path)
+            } else {
+                leftovers.append(folder)
+            }
+        }
+        store.journal = stillInUse
+        return leftovers
     }
 
     /// Blocks while images detach; run it off the main thread.

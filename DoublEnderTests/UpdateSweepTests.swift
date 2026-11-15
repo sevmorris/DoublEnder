@@ -91,6 +91,36 @@ final class UpdateSweepTests: XCTestCase {
         XCTAssertTrue(exists(onProbation))
     }
 
+    /// Two copies of the app share the journal: the installed one, and one
+    /// opened from the disk image while it runs, which sweeps at launch before
+    /// it hands off. The running copy holds its staging folder locked while it
+    /// downloads into it or keeps a staged copy there. The sweep used to take
+    /// every folder on the journal, and deleted that one.
+    @MainActor
+    func testAStagingFolderAnotherCopyHoldsIsLeftOnTheJournal() throws {
+        let now = Date()
+        let abandoned = try makeFolder("NSIRD_abandoned", in: folder, created: now)
+        let inUse = try makeFolder("NSIRD_in_use", in: folder, created: now)
+        store.journal = [abandoned.path, inUse.path]
+        // The other copy's lock, taken as it takes it, with open(2) and no
+        // help from the app, so this runs against any version of the sweep.
+        var fd = open(inUse.path, O_RDONLY | O_EXLOCK | O_NONBLOCK | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { if fd >= 0 { close(fd) } }
+
+        let leftovers = UpdateSweep.takeLeftovers(store: store)
+        XCTAssertEqual(leftovers.map(\.path), [abandoned.standardizedFileURL.path],
+                       "the sweep took a folder another copy is still using")
+        XCTAssertEqual(store.journal, [inUse.path], "left on the journal for the copy using it")
+
+        // That copy ends, however it ends: the kernel drops its lock, and the
+        // next launch takes what it left.
+        close(fd)
+        fd = -1
+        XCTAssertEqual(UpdateSweep.takeLeftovers(store: store).map(\.path), [inUse.standardizedFileURL.path])
+        XCTAssertEqual(store.journal, [])
+    }
+
     func testTheSystemMountCheckSeesNoMountInAPlainFolder() throws {
         XCTAssertFalse(UpdateSweep.Tools.system.isMountPoint(temporary))
         XCTAssertFalse(UpdateSweep.Tools.system.isMountPoint(folder.appendingPathComponent("missing")))
