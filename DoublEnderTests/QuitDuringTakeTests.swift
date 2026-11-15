@@ -50,6 +50,28 @@ final class QuitDuringTakeTests: XCTestCase {
         XCTAssertTrue(QuitDuringTake.quitsAfterStop(uploading: true, forSystem: true))
     }
 
+    /// A logout, restart or shutdown during an upload goes ahead with no
+    /// question; the next launch offers the take. It used to ask "Upload in
+    /// progress", and Return (Keep Uploading) called the logout off.
+    func testALogoutDuringAnUploadIsNotHeldUp() {
+        XCTAssertEqual(QuitDuringTake.decision(question: .uploading, forSystem: true, asksAboutUploads: true), .quit)
+    }
+
+    /// A quit the guest asked for still asks about the upload; a take is asked
+    /// about whoever quits, so Stop & Save can close its file.
+    func testTheGuestsQuitStillAsks() {
+        XCTAssertEqual(QuitDuringTake.decision(question: .uploading, forSystem: false, asksAboutUploads: true),
+                       .askAboutUpload)
+        XCTAssertEqual(QuitDuringTake.decision(question: .recording, forSystem: false, asksAboutUploads: true),
+                       .askAboutRecording)
+        XCTAssertEqual(QuitDuringTake.decision(question: .recording, forSystem: true, asksAboutUploads: true),
+                       .askAboutRecording)
+        XCTAssertEqual(QuitDuringTake.decision(question: nil, forSystem: false, asksAboutUploads: true), .quit)
+        // Local uploads nothing, so it never asks about one.
+        XCTAssertEqual(QuitDuringTake.decision(question: .uploading, forSystem: false, asksAboutUploads: false),
+                       .quit)
+    }
+
     func testOnlyTheSystemsReasonsCountAsTheSystemQuitting() {
         for reason in [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog,
                        kAERestart, kAEShutDown, kAEQuitAll] {

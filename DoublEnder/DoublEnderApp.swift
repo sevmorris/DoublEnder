@@ -335,18 +335,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // quit never meets a question. With no recorder yet (Cloud's launch
         // update relaunching, or ⌘Q during it) there is nothing to ask, and
         // AppActivity does not build the recorder to find out.
-        switch AppActivity.shared.quitQuestion {
-        case .recording:
+        #if GCS_ENABLED
+        let asksAboutUploads = true
+        #else
+        let asksAboutUploads = false
+        #endif
+        switch QuitDuringTake.decision(question: AppActivity.shared.quitQuestion, forSystem: quitIsForSystem,
+                                       asksAboutUploads: asksAboutUploads) {
+        case .askAboutRecording:
             presentRecordingInProgressAlert()
             return .terminateLater
-        case .uploading:
+        case .askAboutUpload:
             #if GCS_ENABLED
             presentUploadInProgressAlert()
             return .terminateLater
             #else
             return .terminateNow
             #endif
-        case nil:
+        case .quit:
             // A download or a copy under way stops first, so the disk image is
             // not left mounted and the copy not left behind.
             if UpdateCoordinator.shared.cancelBeforeQuit(then: { NSApp.reply(toApplicationShouldTerminate: true) }) {
@@ -466,12 +472,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     #if GCS_ENABLED
-    /// Quit intercept for an in-flight upload (FR-002). Two choices, both
-    /// resolving termination immediately — there is deliberately NO
-    /// "wait for the upload to finish" path, so a stalled upload can never
-    /// hang quit. The recording is already safe on the Desktop, and the
-    /// pending-upload path was persisted before the PUT began, so quitting
-    /// only defers the upload to the next-launch prompt.
+    /// Quit intercept for an in-flight upload (FR-002), for a quit the guest
+    /// asked for; a logout, restart or shutdown never sees it
+    /// (`QuitDuringTake.decision`). Two choices, both resolving termination
+    /// immediately — there is deliberately NO "wait for the upload to finish"
+    /// path, so a stalled upload can never hang quit. The recording is already
+    /// safe on the Desktop, and the pending-upload path was persisted before
+    /// the PUT began, so quitting only defers the upload to the next-launch
+    /// prompt.
     private func presentUploadInProgressAlert() {
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
@@ -682,6 +690,33 @@ enum QuitDuringTake {
         }
         return "Stopping now will save what has been recorded so far. "
             + "Quitting without saving will lose the current recording."
+    }
+
+    enum Decision: Equatable {
+        case askAboutRecording
+        case askAboutUpload
+        /// Quit, once any update download under way has stopped.
+        case quit
+    }
+
+    /// What a quit does, given what it would interrupt (`AppActivity`).
+    ///
+    /// A take is always asked about, a logout's included: Stop & Save closes
+    /// its file. An upload (Cloud, `asksAboutUploads`) is asked about only for
+    /// a quit the guest asked for. A logout, restart or shutdown goes ahead,
+    /// as the system asked: the take is on the Desktop and its pending record,
+    /// session and all, was saved before the upload began, so the next launch
+    /// offers it and resumes it. Until 2026-11-15 a logout during an upload
+    /// asked "Upload in progress", whose default, Keep Uploading, called the
+    /// logout off, while this comment and the Theory said a logout was not
+    /// held up.
+    static func decision(question: AppActivity.QuitQuestion?, forSystem: Bool,
+                         asksAboutUploads: Bool) -> Decision {
+        switch question {
+        case .recording: return .askAboutRecording
+        case .uploading where asksAboutUploads && !forSystem: return .askAboutUpload
+        case .uploading, nil: return .quit
+        }
     }
 
     /// After Stop & Save has closed the file: whether the quit goes ahead now.
