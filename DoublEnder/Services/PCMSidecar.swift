@@ -81,6 +81,34 @@ final class PCMSidecar {
         return size > Int64(headerSizeV2)
     }
 
+    /// True while a take is still being written to this sidecar: its writer,
+    /// in this process or another, holds the lock taken when it was created.
+    ///
+    /// Crash recovery at launch looks for sidecars on the Desktop, and
+    /// another copy of the app may be recording there right now: DoublEnder
+    /// Local beside DoublEnder Cloud, which share the Desktop, or a second
+    /// copy of the same app. Until this was checked, opening one during a
+    /// take in the other recovered the live take or deleted it — the sidecar
+    /// and the file being written, without a word when the take had only just
+    /// begun — and the take that went on recording had nowhere left on disk.
+    ///
+    /// A sidecar written by a version from before the lock is never locked,
+    /// so a take still running in one of those is not protected.
+    static func isInUse(at sidecarURL: URL) -> Bool {
+        let fd = Darwin.open(sidecarURL.path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        guard flock(fd, LOCK_SH | LOCK_NB) == 0 else { return errno == EWOULDBLOCK }
+        flock(fd, LOCK_UN)
+        return false
+    }
+
+    /// The sidecars among `entries` that crash recovery may handle: every one
+    /// whose take is not still being written (`isInUse`).
+    static func sidecarsLeftByEndedTakes(in entries: [URL]) -> [URL] {
+        entries.filter { $0.pathExtension == pathExtension && !isInUse(at: $0) }
+    }
+
     /// Open a fresh v2 sidecar next to `mainOutput` and write its header.
     /// Returns nil on any I/O failure — recording proceeds without the
     /// safety net rather than failing outright.
@@ -88,26 +116,34 @@ final class PCMSidecar {
         let url = PCMSidecar.url(for: mainOutput)
         let header = Self.makeHeaderV2(sampleRate: sampleRate, channels: channels)
 
-        guard FileManager.default.createFile(atPath: url.path, contents: header) else {
-            PCMSidecar.logger.error("Failed to create sidecar at \(url.lastPathComponent, privacy: .public)")
+        // Created and locked in one step (O_EXLOCK), and locked until the
+        // handle closes, so another copy of the app scanning the Desktop for
+        // crashed takes never takes this one for a crash (`isInUse`). The lock
+        // is flock(2)'s: the kernel drops it when the process ends, however it
+        // ends, so a real crash leaves the sidecar unlocked for recovery.
+        // O_CLOEXEC keeps a tool this process starts (the relaunch helper,
+        // hdiutil) from inheriting the descriptor and holding the lock past a
+        // crash. O_NONBLOCK makes the lock fail rather than wait if someone
+        // holds it already, and is cleared once it is taken.
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXLOCK | O_NONBLOCK | O_CLOEXEC, 0o644)
+        guard fd >= 0 else {
+            PCMSidecar.logger.error("Failed to create sidecar at \(url.lastPathComponent, privacy: .public): errno \(errno, privacy: .public)")
             return nil
         }
-        guard let handle = try? FileHandle(forWritingTo: url) else {
-            try? FileManager.default.removeItem(at: url)
-            PCMSidecar.logger.error("Failed to open sidecar at \(url.lastPathComponent, privacy: .public)")
-            return nil
-        }
-        // forWritingTo opens at offset 0 without truncating — seek past the
-        // header so the first sample write doesn't overwrite it. If the seek
-        // fails the next write would clobber the header, leaving a sidecar
-        // whose parser can't read the magic at next launch (unrecoverable),
-        // so treat seek failure as an init failure and clean up the orphaned
-        // file — same pattern as the FileHandle-failure branch above.
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK)
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        // Truncated only now that it is locked: a file of this name already
+        // there is replaced, as createFile used to replace it. The header goes
+        // at offset 0 and leaves the handle past it for the first sample. A
+        // sidecar without its header could not be parsed at the next launch,
+        // so a failure here is an init failure, and the file goes.
         do {
-            try handle.seekToEnd()
+            guard ftruncate(fd, 0) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+            try handle.write(contentsOf: header)
         } catch {
+            try? handle.close()
             try? FileManager.default.removeItem(at: url)
-            PCMSidecar.logger.error("Failed to seek sidecar at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            PCMSidecar.logger.error("Failed to write sidecar header at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
         self.handle = handle
