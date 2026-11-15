@@ -41,6 +41,7 @@
 		79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */; };
 		7D3F9C2963E04A6FE935A308 /* MainRunLoopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90C92497EBD2386F06F4EEB /* MainRunLoopTests.swift */; };
 		7E6827DAC3FE4D5273B72353 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F205435D2498D70D023299 /* ContentView.swift */; };
+		809DB79FCD5ED22528EE9897 /* SystemDefaultInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F9AC4EBD5CB1396A994CBB0 /* SystemDefaultInputTests.swift */; };
 		890A8F8091CCEAC72C1579A2 /* VoiceDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E69CCADF7F9187ED21667CB /* VoiceDetectorTests.swift */; };
 		8A58509D4AC0C6637C9EBA7E /* VoiceDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC531598BB72125AD559CD09 /* VoiceDetector.swift */; };
 		8E601DF8702C2656E0AD1D93 /* Saira-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 64B154DFE5B1C481EA191493 /* Saira-Regular.ttf */; };
@@ -97,6 +98,7 @@
 		26F427670EB2DAF640994599 /* AudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngine.swift; sourceTree = "<group>"; };
 		3992791273426B06C5A56DA1 /* DoublEnder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoublEnder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3C1B41B96C1A8B69CE37DA88 /* UpdateCommitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCommitTests.swift; sourceTree = "<group>"; };
+		3F9AC4EBD5CB1396A994CBB0 /* SystemDefaultInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemDefaultInputTests.swift; sourceTree = "<group>"; };
 		403580E5862548F6E68D3201 /* WaitingOffersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitingOffersTests.swift; sourceTree = "<group>"; };
 		440F6F24F552E455E0696937 /* MainRunLoop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainRunLoop.swift; sourceTree = "<group>"; };
 		4C19199093FB6C8ECC390DCF /* DiskSpaceChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskSpaceChecker.swift; sourceTree = "<group>"; };
@@ -245,6 +247,7 @@
 				749CA49C0405D61E894D40C3 /* QuitDuringTakeTests.swift */,
 				8C944B62D33EC5671D4E7216 /* RecorderViewModelTests.swift */,
 				ADCD051A2435CFDB7317B01F /* SelfUpdaterTests.swift */,
+				3F9AC4EBD5CB1396A994CBB0 /* SystemDefaultInputTests.swift */,
 				FE19173EF7ACBE323C182F1C /* UpdateCheckerTests.swift */,
 				3C1B41B96C1A8B69CE37DA88 /* UpdateCommitTests.swift */,
 				691D8DD7C6E61CE1248AB1E1 /* UpdateCoordinatorTests.swift */,
@@ -467,6 +470,7 @@
 				4FA23C5150D6099A08F2049E /* QuitDuringTakeTests.swift in Sources */,
 				D53EB0C4AE26C2D2ED5CAB19 /* RecorderViewModelTests.swift in Sources */,
 				50749AE176482F3DCD0BD51C /* SelfUpdaterTests.swift in Sources */,
+				809DB79FCD5ED22528EE9897 /* SystemDefaultInputTests.swift in Sources */,
 				79BCD36C024667FDFB7E14B9 /* UpdateCheckerTests.swift in Sources */,
 				DD813C6FD7AEA9DF34498ECA /* UpdateCommitTests.swift in Sources */,
 				D060CDC1B0B5AFCB111C784F /* UpdateCoordinatorTests.swift in Sources */,
