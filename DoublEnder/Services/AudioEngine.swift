@@ -380,9 +380,35 @@ class AudioEngine: NSObject, ObservableObject {
 
     // MARK: - Capture session lifecycle
 
+    /// The input last asked for with `setDevice`, by UID. Main thread only.
+    private var requestedDeviceUID: String?
+
+    /// Builds the session if none is running: on the input last asked for with
+    /// `setDevice` while it is connected, otherwise on the system default (no
+    /// pick yet, or the pick is gone). TRY AGAIN (`finishReset`) comes here.
     func start() {
         if captureSession?.isRunning == true { return }
-        rebuildSession(with: nil)
+        let connected = availableInputDevices.filter(\.isConnected)
+        let uid = Self.restartInputUID(requested: requestedDeviceUID,
+                                       connected: connected.map(\.uniqueID))
+        let device = connected.first { $0.uniqueID == uid }
+        rebuildSession(with: device,
+                       intendedDeviceID: device.flatMap { audioDeviceID(forUID: $0.uniqueID) })
+    }
+
+    /// The input `start()` builds the session on: the one last asked for, when
+    /// it is among the connected inputs, or nil for the system default.
+    ///
+    /// Until 2026-11-15 `setDevice` also made its pick the Mac's system
+    /// default input, and `start()` always took the system default, which was
+    /// therefore the pick. Moving the system default took a guest already in a
+    /// call on a USB mic, with the call app following the default, onto the
+    /// built-in mic at every launch. With the default left alone, the pick
+    /// has to be remembered here, or TRY AGAIN would rebuild on whatever the
+    /// default is while the faceplate still names the pick.
+    static func restartInputUID(requested: String?, connected: [String]) -> String? {
+        guard let requested, connected.contains(requested) else { return nil }
+        return requested
     }
 
     /// Build (or rebuild) the AVCaptureSession for audio-only capture and
@@ -392,15 +418,12 @@ class AudioEngine: NSObject, ObservableObject {
     /// @Published state updates always hop back to main.
     ///
     /// `device` nil → use the system default input device (which is what
-    /// AVCaptureDevice.default(for: .audio) returns).
+    /// AVCaptureDevice.default(for: .audio) returns). The app never changes
+    /// the system default; it binds the device it is given directly.
     ///
-    /// Caller is responsible for `setSystemDefaultInputDevice` if it wants
-    /// to redirect the system default before invoking this. Once the session
-    /// is running, `intendedDeviceID` (when given) is resolved back to an
-    /// AVCaptureDevice and compared with the bound input; a mismatch publishes
-    /// `selectedDeviceUsable` false. The system default is not re-read, so a
-    /// silent CoreAudio rejection of the default change goes unnoticed — and
-    /// doesn't matter, since the session binds the device directly.
+    /// Once the session is running, `intendedDeviceID` (when given) is
+    /// resolved back to an AVCaptureDevice and compared with the bound input;
+    /// a mismatch publishes `selectedDeviceUsable` false.
     ///
     /// Always called from main; callers rely on `isRebuilding` (set
     /// synchronously before dispatch) and `canStartRecording` to gate
@@ -538,13 +561,10 @@ class AudioEngine: NSObject, ObservableObject {
             let nativeSampleRate = nativeASBD?.mSampleRate ?? 48_000
             let isLowQuality = nativeSampleRate <= 16_000
 
-            // Verify the session is on the intended device. Some virtual
-            // devices accept setSystemDefaultInputDevice with noErr but
-            // CoreAudio silently keeps the previous default; AVCaptureDevice
-            // honors the user pick verbatim, so the more reliable check here is
-            // simply comparing input.device.uniqueID to the intent. If the
-            // caller passed `intendedDeviceID` (the CoreAudio AudioDeviceID),
-            // resolve it back to an AVCaptureDevice and compare.
+            // Verify the session is on the intended device by comparing
+            // input.device.uniqueID to the intent. If the caller passed
+            // `intendedDeviceID` (the CoreAudio AudioDeviceID), resolve it
+            // back to an AVCaptureDevice and compare.
             let silentFallback: Bool
             if let intended = intendedDeviceID,
                let intendedDevice = self.audioCaptureDevice(forCoreAudioID: intended) {
@@ -1417,49 +1437,17 @@ class AudioEngine: NSObject, ObservableObject {
         }
         DispatchQueue.main.async { self.selectedDeviceUsable = true }
 
-        // Change the macOS system default input device so other apps that
-        // honor the system default follow our pick. AVCaptureSession itself
-        // binds the device directly (not via the system default), so the
-        // setSystemDefault call is purely for cross-app consistency.
-        //
-        // Then rebuild the session bound to the explicit AVCaptureDevice.
-        // No AUHAL race here — AVCaptureSession's device-binding does not
-        // share the AVAudioEngine.connect format-mismatch surface that made
-        // the old code path require multi-retry warm-up.
-        _ = setSystemDefaultInputDevice(id)
+        // Rebuild the session bound to the explicit AVCaptureDevice, and
+        // remember the pick for `start()`. The Mac's system default input is
+        // left alone: it belongs to the guest and to their other apps (a call
+        // app following it would otherwise move with every pick, and with the
+        // built-in mic chosen at every launch). Until 2026-11-15 this moved it,
+        // a leftover of the AVAudioEngine path, which captured through the
+        // default. No AUHAL race here — AVCaptureSession's device-binding does
+        // not share the AVAudioEngine.connect format-mismatch surface that
+        // made the old code path require multi-retry warm-up.
+        requestedDeviceUID = device.uniqueID
         rebuildSession(with: device, intendedDeviceID: id)
-    }
-
-    /// Set the macOS system-wide default input device via CoreAudio.
-    /// Returns true on success. AVCaptureSession does not use this when
-    /// binding our own AVCaptureDeviceInput, but we call it from
-    /// `setDevice` for cross-app consistency (other apps that honor the
-    /// system default follow our pick).
-    ///
-    /// Caveat: returning true does NOT guarantee CoreAudio actually applied
-    /// the change. Some virtual devices accept the call (no error) but
-    /// CoreAudio silently leaves the system default at its previous value.
-    private func setSystemDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var id = deviceID
-        let status = AudioObjectSetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0, nil,
-            UInt32(MemoryLayout<AudioDeviceID>.size),
-            &id
-        )
-        if status != noErr {
-            logger.error(
-                "Set system default input failed: status \(status, privacy: .public)"
-            )
-            return false
-        }
-        return true
     }
 
     /// Resolve an `AVCaptureDevice.uniqueID` to its CoreAudio device ID.
