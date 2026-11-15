@@ -542,6 +542,26 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertTrue(h.commits.isEmpty)
     }
 
+    /// A copy opened beside this one (from the disk image, say) sweeps the
+    /// shared journal at launch. The folder this copy downloads into, and then
+    /// keeps a staged copy in until the quit, is locked for as long, so that
+    /// sweep leaves it. It used to delete it, and the download cut short
+    /// counted as a failed install.
+    @MainActor
+    func testAnotherCopysSweepLeavesTheFolderThisOneIsUsing() async throws {
+        let h = Harness()
+        var sweptDuringDownload: [URL]?
+        h.stager.onStart = { _ in sweptDuringDownload = UpdateSweep.takeLeftovers(store: h.store) }
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+
+        XCTAssertEqual(sweptDuringDownload, [], "the other copy's sweep took the folder being downloaded into")
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+        XCTAssertEqual(UpdateSweep.takeLeftovers(store: h.store), [], "and the staged copy waiting for the quit")
+        XCTAssertEqual(h.store.journal, h.holders.map(\.path))
+        let staged = try XCTUnwrap(h.coordinator.stagedForQuit?.staged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+    }
+
     // MARK: Cloud, behind the recorder
 
     /// Nothing a guest sees: no window, no dialog, no install while the app

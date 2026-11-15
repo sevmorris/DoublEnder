@@ -1558,17 +1558,22 @@ class RecorderViewModel: ObservableObject {
     private func refreshWaitingUploads() {
         var uploading: String?
         if case .uploading = state { uploading = recordedFileURL?.path }
-        waitingUploads = uploads.current.paths.filter { $0 != uploading }.count
+        waitingUploads = uploads.current.paths.filter {
+            $0 != uploading && !AutomaticUpload.isUploadingElsewhere($0)
+        }.count
     }
 
     // MARK: Launch
 
     /// The takes an earlier run left waiting whose files are still there, for
-    /// the launch question. The others are forgotten.
+    /// the launch question. The others are forgotten. A take another copy of
+    /// the app is uploading is kept but not offered: that copy crosses it off.
     func takesWaitingToUpload() -> [URL] {
         let waiting = uploads.change { $0.dropMissing { FileManager.default.fileExists(atPath: $0) } }
         refreshWaitingUploads()
-        return waiting.map { URL(fileURLWithPath: $0.path) }
+        return waiting
+            .filter { !AutomaticUpload.isUploadingElsewhere($0.path) }
+            .map { URL(fileURLWithPath: $0.path) }
     }
 
     /// A take recovered at launch joins the takes waiting: offered with them,
@@ -1582,7 +1587,9 @@ class RecorderViewModel: ObservableObject {
     /// UPLOAD at launch: the takes waiting upload, one after another.
     func uploadWaitingTakes() {
         guard cloudUploadEnabled else { return }
-        let waiting = uploads.current.items.filter { FileManager.default.fileExists(atPath: $0.path) }
+        let waiting = uploads.current.items.filter {
+            FileManager.default.fileExists(atPath: $0.path) && !AutomaticUpload.isUploadingElsewhere($0.path)
+        }
         putOffUntilNextLaunch.subtract(waiting.map(\.path))
         guard let first = waiting.first else { return }
         // The rest follow by themselves, once this one is through.
@@ -1614,9 +1621,28 @@ class RecorderViewModel: ObservableObject {
         startUpload(of: fileURL, automatic: false)
     }
 
-    /// Every upload starts here, on the main thread.
+    /// Every upload starts here, on the main thread. The take is locked for as
+    /// long as its upload runs (`InUseLock`), so another copy of the app does
+    /// not offer it or upload it too (`AutomaticUpload.isUploadingElsewhere`);
+    /// one that another copy has locked is left to that copy.
     private func startUpload(of file: URL, automatic: Bool, note: String? = nil) {
         guard cloudUploadEnabled else { return }
+        let lock: InUseLock?
+        switch InUseLock.take(file) {
+        case .taken(let taken):
+            lock = taken
+        case .heldElsewhere:
+            logger.info("Another copy of the app is uploading this take; leaving it to that one")
+            if case .uploadFailed(let failed) = state, failed == file {
+                recordedFileURL = nil
+                state = .ready
+            }
+            refreshWaitingUploads()
+            return
+        case .unavailable:
+            // Gone, most likely: the upload says so as it always did.
+            lock = nil
+        }
         let before = state
         recordedFileURL = file
         uploadProgress = 0
@@ -1624,7 +1650,10 @@ class RecorderViewModel: ObservableObject {
         state = .uploading
         rememberUpload(of: file)
         refreshWaitingUploads()
-        uploadTask = Task { await self.performUpload(note: note, automatic: automatic, before: before) }
+        uploadTask = Task {
+            await self.performUpload(note: note, automatic: automatic, before: before)
+            lock?.release()
+        }
     }
 
     /// LATER. On a failed upload's card it goes back to the recorder; on an

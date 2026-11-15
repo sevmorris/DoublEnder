@@ -95,12 +95,7 @@ final class PCMSidecar {
     /// A sidecar written by a version from before the lock is never locked,
     /// so a take still running in one of those is not protected.
     static func isInUse(at sidecarURL: URL) -> Bool {
-        let fd = Darwin.open(sidecarURL.path, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else { return false }
-        defer { Darwin.close(fd) }
-        guard flock(fd, LOCK_SH | LOCK_NB) == 0 else { return errno == EWOULDBLOCK }
-        flock(fd, LOCK_UN)
-        return false
+        InUseLock.isHeld(sidecarURL)
     }
 
     /// The sidecars among `entries` that crash recovery may handle: every one
