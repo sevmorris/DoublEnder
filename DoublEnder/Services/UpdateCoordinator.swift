@@ -160,6 +160,9 @@ final class UpdateCoordinator {
     /// busy. Read by `runAtLaunch`, which only rests after failures that would
     /// repeat.
     private var lastFailureMayPass = false
+    /// Versions whose failed automatic install this run of the app has already
+    /// counted towards the rest (`countFailure`).
+    private var failuresCounted: Set<String> = []
     /// The copy staged behind the recorder, for the quit.
     private(set) var stagedForQuit: StagedUpdate?
     /// The flow behind the recorder, while it runs.
@@ -376,9 +379,7 @@ final class UpdateCoordinator {
                 // not start. A connection that dropped says nothing about the
                 // next launch, and two launches on bad Wi-Fi used to put the
                 // automatic install off for a day.
-                if !lastFailureMayPass {
-                    UpdateRollback.recordFailure(of: version, store: env.store)
-                }
+                countFailure(of: version)
                 // The installed app is as it was. The prompt after launch offers
                 // the update again, and the download when it fails a second time.
                 return .openRecorder(checkAfterLaunch: true)
@@ -450,7 +451,7 @@ final class UpdateCoordinator {
         let outcome = await install(version: version, downloadURL: downloadURL, mode: .background)
         if case .failed(let message) = outcome {
             logger.notice("Update behind the recorder failed: \(message, privacy: .public)")
-            if !lastFailureMayPass { UpdateRollback.recordFailure(of: version, store: env.store) }
+            countFailure(of: version)
         }
         settle()
     }
@@ -560,10 +561,34 @@ final class UpdateCoordinator {
     }
 
     /// True for a failure that says nothing about the next attempt: the network
-    /// (a timeout, a lost connection, no route, a failed lookup), or the app
-    /// being busy.
+    /// (a timeout, a lost connection, no route, a failed lookup), the download
+    /// server's own trouble (a 5xx), or the app being busy.
+    ///
+    /// `notNewer` is not one, though it can pass: for a minute after a release
+    /// the download link can still serve the version before. It is also what a
+    /// manifest ahead of its disk image looks like, the case the rest is for,
+    /// so it counts, once per launch (`countFailure`), and the next launch
+    /// installs.
     nonisolated static func mayPassByItself(_ error: Error) -> Bool {
-        error is URLError || (error as? UpdateFailure) == .busy
+        if error is URLError || (error as? UpdateFailure) == .busy { return true }
+        if case .http(let status)? = error as? SelfUpdater.Failure { return (500...599).contains(status) }
+        return false
+    }
+
+    /// Counts the automatic install of `version` that just failed towards the
+    /// rest (`UpdateRollback.shouldInstallAutomatically`), unless the failure
+    /// may pass by itself, and at most once in this run of the app.
+    ///
+    /// A failed install at launch is followed within seconds by the check after
+    /// launch, which tries again behind the recorder and fails the same way.
+    /// Up to 2.8.5 both counted, so one bad launch reached the two failures the
+    /// rest waits for: a download caught in the minute after a release, while
+    /// the link still served the version before, put the automatic install off
+    /// for a day, and every launch in that day showed the guest a prompt.
+    /// Counted once, it takes two launches, which is what the rest is for.
+    private func countFailure(of version: String) {
+        guard !lastFailureMayPass, failuresCounted.insert(version).inserted else { return }
+        UpdateRollback.recordFailure(of: version, store: env.store)
     }
 
     private func failed(_ error: Error) -> InstallOutcome {
