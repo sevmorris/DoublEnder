@@ -296,7 +296,7 @@ If `AVAssetWriterInput.isReadyForMoreMediaData` returns false for 3 consecutive 
 `applicationWillTerminate` never fires. The PCM sidecar is left open on disk. At next launch, the crash-recovery scan finds it and presents the recovery dialog. See §7.
 
 **Reset after error:**
-`viewModel.reset()` is called from `FaceplateErrorView`'s "TRY AGAIN" button. It cancels all timers, abandons stale engine state (via `audioEngine.abandonStaleRecordingState()` if `isRecordingActive`), clears `lastError`, sets state to `.ready`, and calls `audioEngine.start()` to rebuild the capture session. The sidecar is closed but not deleted by `abandonStaleRecordingState` — it stays on disk for the next launch recovery scan.
+`viewModel.reset()` is called from `FaceplateErrorView`'s "TRY AGAIN" button. It cancels all timers, abandons stale engine state (via `audioEngine.abandonStaleRecordingState()` if `isRecordingActive`), clears `lastError`, sets state to `.ready`, and calls `audioEngine.start()` to rebuild the capture session on the input last picked (see `setDevice` flow). The sidecar is closed but not deleted by `abandonStaleRecordingState` — it stays on disk for the next launch recovery scan.
 
 ---
 
@@ -449,7 +449,7 @@ A dock's audio port ranks below every real mic, in the launch default, the fallb
 
 `RecorderViewModel.selectedInputDeviceID.didSet` → `AudioEngine.setDevice(_:)`:
 1. **Pre-check:** `deviceHasInputStreams` queries CoreAudio for input stream count. Zero → set `selectedDeviceUsable = false` and return (no session rebuild). The previously-bound device stays bound. (During a recording the view model reverts a pick before calling `setDevice`, which refuses anyway.) `deviceHasInputStreams` returns true on query failure rather than false-rejecting.
-2. **System default:** `setSystemDefaultInputDevice` is called for cross-app consistency. Other apps that honor the system default will follow the pick. Note: some virtual devices accept this call with no error but CoreAudio ignores it silently. Nothing detects that, and nothing needs to: DoublEnder binds the device directly, so its own capture never depends on the system default.
+2. **The system default is left alone.** The Mac's default input belongs to the guest and their other apps, and the session binds the device directly. `setDevice` remembers the pick (`requestedDeviceUID`) instead, and `start()`, which TRY AGAIN and a few fallbacks call, builds the session on it while it is connected (`AudioEngine.restartInputUID`), or on the system default when nothing was picked or the pick is gone. Until 2026-11-15 `setDevice` also made each pick the system default, a leftover of the AVAudioEngine path, which captured through the default: launch picks the built-in mic, so every launch moved the Mac's default input there, and a guest already in a call on a USB mic, with the call app following the default, dropped to the laptop mic. That move was also the only thing keeping `start()` on the pick.
 3. **Session rebuild:** `rebuildSession(with: device, intendedDeviceID: id)` tears down the current session on `sessionQueue` and builds a new one bound to the explicit `AVCaptureDevice`. After `session.startRunning()`, the code resolves `intendedDeviceID` back to an `AVCaptureDevice` and compares UIDs; if they differ, `selectedDeviceUsable = false` is published. Because the session is built from that same device, this is a check that the session is on the requested input. It cannot see the system-default setting.
 
 ### Disconnect during recording vs. while idle
