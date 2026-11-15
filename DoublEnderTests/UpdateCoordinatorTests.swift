@@ -113,6 +113,12 @@ private final class Harness {
 
     lazy var coordinator = UpdateCoordinator(environment: environment())
 
+    /// The next launch: a new coordinator, as a new process has, over the same
+    /// saved state.
+    func relaunch() {
+        coordinator = UpdateCoordinator(environment: environment())
+    }
+
     init() {
         folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("UpdateCoordinatorTests-\(UUID().uuidString)", isDirectory: true)
@@ -857,6 +863,7 @@ final class UpdateCoordinatorTests: XCTestCase {
         for _ in 1...UpdateRollback.maximumFailures {
             let outcome = await launch(h)
             XCTAssertEqual(outcome, .openRecorder(checkAfterLaunch: true))
+            h.relaunch()
         }
         XCTAssertEqual(h.stager.starts, UpdateRollback.maximumFailures)
         let outcome = await launch(h)
@@ -891,11 +898,52 @@ final class UpdateCoordinatorTests: XCTestCase {
         let h = Harness()
         h.stager.failure = SelfUpdater.Failure.noSpace
         _ = await launch(h)
+        h.relaunch()
         h.stager.failure = URLError(.timedOut)
         _ = await launch(h)
+        h.relaunch()
         h.stager.failure = UpdateFailure.selfTest
         _ = await launch(h)
         XCTAssertEqual(h.store.load().failures["9.0.0"]?.count, 2)
+        XCTAssertFalse(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
+    }
+
+    /// A failed install at launch is followed at once by the check after
+    /// launch, which tries again behind the recorder. One launch counts the
+    /// version once: until it did, a download that got the version before (the
+    /// link serves it for a minute after a release) failed twice in one launch,
+    /// rested the automatic install for a day, and showed guests a prompt.
+    @MainActor
+    func testAtLaunchOneLaunchCountsAFailureOnce() async {
+        let h = Harness()
+        h.stager.failure = SelfUpdater.Failure.notNewer
+        let outcome = await launch(h)
+        XCTAssertEqual(outcome, .openRecorder(checkAfterLaunch: true))
+        await h.coordinator.updateInBackground(promptIfStuck: true)
+        XCTAssertEqual(h.stager.starts, 2)
+        XCTAssertEqual(h.store.load().failures["9.0.0"]?.count, 1)
+        XCTAssertTrue(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
+        XCTAssertTrue(h.presenter.offers.isEmpty)
+
+        // The link serves the new version now: the next launch installs.
+        h.relaunch()
+        h.stager.failure = nil
+        let next = await launch(h)
+        XCTAssertEqual(next, .relaunching)
+    }
+
+    /// Counted once per launch, a failure that keeps coming back still rests
+    /// the automatic install after two launches.
+    @MainActor
+    func testAFailureThatKeepsComingBackStillRestsAfterTwoLaunches() async {
+        let h = Harness()
+        h.stager.failure = SelfUpdater.Failure.notNewer
+        for _ in 1...UpdateRollback.maximumFailures {
+            _ = await launch(h)
+            await h.coordinator.updateInBackground(promptIfStuck: true)
+            h.relaunch()
+        }
+        XCTAssertEqual(h.store.load().failures["9.0.0"]?.count, UpdateRollback.maximumFailures)
         XCTAssertFalse(UpdateRollback.shouldInstallAutomatically("9.0.0", store: h.store))
     }
 
@@ -903,8 +951,11 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertTrue(UpdateCoordinator.mayPassByItself(URLError(.timedOut)))
         XCTAssertTrue(UpdateCoordinator.mayPassByItself(URLError(.cannotFindHost)))
         XCTAssertTrue(UpdateCoordinator.mayPassByItself(UpdateFailure.busy))
+        // The download server's own trouble, not this Mac's.
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(SelfUpdater.Failure.http(500)))
+        XCTAssertTrue(UpdateCoordinator.mayPassByItself(SelfUpdater.Failure.http(503)))
         for failure in [SelfUpdater.Failure.diskImage, .copy, .untrusted, .noSpace, .timedOut, .http(404),
-                        .wrongArchitecture, .swap("EACCES")] {
+                        .notNewer, .wrongArchitecture, .swap("EACCES")] {
             XCTAssertFalse(UpdateCoordinator.mayPassByItself(failure), "\(failure)")
         }
         XCTAssertFalse(UpdateCoordinator.mayPassByItself(UpdateFailure.selfTest))
