@@ -919,3 +919,88 @@ final class PCMSidecarTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: parsed.path))
     }
 }
+
+// MARK: - A take still being written
+
+/// Crash recovery at launch must leave alone a sidecar that another copy of
+/// the app is still writing: DoublEnder Local beside DoublEnder Cloud share the
+/// Desktop. The writer's lock says so, and a second descriptor sees it even in
+/// this process, since flock(2) locks belong to each open file.
+final class PCMSidecarLiveTakeTests: XCTestCase {
+
+    private var tempDir: URL!
+
+    override func setUpWithError() throws {
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PCMSidecarLiveTakeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    func testASidecarIsInUseUntilItsWriterCloses() throws {
+        let main = tempDir.appendingPathComponent("Take.m4a")
+        let sidecar = try XCTUnwrap(PCMSidecar(mainOutput: main, sampleRate: 48_000, channels: 1))
+        XCTAssertTrue(PCMSidecar.isInUse(at: sidecar.url))
+        sidecar.close()
+        XCTAssertFalse(PCMSidecar.isInUse(at: sidecar.url), "a closed sidecar is a crashed take's, for recovery")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.url.path))
+    }
+
+    func testASidecarIsNotInUseOnceTheWriterIsGone() throws {
+        let main = tempDir.appendingPathComponent("Take.m4a")
+        var sidecar = PCMSidecar(mainOutput: main, sampleRate: 48_000, channels: 1)
+        let url = try XCTUnwrap(sidecar?.url)
+        XCTAssertTrue(PCMSidecar.isInUse(at: url))
+        // A writer that goes without closing, as a crash ends one: the kernel
+        // drops the lock with the descriptor.
+        sidecar = nil
+        XCTAssertFalse(PCMSidecar.isInUse(at: url))
+    }
+
+    func testTheHeaderIsStillWrittenFirst() throws {
+        let main = tempDir.appendingPathComponent("Take.m4a")
+        // A stale file of the same name is replaced, as before the lock.
+        try Data(repeating: 0xFF, count: 4096).write(to: PCMSidecar.url(for: main))
+        let sidecar = try XCTUnwrap(PCMSidecar(mainOutput: main, sampleRate: 48_000, channels: 1))
+        let samples: [Float] = [0.25, -0.25]
+        samples.withUnsafeBufferPointer { sidecar.append($0.baseAddress!, frameCount: 2) }
+        sidecar.close()
+        let data = try Data(contentsOf: sidecar.url)
+        XCTAssertEqual(Array(data.prefix(4)), Array("DEP2".utf8))
+        XCTAssertEqual(data.count, 20 + 2 * MemoryLayout<Float>.size)
+        XCTAssertNoThrow(try PCMSidecar.recoverToWAV(sidecarURL: sidecar.url))
+    }
+
+    func testRecoveryPassesOverATakeStillBeingWritten() throws {
+        let live = try XCTUnwrap(PCMSidecar(mainOutput: tempDir.appendingPathComponent("Live.m4a"),
+                                            sampleRate: 48_000, channels: 1))
+        let crashed = try XCTUnwrap(PCMSidecar(mainOutput: tempDir.appendingPathComponent("Crashed.m4a"),
+                                               sampleRate: 48_000, channels: 1))
+        crashed.close()
+        let other = tempDir.appendingPathComponent("Notes.txt")
+        try Data().write(to: other)
+
+        let entries = try FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+        let found = PCMSidecar.sidecarsLeftByEndedTakes(in: entries).map(\.lastPathComponent)
+        XCTAssertEqual(found, [crashed.url.lastPathComponent])
+        live.close()
+    }
+
+    /// The lock does not reach a tool the app starts: a child holding it would
+    /// keep a crashed take's sidecar from recovery after the app was gone.
+    func testAChildProcessDoesNotInheritTheLock() throws {
+        let main = tempDir.appendingPathComponent("Take.m4a")
+        var sidecar = PCMSidecar(mainOutput: main, sampleRate: 48_000, channels: 1)
+        let url = try XCTUnwrap(sidecar?.url)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["5"]
+        try child.run()
+        defer { child.terminate() }
+        sidecar = nil
+        XCTAssertFalse(PCMSidecar.isInUse(at: url))
+    }
+}

@@ -518,7 +518,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return []
         }
 
-        let sidecars = entries.filter { $0.pathExtension == PCMSidecar.pathExtension }
+        // A sidecar another copy of the app is still writing (Local beside
+        // Cloud, which share the Desktop) is a take in progress, not a crash:
+        // it is left alone, along with the file beside it.
+        let sidecars = PCMSidecar.sidecarsLeftByEndedTakes(in: entries)
         let mainFileValidThreshold = PCMSidecar.mainFileValidThresholdBytes
         for sidecar in sidecars where !PCMSidecar.hasRecoverableContent(at: sidecar) {
             try? fm.removeItem(at: sidecar)
