@@ -1563,6 +1563,14 @@ class RecorderViewModel: ObservableObject {
         }.count
     }
 
+    /// True when any take from this run or an earlier one is still waiting on
+    /// disk to be uploaded. The Guest build offers to uninstall at quit only
+    /// when every take has been uploaded, so an unfinished take is never
+    /// stranded without the app that can upload it.
+    var hasUnuploadedTakes: Bool {
+        uploads.current.items.contains { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     // MARK: Launch
 
     /// The takes an earlier run left waiting whose files are still there, for

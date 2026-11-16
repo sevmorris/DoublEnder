@@ -179,14 +179,31 @@ struct HelpView: View {
 
                 dividerRow
 
-                section("Updates") {
-                    text("""
-                    Choose DoublEnder → Check for Updates… from the app menu to \
-                    look for a new version. DoublEnder also performs a quiet \
-                    check at launch. Update and Relaunch installs the new \
-                    version and reopens the app; if a recording is under way, \
-                    it waits for the recording to finish.
-                    """)
+                if GuestUninstall.isGuestSession {
+                    section("After Your Session") {
+                        text("""
+                        When you quit DoublEnder Cloud after your recording has uploaded, \
+                        it offers to move itself to the Trash (or eject its disk image) \
+                        so nothing is left behind on your Mac. Your recordings on the \
+                        Desktop are always kept. If you have another session coming up, \
+                        choose Keep & Quit instead.
+                        """)
+                        text("""
+                        If you'd like to keep a simple recorder for your own use, choose \
+                        Uninstall & Get DoublEnder when quitting, or Help → Get DoublEnder \
+                        (Local Recorder) at any time.
+                        """)
+                    }
+                } else {
+                    section("Updates") {
+                        text("""
+                        Choose DoublEnder → Check for Updates… from the app menu to \
+                        look for a new version. DoublEnder also performs a quiet \
+                        check at launch. Update and Relaunch installs the new \
+                        version and reopens the app; if a recording is under way, \
+                        it waits for the recording to finish.
+                        """)
+                    }
                 }
 
                 dividerRow

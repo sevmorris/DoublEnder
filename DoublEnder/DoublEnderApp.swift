@@ -105,8 +105,10 @@ struct DoublEnderApp: App {
             }
 
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    Task { await checkForUpdates() }
+                if !GuestUninstall.isGuestSession {
+                    Button("Check for Updates…") {
+                        Task { await checkForUpdates() }
+                    }
                 }
             }
 
@@ -171,14 +173,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // SwiftUI's launch pass, because with no window on screen by then
         // SwiftUI would present the empty Settings scene.
         #if GCS_ENABLED
-        // Cloud installs any update before the recorder exists. Its window is
-        // what SwiftUI finds on screen meanwhile.
-        LaunchUpdate.run { [weak self] checkAfterLaunch in
-            guard let self else { return }
-            self.showMainWindow()
-            self.checkForUpdatesAfterLaunch = checkAfterLaunch
-            self.launchUpdateDone = true
-            if self.didFinishLaunching { self.startUp() }
+        if GuestUninstall.isGuestSession {
+            showMainWindow()
+            launchUpdateDone = true
+        } else {
+            // Cloud installs any update before the recorder exists. Its window is
+            // what SwiftUI finds on screen meanwhile.
+            LaunchUpdate.run { [weak self] checkAfterLaunch in
+                guard let self else { return }
+                self.showMainWindow()
+                self.checkForUpdatesAfterLaunch = checkAfterLaunch
+                self.launchUpdateDone = true
+                if self.didFinishLaunching { self.startUp() }
+            }
         }
         #else
         showMainWindow()
@@ -192,6 +199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var didFinishLaunching = false
     /// Whether the usual check after launch still has something to offer.
     private var checkForUpdatesAfterLaunch = true
+    private var guestUninstallOffered = false
+    private var didUninstallGuestSession = false
     #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -208,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #if GCS_ENABLED
         let recovered = runCrashRecoveryIfNeeded()
         offerWaitingUploads(recovered: recovered)
+        guard !GuestUninstall.isGuestSession else { return }
         // A launch install that ran out of time or failed, or a check that
         // did, is finished behind the recorder and installed at quit, rather
         // than offered in a prompt the guest has to answer. Only what this copy
@@ -283,6 +293,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (custom filename, notes) so the next launch starts fresh.
     /// Also wiped at `applicationWillFinishLaunching` to cover crashes.
     func applicationWillTerminate(_ notification: Notification) {
+        #if GCS_ENABLED
+        if GuestUninstall.isGuestSession {
+            if didUninstallGuestSession, let bundleID = Bundle.main.bundleIdentifier {
+                UserDefaults.app.removePersistentDomain(forName: bundleID)
+            } else if mainWindow != nil {
+                RecorderViewModel.shared.clearSessionSettings()
+            }
+            return
+        }
+        #endif
         // A clean quit is as healthy as a few seconds of recorder: a guest who
         // quits at once must not count against the version. Before the recorder
         // has opened the version has shown nothing either way, so the start is
@@ -358,6 +378,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if UpdateCoordinator.shared.cancelBeforeQuit(then: { NSApp.reply(toApplicationShouldTerminate: true) }) {
                 return .terminateLater
             }
+            #if GCS_ENABLED
+            offerGuestUninstallIfNeeded()
+            #endif
             return .terminateNow
         }
     }
@@ -452,12 +475,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     #endif
                     NSApp.activate(ignoringOtherApps: true)
                     self?.mainWindow?.makeKeyAndOrderFront(nil)
+                } else {
+                    #if GCS_ENABLED
+                    self?.offerGuestUninstallIfNeeded()
+                    #endif
                 }
                 NSApp.reply(toApplicationShouldTerminate: quits)
             }
         case .discardThenQuit:
             // Cancel the writer and drop the partial file before quitting.
-            vm.abortRecording {
+            vm.abortRecording { [weak self] in
+                #if GCS_ENABLED
+                self?.offerGuestUninstallIfNeeded()
+                #endif
                 NSApp.reply(toApplicationShouldTerminate: true)
             }
         case .stay:
@@ -491,6 +521,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let response = ModalGate.run { alert.runModal() }
         NSApp.reply(toApplicationShouldTerminate: response != .alertFirstButtonReturn)
+    }
+
+    private func offerGuestUninstallIfNeeded() {
+        guard GuestUninstall.shouldOffer(
+            isGuestSession: GuestUninstall.isGuestSession,
+            forSystem: quitIsForSystem,
+            recorderOpen: mainWindow != nil,
+            hasUnuploadedTakes: RecorderViewModel.shared.hasUnuploadedTakes,
+            alreadyOffered: guestUninstallOffered
+        ) else { return }
+        guestUninstallOffered = true
+        let tools = GuestUninstall.Tools.live(bundleID: Bundle.main.bundleIdentifier ?? "")
+        let origin = GuestUninstall.origin(of: Bundle.main.bundleURL, tools: tools)
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.messageText = "Uninstall \(updaterAppName)?"
+        alert.informativeText = GuestUninstall.explanation(for: origin, appName: updaterAppName)
+        alert.addButton(withTitle: "Uninstall")                     // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Uninstall & Get DoublEnder")    // .alertSecondButtonReturn
+        alert.addButton(withTitle: "Keep & Quit").keyEquivalent = "\u{1b}"
+        let response = ModalGate.run { alert.runModal() }
+        let choice = GuestUninstall.choice(for: response)
+        didUninstallGuestSession = GuestUninstall.perform(choice, origin: origin, tools: tools)
     }
     #endif
 
