@@ -16,21 +16,40 @@ final class GuestUninstallTests: XCTestCase {
         try? FileManager.default.removeItem(at: folder)
     }
 
-    // MARK: - Info.plist flag
+    // MARK: - Session mode persistence & upgrade inference
 
-    func testGuestSessionFlagParsing() {
-        XCTAssertFalse(GuestUninstall.isGuestSession(info: nil))
-        XCTAssertFalse(GuestUninstall.isGuestSession(info: [:]))
-        XCTAssertFalse(GuestUninstall.isGuestSession(info: ["GuestSession": "NO"]))
-        XCTAssertFalse(GuestUninstall.isGuestSession(info: ["GuestSession": "false"]))
-        XCTAssertFalse(GuestUninstall.isGuestSession(info: ["GuestSession": "0"]))
-        XCTAssertFalse(GuestUninstall.isGuestSession(info: ["GuestSession": false]))
+    func testStoredOrInferredModePromptsOnFreshFirstLaunchAndInfersHostOnExistingInstall() throws {
+        let suiteName = folder.appendingPathComponent("defaults").path
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        XCTAssertTrue(GuestUninstall.isGuestSession(info: ["GuestSession": "YES"]))
-        XCTAssertTrue(GuestUninstall.isGuestSession(info: ["GuestSession": " yes \n"]))
-        XCTAssertTrue(GuestUninstall.isGuestSession(info: ["GuestSession": "true"]))
-        XCTAssertTrue(GuestUninstall.isGuestSession(info: ["GuestSession": "1"]))
-        XCTAssertTrue(GuestUninstall.isGuestSession(info: ["GuestSession": true]))
+        let apps = folder.appendingPathComponent("Applications", isDirectory: true)
+        let dmgApp = folder.appendingPathComponent("Volumes/DoublEnder Cloud/DoublEnder Cloud.app")
+        let installedApp = apps.appendingPathComponent("DoublEnder Cloud.app")
+
+        // Brand-new launch from DMG or Applications with no prior history: nil so launch asks.
+        XCTAssertNil(GuestUninstall.storedOrInferredMode(
+            in: defaults, appURL: dmgApp, applicationsFolders: [apps]
+        ))
+        XCTAssertNil(GuestUninstall.storedOrInferredMode(
+            in: defaults, appURL: installedApp, applicationsFolders: [apps]
+        ))
+        XCTAssertEqual(GuestUninstall.currentMode(in: defaults), .host)
+
+        // Existing host upgrading in /Applications (has lastGuestName from an earlier version):
+        // inferred and persisted as .host without asking.
+        defaults.set("Seven", forKey: "lastGuestName")
+        XCTAssertEqual(GuestUninstall.storedOrInferredMode(
+            in: defaults, appURL: installedApp, applicationsFolders: [apps]
+        ), .host)
+        XCTAssertEqual(GuestUninstall.currentMode(in: defaults), .host)
+
+        // Switching to .guest in Settings persists .guest.
+        GuestUninstall.setMode(.guest, in: defaults)
+        XCTAssertEqual(GuestUninstall.currentMode(in: defaults), .guest)
+        XCTAssertEqual(GuestUninstall.storedOrInferredMode(
+            in: defaults, appURL: installedApp, applicationsFolders: [apps]
+        ), .guest)
     }
 
     // MARK: - When to offer at quit

@@ -246,6 +246,16 @@ class RecorderViewModel: ObservableObject {
     }
 
     #if GCS_ENABLED
+    /// How this copy of DoublEnder Cloud behaves: `.host` (keeps installed &
+    /// auto-updated) or `.guest` (skips auto-updates and offers to uninstall
+    /// when quitting). Chosen once at first launch and adjustable in Settings.
+    @Published var cloudSessionMode: CloudSessionMode = .host {
+        didSet {
+            guard cloudSessionMode != oldValue else { return }
+            GuestUninstall.setMode(cloudSessionMode, in: defaults)
+        }
+    }
+
     /// Master switch for every cloud-side feature: GCS upload, the session
     /// heartbeat, the pre-recording name prompt, and the launch-time
     /// pending-upload prompt. Off makes this build behave like DoublEnder
@@ -626,6 +636,9 @@ class RecorderViewModel: ObservableObject {
            let format = OutputFormat(rawValue: raw) {
             outputFormat = format
         }
+        #if GCS_ENABLED
+        cloudSessionMode = GuestUninstall.currentMode(in: defaults)
+        #endif
 
         // C3 / M1 / M2: When the audio device disconnects mid-recording,
         // AudioEngine signals us here (on the main thread) instead of running

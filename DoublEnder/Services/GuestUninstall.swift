@@ -1,8 +1,28 @@
 import AppKit
+import SwiftUI
 
-/// The Guest Cloud build: meant for a single recording session, with no move to
-/// the Applications folder and no self-updates, and an offer to uninstall itself
-/// and point to the free Local recorder when the guest quits.
+/// How this copy of DoublEnder Cloud is used:
+///   - `.host`: permanent installation for a regular host; moves to the
+///     Applications folder and keeps itself up to date automatically.
+///   - `.guest`: temporary session for a one-time guest; runs from where it is
+///     without self-updating, and offers to uninstall itself and point to the
+///     free Local recorder when quitting.
+enum CloudSessionMode: String, CaseIterable, Identifiable, Equatable {
+    case host
+    case guest
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .host: return "Regular Host (Keep & auto-update)"
+        case .guest: return "One-Time Guest (Offer to uninstall at quit)"
+        }
+    }
+}
+
+/// First-launch mode selection (`CloudSessionMode`) and the Guest mode's
+/// self-uninstall flow at quit.
 ///
 /// Nothing here may trap a guest in the app when they ask to quit, or strand a
 /// recording that still needs to upload:
@@ -17,24 +37,65 @@ import AppKit
 ///   - Recordings on the Desktop are never touched.
 enum GuestUninstall {
 
-    static let guestSessionKey = "GuestSession"
+    static let sessionModeKey = "cloudSessionMode"
     static let publicRecorderURL = URL(string: "https://sevmorris.github.io/DoublEnder/")!
 
-    /// True when the running bundle carries `GuestSession = YES` in its
-    /// `Info.plist` (set via `GUEST_SESSION=YES` for `DoublEnder-Cloud-Guest.dmg`).
+    /// True when the user has selected One-Time Guest mode. Reads `UserDefaults.app`
+    /// directly so checking it at launch or quit never instantiates `RecorderViewModel`.
     static var isGuestSession: Bool {
-        isGuestSession(info: Bundle.main.infoDictionary)
+        currentMode(in: .app) == .guest
     }
 
-    static func isGuestSession(info: [String: Any]?) -> Bool {
-        if let flag = info?[guestSessionKey] as? Bool {
-            return flag
+    /// The active mode, defaulting to `.host` when none has been stored yet.
+    static func currentMode(in defaults: UserDefaults = .app) -> CloudSessionMode {
+        guard let raw = defaults.string(forKey: sessionModeKey),
+              let mode = CloudSessionMode(rawValue: raw) else {
+            return .host
         }
-        guard let raw = info?[guestSessionKey] as? String else { return false }
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "yes", "true", "1": return true
-        default: return false
+        return mode
+    }
+
+    static func setMode(_ mode: CloudSessionMode, in defaults: UserDefaults = .app) {
+        defaults.set(mode.rawValue, forKey: sessionModeKey)
+    }
+
+    /// The mode already chosen on an earlier launch, or `.host` inferred for an
+    /// existing host upgrading from a version before `cloudSessionMode` existed,
+    /// or `nil` on a brand-new first run so the launch flow asks once.
+    static func storedOrInferredMode(in defaults: UserDefaults = .app,
+                                     appURL: URL = Bundle.main.bundleURL,
+                                     applicationsFolders: [URL] = [
+                                         URL(fileURLWithPath: "/Applications", isDirectory: true),
+                                         FileManager.default.homeDirectoryForCurrentUser
+                                             .appendingPathComponent("Applications", isDirectory: true),
+                                     ]) -> CloudSessionMode? {
+        if let raw = defaults.string(forKey: sessionModeKey),
+           let mode = CloudSessionMode(rawValue: raw) {
+            return mode
         }
+        let appDir = appURL.deletingLastPathComponent().standardizedFileURL.path
+        let inApplications = applicationsFolders.contains {
+            $0.standardizedFileURL.path == appDir
+        }
+        let hasPriorHistory = defaults.object(forKey: MoveToApplications.lastMoveKey) != nil
+            || !(defaults.string(forKey: "lastGuestName") ?? "").isEmpty
+        if inApplications && hasPriorHistory {
+            setMode(.host, in: defaults)
+            return .host
+        }
+        return nil
+    }
+
+    /// Words for the first-launch Host vs. Guest setup card.
+    static func firstLaunchHostDescription(appName: String, willMoveToApplications: Bool) -> String {
+        if willMoveToApplications {
+            return "Moves \(appName) to your Applications folder, ejects the disk image, and keeps itself up to date."
+        }
+        return "Keeps \(appName) installed and automatically up to date."
+    }
+
+    static func firstLaunchGuestDescription() -> String {
+        "Opens the recorder right away for this session without installing, and offers to remove itself when you quit."
     }
 
     /// Where the running copy is, which decides the words and what is removed.
@@ -90,7 +151,7 @@ enum GuestUninstall {
         return .installed(app: app)
     }
 
-    /// The question's words.
+    /// The quit question's words.
     static func explanation(for origin: Origin, appName: String) -> String {
         let action: String
         switch origin {
@@ -234,5 +295,142 @@ extension GuestUninstall.Tools {
                 defaults.removePersistentDomain(forName: bundleID)
             },
             openURL: { NSWorkspace.shared.open($0) })
+    }
+}
+
+// MARK: - Themed First-Launch Setup / Installer Window
+
+private let setupBg        = Color(red: 0x0D/255, green: 0x08/255, blue: 0x00/255)
+private let setupBorder    = Color(red: 0xFF/255, green: 0xB3/255, blue: 0x47/255).opacity(0.45)
+private let setupAmber     = Color(red: 0xFF/255, green: 0xD5/255, blue: 0x80/255)
+private let setupIcon      = Color(red: 0xF5/255, green: 0xA6/255, blue: 0x23/255)
+private let setupBodyText  = Color(red: 0xF0/255, green: 0xE0/255, blue: 0xC0/255)
+private let setupMutedText = Color(red: 0xE8/255, green: 0xD8/255, blue: 0xC0/255).opacity(0.60)
+private let setupFieldBg   = Color(red: 0x1A/255, green: 0x0A/255, blue: 0x00/255)
+
+struct CloudSetupView: View {
+    let appName: String
+    let willMoveToApplications: Bool
+    let onChoose: (CloudSessionMode) -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "waveform.badge.mic")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(setupIcon)
+                .shadow(color: setupIcon.opacity(0.60), radius: 8)
+
+            Text(appName.uppercased())
+                .font(.system(size: 12, weight: .bold))
+                .tracking(1.8)
+                .foregroundColor(setupAmber)
+                .shadow(color: setupIcon.opacity(0.85), radius: 6)
+
+            Text("How are you using \(appName)?")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(setupBodyText)
+
+            VStack(spacing: 10) {
+                choiceButton(
+                    title: "RUN AS GUEST — ONE SESSION",
+                    subtitle: GuestUninstall.firstLaunchGuestDescription(),
+                    action: { onChoose(.guest) }
+                )
+                choiceButton(
+                    title: willMoveToApplications
+                        ? "INSTALL AS HOST — KEEP & UPDATE"
+                        : "USE AS HOST — KEEP & UPDATE",
+                    subtitle: GuestUninstall.firstLaunchHostDescription(
+                        appName: appName,
+                        willMoveToApplications: willMoveToApplications
+                    ),
+                    action: { onChoose(.host) }
+                )
+            }
+            .padding(.top, 2)
+
+            Text("You can switch between Host and Guest anytime in Settings.")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(setupMutedText)
+                .multilineTextAlignment(.center)
+                .padding(.top, 2)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 22)
+        .frame(width: 400)
+        .background(WindowDragArea())
+        .background(setupBg)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(setupBorder, lineWidth: 1.5)
+        )
+        .shadow(color: Color(red: 0xC9/255, green: 0x6A/255, blue: 0x00/255).opacity(0.30), radius: 20)
+        .preferredColorScheme(.dark)
+    }
+
+    private func choiceButton(title: String, subtitle: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.4)
+                    .foregroundColor(setupIcon)
+                Text(subtitle)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(setupBodyText)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 6).fill(setupFieldBg))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(setupIcon, lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+}
+
+@MainActor
+enum CloudSetupPrompt {
+    static func present(appName: String, willMoveToApplications: Bool) -> CloudSessionMode {
+        var selected: CloudSessionMode = .guest
+        let window = UploadConfirmationWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let view = CloudSetupView(
+            appName: appName,
+            willMoveToApplications: willMoveToApplications
+        ) { [weak window] mode in
+            selected = mode
+            NSApp.stopModal()
+            window?.orderOut(nil)
+        }
+        window.contentViewController = NSHostingController(rootView: view)
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.level = .modalPanel
+        if let content = window.contentViewController?.view {
+            window.setContentSize(content.fittingSize)
+        }
+        if let screen = NSScreen.main {
+            let sf = screen.visibleFrame
+            let wf = window.frame
+            window.setFrameOrigin(NSPoint(x: sf.midX - wf.width / 2, y: sf.midY - wf.height / 2))
+        } else {
+            window.center()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        NSApp.runModal(for: window)
+        return selected
     }
 }

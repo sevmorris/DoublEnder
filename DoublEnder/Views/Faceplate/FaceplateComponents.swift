@@ -509,6 +509,25 @@ struct FaceplateSettingsPopover: View {
 
             #if GCS_ENABLED
             VStack(alignment: .leading, spacing: 5) {
+                fieldLabel("MODE")
+                Picker("", selection: $viewModel.cloudSessionMode) {
+                    ForEach(CloudSessionMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(FaceplateDesign.vpAmber)
+                .disabled(viewModel.isCurrentlyRecording || viewModel.isCurrentlyUploading)
+                Text(viewModel.cloudSessionMode == .host
+                     ? "Regular host: keeps DoublEnder Cloud installed and automatically up to date."
+                     : "One-time guest: skips automatic updates and offers to uninstall when you quit.")
+                    .font(.system(size: 11))
+                    .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
                 fieldLabel("CLOUD")
                 Toggle("Upload recordings to the cloud", isOn: $viewModel.cloudUploadEnabled)
                     .toggleStyle(.switch)

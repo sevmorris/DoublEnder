@@ -108,6 +108,9 @@ struct HelpView: View {
                     #endif
                     definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info. Not stored in WAV files, and not kept after DoublEnder quits.")
                     definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (24-bit PCM, uncompressed). Defaults to AAC, and DoublEnder remembers your choice.")
+                    #if GCS_ENABLED
+                    definition("Mode", "Switch between Regular Host (keeps DoublEnder Cloud installed and automatically up to date) and One-Time Guest (skips automatic updates and offers to uninstall when you quit).")
+                    #endif
                 }
 
                 dividerRow
@@ -179,31 +182,25 @@ struct HelpView: View {
 
                 dividerRow
 
-                if GuestUninstall.isGuestSession {
-                    section("After Your Session") {
-                        text("""
-                        When you quit DoublEnder Cloud after your recording has uploaded, \
-                        it offers to move itself to the Trash (or eject its disk image) \
-                        so nothing is left behind on your Mac. Your recordings on the \
-                        Desktop are always kept. If you have another session coming up, \
-                        choose Keep & Quit instead.
-                        """)
-                        text("""
-                        If you'd like to keep a simple recorder for your own use, choose \
-                        Uninstall & Get DoublEnder when quitting, or Help → Get DoublEnder \
-                        (Local Recorder) at any time.
-                        """)
-                    }
-                } else {
-                    section("Updates") {
-                        text("""
-                        Choose DoublEnder → Check for Updates… from the app menu to \
-                        look for a new version. DoublEnder also performs a quiet \
-                        check at launch. Update and Relaunch installs the new \
-                        version and reopens the app; if a recording is under way, \
-                        it waits for the recording to finish.
-                        """)
-                    }
+                section("Updates & Guest Cleanup") {
+                    text("""
+                    Choose DoublEnder → Check for Updates… from the app menu to \
+                    look for a new version. In Regular Host mode, DoublEnder also \
+                    performs a quiet check at launch and while open. Update and \
+                    Relaunch installs the new version and reopens the app; if a \
+                    recording is under way, it waits for the recording to finish.
+                    """)
+                    #if GCS_ENABLED
+                    text("""
+                    In One-Time Guest mode, when you quit DoublEnder Cloud after your \
+                    recording has uploaded, it offers to move itself to the Trash \
+                    (or eject its disk image) so nothing is left behind on your Mac. \
+                    Your recordings on the Desktop are always kept. If you'd like to \
+                    keep a simple recorder for your own use, choose Uninstall & Get \
+                    DoublEnder when quitting, or Help → Get DoublEnder (Local Recorder) \
+                    at any time.
+                    """)
+                    #endif
                 }
 
                 dividerRow

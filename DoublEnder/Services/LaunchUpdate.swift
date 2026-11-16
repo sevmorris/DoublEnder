@@ -92,17 +92,36 @@ final class LaunchUpdate {
     }
 
     /// A copy that cannot update itself where it is: hand over to the installed
-    /// copy, or offer the move. True when that settled the launch: the app is
-    /// quitting for the other copy, or the recorder is opening.
+    /// copy, or offer the move. On a first launch (`storedMode() == nil`), asks
+    /// whether this copy is for a Regular Host or a One-Time Guest first. True
+    /// when that settled the launch: the app is quitting for the other copy, or
+    /// the recorder is opening.
     private func settleWhereItRuns() async -> Bool {
+        let existingMode = moving.storedMode()
+        if existingMode == .guest {
+            finish(checkAfterLaunch: false)
+            return true
+        }
+
         let decision = await moving.decide()
         // Skipped while it looked: the recorder is open already.
         if finished { return true }
         switch decision {
         case .stay:
+            if existingMode == nil {
+                let chosen = await ModalGate.runFromRunLoop { self.moving.askMode(false) } ?? .guest
+                moving.saveMode(chosen)
+                if chosen == .guest {
+                    finish(checkAfterLaunch: false)
+                    return true
+                }
+            }
             return false
 
         case .openInstalled(let installed, let volume):
+            if existingMode == nil {
+                moving.saveMode(.host)
+            }
             setHandingOver(true)
             window.showProgress("Opening \(Self.appName)…", fraction: nil)
             if moving.handOff(installed, volume) { return true }
@@ -112,7 +131,14 @@ final class LaunchUpdate {
             return false
 
         case .offer(let offer):
-            let move = await ModalGate.runFromRunLoop { self.moving.ask(offer) } ?? false
+            let move: Bool
+            if existingMode == nil {
+                let chosen = await ModalGate.runFromRunLoop { self.moving.askMode(true) } ?? .guest
+                moving.saveMode(chosen)
+                move = (chosen == .host)
+            } else {
+                move = await ModalGate.runFromRunLoop { self.moving.ask(offer) } ?? false
+            }
             guard move else {
                 finish(checkAfterLaunch: false)
                 return true
@@ -171,6 +197,11 @@ final class LaunchUpdate {
 }
 /// What Cloud's launch does about a copy that cannot update itself where it is.
 struct LaunchMove {
+    /// The stored or inferred mode, or nil on a first launch.
+    var storedMode: @MainActor () -> CloudSessionMode? = { .host }
+    /// The first-launch setup card (`Run as Guest` vs `Install/Use as Host`).
+    var askMode: @MainActor (_ willMoveToApplications: Bool) -> CloudSessionMode = { _ in .host }
+    var saveMode: @MainActor (CloudSessionMode) -> Void = { _ in }
     var decide: @MainActor () async -> MoveToApplications.Decision
     /// The question. True for Move to Applications.
     var ask: @MainActor (MoveToApplications.Offer) -> Bool
@@ -186,6 +217,19 @@ struct LaunchMove {
         let tools = MoveToApplications.Tools.live(bundleID: Bundle.main.bundleIdentifier ?? "")
         let defaults = UserDefaults.app
         return LaunchMove(
+            storedMode: {
+                GuestUninstall.storedOrInferredMode(
+                    in: defaults,
+                    appURL: app,
+                    applicationsFolders: tools.applicationsFolders
+                )
+            },
+            askMode: { willMove in
+                CloudSetupPrompt.present(appName: updaterAppName, willMoveToApplications: willMove)
+            },
+            saveMode: { mode in
+                GuestUninstall.setMode(mode, in: defaults)
+            },
             decide: {
                 let lastMove = defaults.object(forKey: MoveToApplications.lastMoveKey) as? Date
                 // It checks signatures: off the main thread.

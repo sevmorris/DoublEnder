@@ -173,19 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // SwiftUI's launch pass, because with no window on screen by then
         // SwiftUI would present the empty Settings scene.
         #if GCS_ENABLED
-        if GuestUninstall.isGuestSession {
-            showMainWindow()
-            launchUpdateDone = true
-        } else {
-            // Cloud installs any update before the recorder exists. Its window is
-            // what SwiftUI finds on screen meanwhile.
-            LaunchUpdate.run { [weak self] checkAfterLaunch in
-                guard let self else { return }
-                self.showMainWindow()
-                self.checkForUpdatesAfterLaunch = checkAfterLaunch
-                self.launchUpdateDone = true
-                if self.didFinishLaunching { self.startUp() }
-            }
+        // Cloud settles Host/Guest setup and any update before the recorder
+        // exists. Its window is what SwiftUI finds on screen meanwhile.
+        LaunchUpdate.run { [weak self] checkAfterLaunch in
+            guard let self else { return }
+            self.showMainWindow()
+            self.checkForUpdatesAfterLaunch = checkAfterLaunch
+            self.launchUpdateDone = true
+            if self.didFinishLaunching { self.startUp() }
         }
         #else
         showMainWindow()
@@ -217,12 +212,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #if GCS_ENABLED
         let recovered = runCrashRecoveryIfNeeded()
         offerWaitingUploads(recovered: recovered)
-        guard !GuestUninstall.isGuestSession else { return }
         // A launch install that ran out of time or failed, or a check that
         // did, is finished behind the recorder and installed at quit, rather
         // than offered in a prompt the guest has to answer. Only what this copy
         // cannot install by itself is still offered.
-        if checkForUpdatesAfterLaunch {
+        if !GuestUninstall.isGuestSession && checkForUpdatesAfterLaunch {
             UpdateCoordinator.shared.startBackgroundUpdate(promptIfStuck: true)
         }
         scheduleUpdatesWhileOpen()
@@ -256,6 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func considerUpdateWhileOpen(afterWake: Bool) {
+        guard !GuestUninstall.isGuestSession else { return }
         let coordinator = UpdateCoordinator.shared
         guard BackgroundUpdateSchedule.isDue(now: Date(), lastCheck: coordinator.lastCheck, afterWake: afterWake),
               !AppActivity.shared.blocksHeavyWork else { return }
