@@ -140,6 +140,36 @@ struct PendingUploads: Equatable {
         items.removeAll { !exists($0.path) }
         return items
     }
+
+    /// Drops the takes whose files are gone, and returns those, for the guest
+    /// to be told (`MissingTakesNotice`).
+    mutating func removeMissing(exists: (String) -> Bool) -> [PendingUpload] {
+        let missing = items.filter { !exists($0.path) }
+        items.removeAll { !exists($0.path) }
+        return missing
+    }
+}
+
+/// What the guest is told at launch about takes that were waiting to upload
+/// and whose files are no longer where they were saved (moved off the
+/// Desktop, deleted). They cannot be uploaded and are forgotten. Until
+/// 2026-11-18 they were forgotten without a word, and a guest who had tidied
+/// the Desktop believed the producer would still get them.
+enum MissingTakesNotice {
+    static func title(count: Int) -> String {
+        count == 1 ? "A recording waiting to upload is missing"
+                   : "\(count) recordings waiting to upload are missing"
+    }
+
+    static func message(names: [String]) -> String {
+        guard let first = names.first else { return "" }
+        if names.count == 1 {
+            return "\u{201C}\(first)\u{201D} is no longer where it was saved, so it can't be uploaded. "
+                + "If you moved it, send it to your producer another way."
+        }
+        return "\u{201C}\(first)\u{201D} and \(names.count - 1) more are no longer where they were saved, "
+            + "so they can't be uploaded. If you moved them, send them to your producer another way."
+    }
 }
 
 /// `PendingUploads` in defaults, one change at a time. The upload runs off the
