@@ -464,9 +464,14 @@ final class UpdateCoordinator {
     /// The app is quitting: a copy staged behind the recorder is installed now,
     /// with no relaunch, and the next launch runs it (on probation, as after any
     /// update). True when it was installed. Synchronous, like the quit.
+    ///
+    /// Whatever the phase, while a copy waits for the quit, unless it is being
+    /// installed already. The check every few hours sets `.checking` with the
+    /// copy still held, and until 2026-11-18 a quit during it installed nothing
+    /// and `cleanUpForQuit` deleted the copy, so the update waited a launch.
     @discardableResult
     func installAtQuit() -> Bool {
-        guard phase == .readyAtQuit, let update = stagedForQuit else { return false }
+        guard phase != .committing, phase != .relaunching, let update = stagedForQuit else { return false }
         phase = .committing
         do {
             try env.commitAtQuit(update)
