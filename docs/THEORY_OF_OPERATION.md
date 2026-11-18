@@ -430,7 +430,9 @@ On each `refreshDevices`, new UIDs (UIDs present now but absent in `knownInputDe
 
 The name prompt is the one dialog an offer opens over (`ModalGate.run(admitsOffers:)`). There the guest is on the way to a take, and an offer that waited for the prompt to close would find the take already running on the other input. Switch takes effect at once, and the take then waits for the session to be rebuilt (§8, "The name prompt").
 
-If the user dismisses with "Keep Current," the UID is stored in `dismissedUSBDevices` (memory-only, per-session). It will not be offered again until the next app launch. The same UID will be offered at the next launch if the device is still present (`requestPermissions` offers the most recently connected USB input through the same `offerUSBInput`).
+If the user dismisses with "Keep Current," the UID is stored in `dismissedUSBDevices` (memory-only, per-session). It will not be offered again until the next app launch. The same UID will be offered at the next launch if the device is still present.
+
+**At launch** `requestPermissions` offers the USB inputs present one after another, through the same `offerUSBInput` (`LaunchUSBOffers`): the most recently first-seen first (`InputRanking.usbOffers`, no dock's port), and the next only after Keep Current on the one before. Switch, or an input picked by hand (`chooseInput`), ends the series, and a Keep Current to an input plugged in since launch is not part of it. Until 2026-11-18 a launch offered only the newest, so with a webcam and a USB mic plugged in, Keep Current to the webcam meant the mic was never offered that session.
 
 ### A dock's audio port
 
@@ -439,7 +441,7 @@ A dock's audio port ranks below every real mic, in the launch default, the fallb
 `InputRanking.isDockPort` calls an input a dock's port when its transport is USB and its name or manufacturer contains "thunderbolt" or "caldigit", or has "dock", "docking" or "hub" as a whole word. The USB condition is what makes "thunderbolt" safe: a real Thunderbolt interface has Thunderbolt transport, while a dock's audio chip is a USB device behind the dock's own hub. Going by name is the exception to the transport-only classification above, because no transport or level tells these apart, and a wrong answer costs little: the port stays in the picker either way. A dock whose chip has a generic name ("USB Audio Device") reads as a mic and can still be offered, so the prompt's wording doesn't promise one.
 
 - **Default input** (`InputRanking.defaultInput`, behind `preferredDefaultDevice`): the first hardware input that isn't a dock's port. With nothing else present it is the dock's port after all, since a headset may be plugged into it and the engine needs an input to run.
-- **Offer** (`InputRanking.usbOffer`, behind `mostRecentlyConnectedUSBDevice`, and a guard in `presentUSBSwitchPrompt` for hot-plug): never a dock's port, even as the only USB input. A dock plugged in alongside a USB mic still offers the mic.
+- **Offer** (`InputRanking.usbOffers`, behind `usbDevicesInOfferOrder`, and a guard in `presentUSBSwitchPrompt` for hot-plug): never a dock's port, even as the only USB input. A dock plugged in alongside a USB mic still offers the mic.
 
 ### USB first-seen map
 

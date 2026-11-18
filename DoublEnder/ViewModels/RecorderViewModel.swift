@@ -396,6 +396,8 @@ class RecorderViewModel: ObservableObject {
     /// the app quits, so a fresh launch will offer again if the device is
     /// still present (or has been re-plugged).
     private var dismissedUSBDevices: Set<String> = []
+    /// The USB inputs this launch offers one after another (`LaunchUSBOffers`).
+    private var launchUSBOffers = LaunchUSBOffers()
     /// Prevents re-entrancy when reverting a device pick during recording.
     private var suppressDeviceSelectionRevert = false
     /// True while any app-modal NSAlert runModal() is active. Guards against
@@ -791,6 +793,7 @@ class RecorderViewModel: ObservableObject {
         // picker either way.
         guard let response = shown else { return }
         if response == .alertFirstButtonReturn {
+            launchUSBOffers.stop()
             // At once. This runs from the run loop, never from inside the
             // CoreAudio device-list listener's call frame, where engine
             // teardown once crashed (an NSException out of SetOutputFormat)
@@ -800,6 +803,21 @@ class RecorderViewModel: ObservableObject {
             chooseInput(device.uniqueID)
         } else {
             dismissedUSBDevices.insert(device.uniqueID)
+            offerNextLaunchUSBInput(afterDeclining: device.uniqueID)
+        }
+    }
+
+    /// After Keep Current on one of the launch's offers, the next USB input
+    /// present, if there is one.
+    private func offerNextLaunchUSBInput(afterDeclining uid: String) {
+        var declined = uid
+        while let next = launchUSBOffers.next(afterDeclining: declined) {
+            if let device = audioEngine.usbInputDevices().first(where: { $0.uniqueID == next }) {
+                offerUSBInput(device)
+                return
+            }
+            // Unplugged since launch: the one after it.
+            declined = next
         }
     }
 
@@ -819,6 +837,7 @@ class RecorderViewModel: ObservableObject {
     /// before is not come back to.
     func chooseInput(_ uid: String) {
         guard !isCurrentlyRecording else { return }
+        launchUSBOffers.stop()
         chosenInputUID = uid
         selectedInputDeviceID = uid
     }
@@ -887,17 +906,16 @@ class RecorderViewModel: ObservableObject {
         }
     }
 
-    /// USB input device with the most recent first-seen timestamp among
-    /// currently-present USB devices, leaving out a dock's audio port
-    /// (`InputRanking`). Returns nil if none are left. The timestamp comes
-    /// from `recordCurrentUSBDevicesFirstSeen`; devices we've never stamped
-    /// fall back to a 0 timestamp, so unknown devices lose every tie-break to
-    /// known ones.
-    private func mostRecentlyConnectedUSBDevice() -> AVCaptureDevice? {
+    /// The USB inputs present, in the order a launch offers them: the most
+    /// recent first-seen timestamp first, leaving out a dock's audio port
+    /// (`InputRanking.usbOffers`). The timestamp comes from
+    /// `recordCurrentUSBDevicesFirstSeen`; devices we've never stamped fall
+    /// back to a 0 timestamp, so unknown devices come after known ones.
+    private func usbDevicesInOfferOrder() -> [AVCaptureDevice] {
         let map = defaults.dictionary(forKey: Self.usbFirstSeenKey) as? [String: Double] ?? [:]
         let usb = audioEngine.usbInputDevices()
-        let choice = InputRanking.usbOffer(among: usb.map(audioEngine.inputCandidate), firstSeen: map)
-        return usb.first { $0.uniqueID == choice?.uniqueID }
+        return InputRanking.usbOffers(among: usb.map(audioEngine.inputCandidate), firstSeen: map)
+            .compactMap { choice in usb.first { $0.uniqueID == choice.uniqueID } }
     }
 
     private func requestPermissions() {
@@ -948,7 +966,11 @@ class RecorderViewModel: ObservableObject {
                     // wins when multiple USBs are present, capturing
                     // "the one I just plugged in" intent across launches.
                     // A dock's audio port is never the one offered.
-                    if let usbDevice = self.mostRecentlyConnectedUSBDevice() {
+                    // Keep Current on it offers the next (`LaunchUSBOffers`).
+                    let inOrder = self.usbDevicesInOfferOrder()
+                    self.launchUSBOffers = LaunchUSBOffers(inOrder.map(\.uniqueID))
+                    if let first = self.launchUSBOffers.first(),
+                       let usbDevice = inOrder.first(where: { $0.uniqueID == first }) {
                         self.offerUSBInput(usbDevice)
                     }
                 } else {
