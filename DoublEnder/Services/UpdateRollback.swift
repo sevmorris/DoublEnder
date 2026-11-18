@@ -48,6 +48,15 @@ final class UpdateStateStore {
     /// Folders with a staged copy in them or on its way, for the sweep at launch.
     var journalURL: URL { url.deletingLastPathComponent().appendingPathComponent("update-staging.json") }
 
+    /// Where the version an update replaced is kept while the new one is on
+    /// probation, each copy in a folder of its own (`UpdateRollback.keepPrevious`).
+    /// Beside the state, so in Application Support, out of the temporary
+    /// folder; `.noindex` keeps Spotlight, and so Launch Services, from
+    /// listing the old copy as an app to open.
+    var keptCopiesURL: URL {
+        url.deletingLastPathComponent().appendingPathComponent("Previous Version.noindex", isDirectory: true)
+    }
+
     /// In Application Support, under the bundle identifier, so the Local and
     /// Cloud builds stay apart. A test run gets a folder in the temporary
     /// directory instead: nothing a test does may reach the real one.
@@ -71,12 +80,16 @@ final class UpdateStateStore {
         return state
     }
 
-    func save(_ state: UpdateState) {
+    /// False when it could not be written (a full disk, say).
+    @discardableResult
+    func save(_ state: UpdateState) -> Bool {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: url, options: .atomic)
+            return true
         } catch {
             logger.error("Update state not saved: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
@@ -157,21 +170,80 @@ enum UpdateRollback {
     // MARK: - At the swap
 
     /// Called before the swap. `previous` is where the staged copy is now and
-    /// the replaced version will be once the two are exchanged.
+    /// the replaced version will be once the two are exchanged. False when the
+    /// record could not be saved (a full disk), and then nothing may be
+    /// replaced (`UpdateCommit`): until 2026-11-18 the swap went ahead, and a
+    /// new version that could not stay up had nothing to go back to.
     ///
     /// A version still on probation is replaced before it proved itself (Cloud
     /// found a newer one at its first launch): its own previous copy goes, and
-    /// the version now running becomes the one to go back to.
+    /// the version now running becomes the one to go back to. It goes only
+    /// once the new record is saved, so a failed save leaves the old one whole.
+    @discardableResult
     static func arm(from: String, to: String, previous: URL, installed: URL, store: UpdateStateStore,
-                    discard: (URL) -> Void = { SelfUpdater.discard($0) }) {
+                    discard: (URL) -> Void = { SelfUpdater.discard($0) }) -> Bool {
         var state = store.load()
-        if let older = state.probation, older.previous != previous.path {
-            discard(URL(fileURLWithPath: older.previous))
-        }
+        let older = state.probation
         state.probation = UpdateState.Probation(from: from, to: to, previous: previous.path,
                                                 installed: installed.path, launches: 0)
-        store.save(state)
+        guard store.save(state) else { return false }
+        if let older, older.previous != previous.path {
+            discard(URL(fileURLWithPath: older.previous))
+        }
         store.setMarker(true)
+        return true
+    }
+
+    /// Called right after the swap: the version it replaced, now at `previous`
+    /// (where the new one was staged), moves to `store.keptCopiesURL`, and the
+    /// probation record follows it.
+    ///
+    /// The staging folder is under the per-user temporary folder, which macOS
+    /// empties of what has gone unused for a few days. After an install at quit
+    /// the next launch can be later than that, for a guest who records weekly,
+    /// and until 2026-11-18 a new version that then could not stay up had
+    /// nothing to go back to.
+    ///
+    /// It is a rename on the same volume (`move`), never a copy: no room is
+    /// needed and nothing is half done. When it cannot be renamed (an app on
+    /// another volume, say) or the record cannot be saved after it, the copy
+    /// stays or goes back where the swap left it, as it always did, and the
+    /// record still leads to it. A crash between the rename and the save
+    /// leaves a kept copy that no record names, which a later launch's sweep
+    /// deletes (`UpdateSweep.takeLeftovers`).
+    static func keepPrevious(at previous: URL, store: UpdateStateStore,
+                             move: (URL, URL) throws -> Void = UpdateRollback.rename) {
+        var state = store.load()
+        guard var probation = state.probation, probation.previous == previous.path else { return }
+        let fm = FileManager.default
+        let folder = store.keptCopiesURL.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let kept = folder.appendingPathComponent(previous.lastPathComponent)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try move(previous, kept)
+        } catch {
+            logger.notice("The previous version stays where the swap left it: \(error.localizedDescription, privacy: .public)")
+            try? fm.removeItem(at: folder)
+            return
+        }
+        probation.previous = kept.path
+        state.probation = probation
+        guard store.save(state) else {
+            // The record still names the old place, so the copy goes back there.
+            if (try? move(kept, previous)) != nil { try? fm.removeItem(at: folder) }
+            return
+        }
+        // The staging folder it came from has nothing in it now.
+        rmdir(previous.deletingLastPathComponent().path)
+    }
+
+    /// A rename that never replaces anything and never copies: across volumes
+    /// it fails instead.
+    static func rename(_ source: URL, to destination: URL) throws {
+        guard renamex_np(source.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "rename: \(String(cString: strerror(errno)))"])
+        }
     }
 
     /// The swap failed: nothing is on probation.

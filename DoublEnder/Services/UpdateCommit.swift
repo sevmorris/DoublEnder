@@ -39,13 +39,17 @@ struct FileIdentity: Equatable {
 ///      can write, with none of the protection the installed app has.
 ///   4. The app at the target path is still this one. A copy the user moved
 ///      or replaced meanwhile must not be swapped out and thrown away.
-///   5. The previous version is put on probation (`UpdateRollback`).
+///   5. The previous version is put on probation (`UpdateRollback`). If the
+///      record cannot be saved (a full disk), the update stops here: a swap
+///      with no probation leaves nothing to go back to.
 ///   6. The relaunch helper is running. If it cannot be started the update
 ///      stops here, with the installed app untouched, rather than after the
 ///      swap, where the choice was quitting for good or running old code over
 ///      a new bundle.
 ///   7. The swap, in one step. If it fails, 5 and 6 are undone.
-///   8. Quit.
+///   8. The previous version moves out of the temporary folder the swap left
+///      it in, to be there still at the next launch, however late.
+///   9. Quit.
 struct UpdateCommit {
 
     enum Refusal: LocalizedError, Equatable {
@@ -54,6 +58,8 @@ struct UpdateCommit {
         case stagedCopyChanged
         case appMoved
         case cannotRelaunch(String)
+        /// The probation record could not be saved.
+        case cannotKeepPrevious
 
         var errorDescription: String? {
             switch self {
@@ -65,6 +71,8 @@ struct UpdateCommit {
                 return "The app was moved or replaced while the update was waiting."
             case .cannotRelaunch(let reason):
                 return "The app couldn't arrange to reopen itself (\(reason)), so the update was not installed."
+            case .cannotKeepPrevious:
+                return "There wasn't room to keep the current version until the new one has started, so the update was not installed."
             }
         }
     }
@@ -79,10 +87,14 @@ struct UpdateCommit {
     var endCommitting: () -> Void
     var stagedCopyIsStillVetted: (StagedUpdate) -> Bool
     var targetIsTheRunningApp: (URL) -> Bool
-    var armProbation: (StagedUpdate) -> Void
+    /// False when the probation record could not be saved.
+    var armProbation: (StagedUpdate) -> Bool
     var disarmProbation: () -> Void
     var prepareRelaunch: (URL) throws -> Undo
     var swap: (_ staged: URL, _ installed: URL) throws -> Void
+    /// After the swap: the previous version, now where the staged copy was,
+    /// moves somewhere it will last. It cannot fail the install.
+    var keepPrevious: (StagedUpdate) -> Void
     var terminate: () -> Void
 
     func callAsFunction(_ update: StagedUpdate) throws {
@@ -91,7 +103,10 @@ struct UpdateCommit {
         do {
             guard stagedCopyIsStillVetted(update) else { throw Refusal.stagedCopyChanged }
             guard targetIsTheRunningApp(update.installed) else { throw Refusal.appMoved }
-            armProbation(update)
+            guard armProbation(update) else {
+                disarmProbation()
+                throw Refusal.cannotKeepPrevious
+            }
             do {
                 let relaunch: Undo
                 do {
@@ -114,6 +129,7 @@ struct UpdateCommit {
             endCommitting()
             throw error
         }
+        keepPrevious(update)
         terminate()
     }
 }
@@ -148,6 +164,7 @@ extension UpdateCommit {
                 return Undo { helper.terminate() }
             },
             swap: { try SelfUpdater.swap(staged: $0, into: $1) },
+            keepPrevious: { UpdateRollback.keepPrevious(at: $0.staged, store: store) },
             terminate: {
                 // isBlocked was the first step, and nothing has run since, so a
                 // quit has nothing to ask. AppDelegate's intercept reads the

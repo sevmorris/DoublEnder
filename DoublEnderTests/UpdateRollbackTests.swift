@@ -249,6 +249,94 @@ final class UpdateRollbackTests: XCTestCase {
         XCTAssertEqual(store.load().probation?.previous, newer.path)
     }
 
+    /// With no room for the new record, the older one stays whole, copy and
+    /// all, and the caller is told so it replaces nothing.
+    func testArmingThatCannotSaveChangesNothing() throws {
+        arm()
+        let stateFolder = store.url.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: stateFolder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stateFolder.path) }
+        var discarded: [URL] = []
+        let saved = UpdateRollback.arm(from: "2.9.0lr", to: "2.9.1lr", previous: folder.appendingPathComponent("holder2/App.app"),
+                                       installed: installed, store: store, discard: { discarded.append($0) })
+        XCTAssertFalse(saved)
+        XCTAssertEqual(discarded, [])
+        XCTAssertEqual(store.load().probation?.previous, previous.path)
+    }
+
+    // MARK: - Keeping the previous version
+
+    private func makePrevious() throws {
+        try FileManager.default.createDirectory(at: previous, withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: previous.appendingPathComponent("which"))
+    }
+
+    private var keptCopies: [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: store.keptCopiesURL, includingPropertiesForKeys: nil)) ?? []
+    }
+
+    func testThePreviousVersionMovesBesideTheStateAndTheRecordFollows() throws {
+        try makePrevious()
+        arm()
+        UpdateRollback.keepPrevious(at: previous, store: store)
+        let kept = URL(fileURLWithPath: try XCTUnwrap(store.load().probation?.previous))
+        XCTAssertEqual(kept.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL.path,
+                       store.keptCopiesURL.standardizedFileURL.path)
+        XCTAssertEqual(kept.lastPathComponent, "App.app")
+        XCTAssertEqual(try String(contentsOf: kept.appendingPathComponent("which"), encoding: .utf8), "old")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: previous.deletingLastPathComponent().path))
+        XCTAssertTrue(store.keptCopiesURL.path.hasSuffix(".noindex"), "Spotlight would list the old copy")
+    }
+
+    /// An app on another volume cannot be renamed into Application Support, and
+    /// is never copied there: it stays where the swap left it.
+    func testAPreviousVersionThatCannotBeRenamedStaysPut() throws {
+        try makePrevious()
+        arm()
+        UpdateRollback.keepPrevious(at: previous, store: store, move: { _, _ in throw CocoaError(.fileWriteUnknown) })
+        XCTAssertEqual(store.load().probation?.previous, previous.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: previous.path))
+        XCTAssertEqual(keptCopies, [])
+    }
+
+    /// Moved, but the record that says so cannot be saved: it goes back where
+    /// the record still says it is.
+    func testAPreviousVersionWhoseRecordCannotFollowGoesBack() throws {
+        try makePrevious()
+        arm()
+        let stateFolder = store.url.deletingLastPathComponent()
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stateFolder.path) }
+        var moves = 0
+        UpdateRollback.keepPrevious(at: previous, store: store, move: { from, to in
+            try UpdateRollback.rename(from, to: to)
+            moves += 1
+            // The disk fills just after the rename.
+            if moves == 1 {
+                try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: stateFolder.path)
+            }
+        })
+        XCTAssertEqual(moves, 2)
+        XCTAssertEqual(store.load().probation?.previous, previous.path)
+        XCTAssertEqual(try String(contentsOf: previous.appendingPathComponent("which"), encoding: .utf8), "old")
+        XCTAssertEqual(keptCopies, [])
+    }
+
+    /// Only the copy probation names is moved: a call for any other leaves it.
+    func testOnlyTheCopyOnProbationIsMoved() throws {
+        try makePrevious()
+        UpdateRollback.keepPrevious(at: previous, store: store)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: previous.path))
+        XCTAssertEqual(keptCopies, [])
+    }
+
+    func testTheRenameNeverReplacesAnything() throws {
+        let a = folder.appendingPathComponent("a"), b = folder.appendingPathComponent("b")
+        try Data("a".utf8).write(to: a)
+        try Data("b".utf8).write(to: b)
+        XCTAssertThrowsError(try UpdateRollback.rename(a, to: b))
+        XCTAssertEqual(try String(contentsOf: b, encoding: .utf8), "b")
+    }
+
     // MARK: - What not to install unasked
 
     func testTwoFailuresRestTheAutomaticInstallForADay() {
