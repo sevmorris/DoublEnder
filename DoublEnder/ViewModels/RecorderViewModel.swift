@@ -1147,8 +1147,19 @@ class RecorderViewModel: ObservableObject {
                case .failure(let error) = result,
                let recError = error as? RecordingError,
                case .noActiveRecording = recError {
-                completion?()
+                // Its completion waits for that call's: a quit's Stop & Save
+                // that came during a recovery used to quit halfway through it.
+                if self.isFinalizingRecording, let completion {
+                    self.stopFollowers.append(completion)
+                } else {
+                    completion?()
+                }
                 return
+            }
+            // Whatever ends this stop, the calls that came during it end with it.
+            let finish: () -> Void = { [weak self] in
+                completion?()
+                self?.releaseStopFollowers()
             }
             self.isFinalizingRecording = false
             // The disk watch or the producer stopped this take: say so with
@@ -1193,7 +1204,7 @@ class RecorderViewModel: ObservableObject {
                     self.state = .ready
                     RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: takeNote)
                     self.pendingDisconnectReason = nil
-                    completion?()
+                    finish()
                     return
                 }
                 // The file is finalized on disk. Hand off to the uploader and
@@ -1208,7 +1219,7 @@ class RecorderViewModel: ObservableObject {
                 self.state = .ready
                 RecordingSavedConfirmation.present(fileName: url.lastPathComponent, note: takeNote)
                 self.pendingDisconnectReason = nil
-                completion?()
+                finish()
                 return
                 #endif
             case .success(.none):
@@ -1224,39 +1235,65 @@ class RecorderViewModel: ObservableObject {
                 }
             case .failure(let error):
                 self.recordingTime = 0
-                if let recovered = self.recoverSidecarIfNeeded(from: self.recordedFileURL, note: takeNote) {
-                    #if GCS_ENABLED
-                    if self.cloudUploadEnabled {
-                        // The recovered WAV is the take now: upload it like one
-                        // that finalized. The upload's confirmation carries the
-                        // note, and performUpload records the file before it
-                        // starts, so a quit mid-upload is offered next launch.
-                        self.startUpload(of: recovered, automatic: false, note: takeNote)
-                    } else {
-                        self.recordedFileURL = nil
-                        self.state = .ready
-                    }
-                    #else
-                    _ = recovered
-                    self.recordedFileURL = nil
-                    self.state = .ready
-                    #endif
-                } else {
+                let mainOutput = self.recordedFileURL
+                let disconnectReason = self.pendingDisconnectReason
+                let failed = {
                     if sidecarHasAudio {
                         // The re-wrap failed; the next launch tries again.
                         self.lastTake?.end = .recoverAtLaunch
                     }
                     let message = Self.stopFailureMessage(
                         for: error,
-                        mainOutput: self.recordedFileURL,
-                        disconnectReason: self.pendingDisconnectReason
+                        mainOutput: mainOutput,
+                        disconnectReason: disconnectReason
                     )
                     self.state = .error(diskReason.map { "\($0) \(message)" } ?? message)
                 }
+                let recovering = self.recoverSidecar(from: mainOutput, note: takeNote) { recovered in
+                    if let recovered {
+                        #if GCS_ENABLED
+                        if self.cloudUploadEnabled {
+                            // The recovered WAV is the take now: upload it like one
+                            // that finalized. The upload's confirmation carries the
+                            // note, and performUpload records the file before it
+                            // starts, so a quit mid-upload is offered next launch.
+                            self.startUpload(of: recovered, automatic: false, note: takeNote)
+                        } else {
+                            self.recordedFileURL = nil
+                            self.state = .ready
+                        }
+                        #else
+                        self.recordedFileURL = nil
+                        self.state = .ready
+                        #endif
+                    } else {
+                        failed()
+                    }
+                    // The take ends here, not before: the file was being written.
+                    self.isFinalizingRecording = false
+                    self.pendingDisconnectReason = nil
+                    finish()
+                }
+                if recovering {
+                    // Still the take's until its WAV is whole: no new take, no
+                    // update, and a quit asks and waits for it.
+                    self.isFinalizingRecording = true
+                    return
+                }
+                failed()
             }
             self.pendingDisconnectReason = nil
-            completion?()
+            finish()
         }
+    }
+
+    /// Stops called while another was under way, waiting for it (`stopRecording`).
+    private var stopFollowers: [() -> Void] = []
+
+    private func releaseStopFollowers() {
+        let followers = stopFollowers
+        stopFollowers = []
+        followers.forEach { $0() }
     }
 
     /// What the Cloud heartbeat sends with each beat, to troubleshoot a
@@ -1340,35 +1377,67 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
-    /// finalize — returns the recovered file, or nil when nothing was
-    /// recovered. `note` goes on the saved confirmation, as for a finalized
+    /// finalize, off the main thread (`PCMSidecar.recoverFailedTake`). False
+    /// when there is nothing this copy may recover, and then `done` is never
+    /// called; otherwise `done` gets the recovered file, or nil, on the main
+    /// thread. `note` goes on the saved confirmation, as for a finalized
     /// take. With cloud upload on, the caller uploads the file and the
     /// upload's confirmation takes the note instead.
-    private func recoverSidecarIfNeeded(from mainOutput: URL?, note: String? = nil) -> URL? {
-        guard let mainOutput else { return nil }
-        let sidecarURL = PCMSidecar.url(for: mainOutput)
-        guard PCMSidecar.hasRecoverableContent(at: sidecarURL) else { return nil }
-        do {
-            let recovered = try PCMSidecar.recoverToWAV(sidecarURL: sidecarURL)
-            try? FileManager.default.removeItem(at: sidecarURL)
-            try? FileManager.default.removeItem(at: mainOutput)
-            Task { await NotificationService.shared.postRecordingSaved(fileURL: recovered) }
-            #if GCS_ENABLED
-            // Local-only mode mirrors the Local build's confirmation. With
-            // cloud on, the caller uploads the file, and the upload's own
-            // confirmation (with the note) is the one the user sees.
-            if !cloudUploadEnabled {
-                RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
-            }
-            #else
-            RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
-            #endif
-            return recovered
-        } catch {
-            logger.error("Sidecar recovery failed: \(error.localizedDescription, privacy: .public)")
-            state = .error("The recording couldn't be recovered: \(error.localizedDescription). The recovery file is still on disk — check disk space and permissions, then relaunch to retry.")
-            return nil
+    ///
+    /// The sidecar stays locked throughout: the engine hands it over still
+    /// open (`takeSidecarOfFailedTake`), and is closed once the conversion is
+    /// over. A sidecar the engine had already closed is locked here, and one
+    /// another copy of the app holds is left to it. `AppActivity`'s
+    /// `.recovering` is held meanwhile, as for a recovery at launch.
+    private func recoverSidecar(from mainOutput: URL?, note: String? = nil,
+                                done: @escaping (URL?) -> Void) -> Bool {
+        let held = audioEngine.takeSidecarOfFailedTake()
+        guard let mainOutput else {
+            held?.close()
+            return false
         }
+        let sidecarURL = PCMSidecar.url(for: mainOutput)
+        guard PCMSidecar.hasRecoverableContent(at: sidecarURL) else {
+            held?.close()
+            return false
+        }
+        let release: () -> Void
+        if let held {
+            release = { held.close() }
+        } else {
+            switch InUseLock.take(sidecarURL) {
+            case .taken(let lock):
+                release = { lock.release() }
+            case .heldElsewhere:
+                logger.info("Another copy of the app holds this take's sidecar; leaving it to that one")
+                return false
+            case .unavailable:
+                return false
+            }
+        }
+        AppActivity.shared.begin(.recovering)
+        PCMSidecar.recoverFailedTake(sidecarURL: sidecarURL, mainOutput: mainOutput, release: release) { result in
+            AppActivity.shared.end(.recovering)
+            switch result {
+            case .success(let recovered):
+                Task { await NotificationService.shared.postRecordingSaved(fileURL: recovered) }
+                #if GCS_ENABLED
+                // Local-only mode mirrors the Local build's confirmation. With
+                // cloud on, the caller uploads the file, and the upload's own
+                // confirmation (with the note) is the one the user sees.
+                if !self.cloudUploadEnabled {
+                    RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
+                }
+                #else
+                RecordingSavedConfirmation.present(fileName: recovered.lastPathComponent, note: note)
+                #endif
+                done(recovered)
+            case .failure(let error):
+                logger.error("Sidecar recovery failed: \(error.localizedDescription, privacy: .public)")
+                done(nil)
+            }
+        }
+        return true
     }
 
     /// Returns the sentence that tells the user where this left them.

@@ -367,6 +367,118 @@ final class PCMSidecarTests: XCTestCase {
         XCTAssertTrue(recovered.lastPathComponent.hasSuffix(".wav"))
     }
 
+    // MARK: - Recovering a take that failed to finalize
+
+    /// A sidecar holding `seconds` of audio, still open (and locked); `flush`
+    /// or `close` puts it all on disk.
+    private func openSidecar(seconds: Int, name: String = "DoublEnder_take.m4a") throws -> PCMSidecar {
+        let mainOutput = tempDir.appendingPathComponent(name)
+        try Data("partial".utf8).write(to: mainOutput)
+        let sidecar = try XCTUnwrap(PCMSidecar(mainOutput: mainOutput, sampleRate: 48_000, channels: 1))
+        let second = [Float](repeating: 0.25, count: 48_000)
+        for _ in 0..<seconds {
+            second.withUnsafeBufferPointer { sidecar.append($0.baseAddress!, frameCount: $0.count) }
+        }
+        return sidecar
+    }
+
+    private var recoveredFiles: [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: tempDir.path)) ?? []).filter { $0.contains("(recovered") }
+    }
+
+    /// A full disk is the likeliest reason a take fails to finalize, and the
+    /// conversion then runs out of room too. It used to leave the WAV cut short
+    /// under a header that claimed the whole take; now there is none, and the
+    /// sidecar stays for the next try.
+    func testAConversionThatRunsOutOfRoomLeavesNoWAV() throws {
+        let sidecar = try openSidecar(seconds: 8)   // about 1.5 MB
+        sidecar.close()
+
+        // The same failure as a full disk, for this process only: no file may
+        // grow past 256 KB. SIGXFSZ would end the test host, so it is ignored.
+        var saved = rlimit()
+        XCTAssertEqual(getrlimit(RLIMIT_FSIZE, &saved), 0)
+        let previousHandler = signal(SIGXFSZ, SIG_IGN)
+        var small = saved
+        small.rlim_cur = 256 * 1024
+        XCTAssertEqual(setrlimit(RLIMIT_FSIZE, &small), 0)
+        let outcome = Result { try PCMSidecar.recoverToWAV(sidecarURL: sidecar.url) }
+        setrlimit(RLIMIT_FSIZE, &saved)
+        signal(SIGXFSZ, previousHandler)
+
+        XCTAssertThrowsError(try outcome.get())
+        XCTAssertEqual(recoveredFiles, [], "a WAV cut short was left on the Desktop")
+        XCTAssertTrue(PCMSidecar.hasRecoverableContent(at: sidecar.url))
+    }
+
+    /// The conversion runs off the main thread, about 690 MB an hour of take,
+    /// with the sidecar still locked, so another copy of the app looking for
+    /// crashed takes passes over it; the lock goes once it is over.
+    func testAFailedTakeIsRecoveredOffTheMainThreadWithItsSidecarLocked() throws {
+        let sidecar = try openSidecar(seconds: 2)
+        sidecar.flush()
+        let mainOutput = PCMSidecar.mainOutputURL(for: sidecar.url)
+        var steps: [String] = []
+        let lock = NSLock()
+        func note(_ step: String) { lock.lock(); steps.append(step); lock.unlock() }
+
+        let finished = expectation(description: "recovered")
+        PCMSidecar.recoverFailedTake(
+            sidecarURL: sidecar.url, mainOutput: mainOutput,
+            release: { note("release"); sidecar.close() },
+            convert: { url in
+                note(Thread.isMainThread ? "convert on main" : "convert off main")
+                if PCMSidecar.sidecarsLeftByEndedTakes(in: [url]).isEmpty { note("locked") }
+                return try PCMSidecar.recoverToWAV(sidecarURL: url)
+            },
+            completion: { result in
+                note("done")
+                XCTAssertTrue(Thread.isMainThread)
+                XCTAssertNotNil(try? result.get())
+                finished.fulfill()
+            })
+        wait(for: [finished], timeout: 10)
+
+        XCTAssertEqual(steps, ["convert off main", "locked", "release", "done"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mainOutput.path))
+        XCTAssertEqual(recoveredFiles.count, 1)
+    }
+
+    /// A conversion that fails keeps the sidecar and the partial main file for
+    /// the next launch, and still lets go of the lock.
+    func testAFailedRecoveryKeepsTheFilesAndLetsGo() throws {
+        let sidecar = try openSidecar(seconds: 1)
+        sidecar.flush()
+        let mainOutput = PCMSidecar.mainOutputURL(for: sidecar.url)
+        var released = false
+        let finished = expectation(description: "failed")
+        PCMSidecar.recoverFailedTake(
+            sidecarURL: sidecar.url, mainOutput: mainOutput,
+            release: { released = true; sidecar.close() },
+            convert: { _ in throw CocoaError(.fileWriteOutOfSpace) },
+            completion: { result in
+                XCTAssertNil(try? result.get())
+                finished.fulfill()
+            })
+        wait(for: [finished], timeout: 10)
+        XCTAssertTrue(released)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mainOutput.path))
+        XCTAssertEqual(PCMSidecar.sidecarsLeftByEndedTakes(in: [sidecar.url]), [sidecar.url])
+    }
+
+    /// `flush` writes everything out and keeps the lock; `close` lets it go.
+    func testFlushKeepsTheLock() throws {
+        let sidecar = try openSidecar(seconds: 1)
+        sidecar.flush()
+        XCTAssertTrue(PCMSidecar.isInUse(at: sidecar.url))
+        let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: sidecar.url.path)[.size] as? Int)
+        XCTAssertGreaterThan(size, 48_000 * 4)
+        sidecar.close()
+        XCTAssertFalse(PCMSidecar.isInUse(at: sidecar.url))
+    }
+
     func testRecoverDEP1LegacySidecar() throws {
         let sidecarURL = tempDir.appendingPathComponent("legacy.m4a.pcmrec")
         var header = Data("DEP1".utf8)
