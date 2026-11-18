@@ -121,6 +121,28 @@ final class UpdateSweepTests: XCTestCase {
         XCTAssertEqual(store.journal, [])
     }
 
+    /// A copy kept for going back that no probation names (an install that
+    /// crashed between moving it and saving the record) goes, once it is an
+    /// hour old; the one probation names, and one moved a moment ago by
+    /// another copy that has yet to save its record, stay.
+    @MainActor
+    func testKeptCopiesThatNoProbationNamesGo() throws {
+        let now = Date()
+        let orphan = try makeFolder("ORPHAN", in: store.keptCopiesURL, created: now.addingTimeInterval(-7200))
+        let recent = try makeFolder("RECENT", in: store.keptCopiesURL, created: now.addingTimeInterval(-60))
+        let onProbation = try makeFolder("PROBATION", in: store.keptCopiesURL, created: now.addingTimeInterval(-7200))
+        UpdateRollback.arm(from: "1", to: "2", previous: onProbation.appendingPathComponent("App.app"),
+                           installed: URL(fileURLWithPath: "/Applications/App.app"), store: store, discard: { _ in })
+
+        let leftovers = UpdateSweep.takeLeftovers(store: store, now: now)
+        XCTAssertEqual(leftovers.map(\.path), [orphan.standardizedFileURL.path])
+        UpdateSweep.sweep(holders: leftovers, temporaryDirectory: temporary, processStart: now, now: now,
+                          tools: UpdateSweep.Tools(isMountPoint: { _ in false }, detach: { _ in }))
+        XCTAssertFalse(exists(orphan))
+        XCTAssertTrue(exists(recent))
+        XCTAssertTrue(exists(onProbation))
+    }
+
     func testTheSystemMountCheckSeesNoMountInAPlainFolder() throws {
         XCTAssertFalse(UpdateSweep.Tools.system.isMountPoint(temporary))
         XCTAssertFalse(UpdateSweep.Tools.system.isMountPoint(folder.appendingPathComponent("missing")))

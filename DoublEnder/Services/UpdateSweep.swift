@@ -45,8 +45,15 @@ enum UpdateSweep {
     /// journal. A folder another copy still holds locked stays on it, for that
     /// copy to take off itself. Called on the main thread before this run
     /// stages anything, so none of its own can be among them.
+    ///
+    /// With them, any copy kept for going back (`UpdateStateStore.keptCopiesURL`)
+    /// that no probation names: an install that crashed between moving the
+    /// previous version there and saving the record that says so
+    /// (`UpdateRollback.keepPrevious`). Only one older than
+    /// `sharedScratchMinimumAge`, so another copy of the app that moved one a
+    /// moment ago, and has yet to save its record, keeps it.
     @MainActor
-    static func takeLeftovers(store: UpdateStateStore,
+    static func takeLeftovers(store: UpdateStateStore, now: Date = Date(),
                               isInUse: (URL) -> Bool = InUseLock.isHeld) -> [URL] {
         let keep = store.load().probation.map {
             URL(fileURLWithPath: $0.previous).deletingLastPathComponent().standardizedFileURL.path
@@ -63,6 +70,14 @@ enum UpdateSweep {
             }
         }
         store.journal = stillInUse
+
+        let kept = (try? FileManager.default.contentsOfDirectory(
+            at: store.keptCopiesURL, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        for folder in kept.map(\.standardizedFileURL) where folder.path != keep {
+            guard let created = (try? folder.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
+                  now.timeIntervalSince(created) >= sharedScratchMinimumAge else { continue }
+            leftovers.append(folder)
+        }
         return leftovers
     }
 
