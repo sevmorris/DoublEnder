@@ -1892,16 +1892,20 @@ class RecorderViewModel: ObservableObject {
                     self.quitWhenUploaded = false
                     // Persistent, app-controlled confirmation — blocks until
                     // the user clicks OK (notifications can't guarantee this).
-                    UploadConfirmation.present(success: true,
-                                               fileName: fileURL.lastPathComponent,
-                                               note: Self.uploadedNote(note, quitsAfter: quitting))
-                    // The guest asked to quit, and the app stayed for this.
-                    if quitting {
-                        NSApp.terminate(nil)
-                        return
+                    // After any dialog already up, such as "Microphone
+                    // disconnected" from the stop that started this upload.
+                    ModalGate.afterDialogs {
+                        UploadConfirmation.present(success: true,
+                                                   fileName: fileURL.lastPathComponent,
+                                                   note: Self.uploadedNote(note, quitsAfter: quitting))
+                        // The guest asked to quit, and the app stayed for this.
+                        if quitting {
+                            NSApp.terminate(nil)
+                            return
+                        }
+                        // The connection works: a take waiting behind this one goes next.
+                        self.automaticUploadMayBePossible()
                     }
-                    // The connection works: a take waiting behind this one goes next.
-                    self.automaticUploadMayBePossible()
                 }
                 return
             } catch {
@@ -1954,9 +1958,11 @@ class RecorderViewModel: ObservableObject {
                         self.isAutomaticUpload = false
                         self.refreshWaitingUploads()
                         self.state = .uploadFailed(fileURL)
-                        UploadConfirmation.present(success: false,
-                                                   fileName: fileURL.lastPathComponent,
-                                                   note: note)
+                        ModalGate.afterDialogs {
+                            UploadConfirmation.present(success: false,
+                                                       fileName: fileURL.lastPathComponent,
+                                                       note: note)
+                        }
                     }
                     return
                 }

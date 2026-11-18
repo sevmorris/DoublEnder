@@ -69,6 +69,37 @@ enum ModalGate {
         return body()
     }
 
+    /// Runs `block`, which opens a dialog, once no dialog of the app's is up:
+    /// now, if none is, or on a pass of the run loop after the last one closes
+    /// (and after any that opened meanwhile). For a result that has to be seen
+    /// but can wait its turn, so it does not open over a dialog already up and
+    /// get answered before the one under it.
+    ///
+    /// An upload that ends while "Microphone disconnected" is up delivers its
+    /// result from the run loop (`MainRunLoop.deliver`), which runs under a
+    /// modal, so until 2026-11-18 "Uploaded" opened on top of the alert.
+    @MainActor
+    static func afterDialogs(_ block: @escaping @MainActor () -> Void) {
+        guard isPresenting else {
+            block()
+            return
+        }
+        let token = ObserverToken()
+        token.observer = NotificationCenter.default.addObserver(forName: didChange, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated {
+                // Posted once the dialog has come off `open`.
+                guard !isPresenting, let observer = token.observer else { return }
+                NotificationCenter.default.removeObserver(observer)
+                token.observer = nil
+                MainRunLoop.perform { afterDialogs(block) }
+            }
+        }
+    }
+
+    private final class ObserverToken: @unchecked Sendable {
+        var observer: NSObjectProtocol?
+    }
+
     /// For main actor code in an async context, which is to say inside a main
     /// actor task. Run from there, a modal stops the main queue until it closes
     /// (see `MainRunLoop`), and with it an upload's progress, the engine's
