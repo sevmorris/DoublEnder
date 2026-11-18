@@ -169,6 +169,92 @@ final class PendingUploadStore: @unchecked Sendable {
     }
 }
 
+/// What one upload does between its attempts (`RecorderViewModel.performUpload`).
+///
+/// A failed attempt is retried after 2, 4 and 8 s, and the fourth failure ends
+/// the upload ("Upload failed"). A failure that says the Mac has no connection,
+/// while `CloudConnectivity` agrees that it has none, spends no retry: the
+/// upload waits for the connection to come back, up to `networkWaitLimit` in
+/// all, and then tries again. A closed lid or a lost Wi-Fi drops the
+/// connection mid-upload, and after a wake Wi-Fi can take longer to rejoin than
+/// 2 + 4 + 8 s: until 2026-11-18 every retry could fail before it had, and the
+/// guest was told the upload had failed, though the automatic upload took it up
+/// later. Past the limit the retries are spent as before, so an upload never
+/// waits more than `networkWaitLimit` longer than it used to.
+struct UploadRetry {
+    /// The waits before retries 1, 2 and 3.
+    static let backoffSeconds: [UInt64] = [2, 4, 8]
+    /// The longest one upload waits, in all, for the connection to come back.
+    static let networkWaitLimit: UInt64 = 120
+    /// How often a wait for the connection looks again.
+    static let networkPollSeconds: UInt64 = 1
+
+    enum Wait: Equatable {
+        /// No more attempts: the upload has failed.
+        case giveUp
+        /// Retry after this many seconds; the retry is spent.
+        case backoff(UInt64)
+        /// Wait for the connection (`waitForNetwork`), then retry; nothing is spent.
+        case network
+    }
+
+    private(set) var retriesSpent = 0
+    private(set) var networkWaited: UInt64 = 0
+
+    /// What follows a failed attempt. `networkReady` is the connection as
+    /// `CloudConnectivity` sees it now.
+    mutating func next(after error: Error, nonRetryable: Bool, networkReady: Bool) -> Wait {
+        if nonRetryable { return .giveUp }
+        if !networkReady, Self.isConnectivity(error), networkWaited < Self.networkWaitLimit {
+            return .network
+        }
+        guard retriesSpent < Self.backoffSeconds.count else { return .giveUp }
+        let delay = Self.backoffSeconds[retriesSpent]
+        retriesSpent += 1
+        return .backoff(delay)
+    }
+
+    /// Waits until `isReady`, or until this upload has waited
+    /// `networkWaitLimit` in all. `sleep` throws when the upload is called off.
+    mutating func waitForNetwork(isReady: () -> Bool, sleep: (UInt64) async throws -> Void) async throws {
+        while !isReady(), networkWaited < Self.networkWaitLimit {
+            try await sleep(Self.networkPollSeconds)
+            networkWaited += Self.networkPollSeconds
+        }
+    }
+
+    /// An error that says the Mac has no working connection now, as opposed
+    /// to one from Cloud Storage.
+    static func isConnectivity(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        switch error.code {
+        case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost,
+             .cannotConnectToHost, .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed,
+             .callIsActive:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// The connection as `CloudConnectivity` last said, for code off the main
+/// queue: an upload must not wait for that queue, which a modal dialog holds.
+final class NetworkReadiness: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ready = false
+
+    var isReady: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return ready
+    }
+
+    func set(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        ready = value
+    }
+}
+
 /// Cloud: when a take that is waiting uploads by itself.
 ///
 /// After a failed upload the guest can choose Later and go on recording; the
