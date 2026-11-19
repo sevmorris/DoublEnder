@@ -503,7 +503,8 @@ class AudioEngine: NSObject, ObservableObject {
                 input = try AVCaptureDeviceInput(device: target)
             } catch {
                 logger.error("AVCaptureDeviceInput init failed: \(error.localizedDescription, privacy: .public)")
-                DiagnosticLogger.shared.log("HANDSHAKE FAILED // \(target.localizedName): \(error.localizedDescription)", level: .warn)
+                DiagnosticLogger.shared.log("HANDSHAKE FAILED // \(target.localizedName): \(error.localizedDescription)", level: .warn, pin: .input)
+                DiagnosticLogger.shared.unpin(.inputWarning)
                 let message = "Could not bind to the selected input: \(error.localizedDescription)"
                 DispatchQueue.main.async {
                     self.lastError = message
@@ -577,9 +578,11 @@ class AudioEngine: NSObject, ObservableObject {
                 + "\(nativeASBD.map { "\($0.mChannelsPerFrame) ch" } ?? "? ch") · "
                 + "buffer \(bufferFrames.map { "\($0) fr" } ?? "?")"
                 + (session.isRunning ? " · SESSION RUNNING" : " · SESSION NOT RUNNING"),
-                level: session.isRunning ? .event : .warn)
+                level: session.isRunning ? .event : .warn, pin: .input)
             if isLowQuality {
-                DiagnosticLogger.shared.log("LOW-QUALITY INPUT (≤16 kHz, BT SCO?)", level: .warn)
+                DiagnosticLogger.shared.log("LOW-QUALITY INPUT (≤16 kHz, BT SCO?)", level: .warn, pin: .inputWarning)
+            } else {
+                DiagnosticLogger.shared.unpin(.inputWarning)
             }
 
             // Verify the session is on the intended device by comparing
@@ -1687,7 +1690,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
                 DiagnosticLogger.shared.log(
                     "WRITER OPEN // first buffer \(Int(asbd.mSampleRate)) Hz · \(asbd.mChannelsPerFrame) ch · "
                     + "\(SessionDiagnostics.sampleFormat(asbd)) · \(CMSampleBufferGetNumSamples(sampleBuffer)) fr/buf",
-                    level: .event)
+                    level: .event, pin: .writer)
             }
         }
 

@@ -107,6 +107,7 @@ struct ServiceMonitorView: View {
             CRT.charcoal
             VStack(alignment: .leading, spacing: 6) {
                 header
+                pinnedLines
                 scrollback
                 prompt
             }
@@ -139,6 +140,34 @@ struct ServiceMonitorView: View {
         }
         .font(CRT.font.weight(.bold))
         .shadow(color: CRT.amber, radius: 3)
+    }
+
+    /// The latest handshake, writer and take lines (`DiagnosticLogger.Pin`),
+    /// which the ring would lose on a long take. Above the scrollback, under a
+    /// rule.
+    @ViewBuilder
+    private var pinnedLines: some View {
+        let pins = log.pinnedLines
+        if !pins.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(pins) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("[\(line.stamp)]").foregroundColor(CRT.dim)
+                        Text(line.text)
+                            .foregroundColor(color(for: line.level))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Rectangle()
+                    .fill(CRT.dim.opacity(0.6))
+                    .frame(height: 1)
+                    .padding(.top, 4)
+            }
+            .font(CRT.font)
+            .shadow(color: CRT.amber.opacity(0.85), radius: 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var scrollback: some View {
@@ -316,8 +345,8 @@ enum ServiceConsole {
                 "help      list service commands",
                 "status    audio device, sample rate, engine state, active file",
                 "paths     working / output directories   (paths open → reveal in Finder)",
-                "dump      copy the log buffer to the clipboard",
-                "clear     clear the console buffer",
+                "dump      copy the pinned lines and the log buffer to the clipboard",
+                "clear     clear the console buffer (the pinned lines stay)",
                 "degauss   demagnetize the tube",
             ].forEach { log.log($0) }
         case "status":

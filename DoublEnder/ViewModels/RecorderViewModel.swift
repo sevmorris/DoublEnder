@@ -1044,7 +1044,7 @@ class RecorderViewModel: ObservableObject {
         }
         do {
             let fileURL = makeRecordingURL(nameOverride: nameOverride)
-            DiagnosticLogger.shared.log("STATE IDLE -> ARMED // \(fileURL.lastPathComponent) [\(outputFormat.rawValue.uppercased())]", level: .event)
+            DiagnosticLogger.shared.log("STATE IDLE -> ARMED // \(fileURL.lastPathComponent) [\(outputFormat.rawValue.uppercased())]", level: .event, pin: .take)
 
             // Crash recovery is keyed off the PCM sidecar file, which the
             // audio engine creates the moment the writer starts — no
