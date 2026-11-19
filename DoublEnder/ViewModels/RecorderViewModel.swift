@@ -823,8 +823,8 @@ class RecorderViewModel: ObservableObject {
     // MARK: - The input the guest chose
 
     /// The input the guest picked: in the picker, or with Switch on an offer.
-    /// Not one the app fell back to, nor the built-in mic every launch starts
-    /// on. Nil until they pick.
+    /// Not one the app fell back to, nor the one a launch starts on
+    /// (`startingDevice`). Nil until they pick.
     private(set) var chosenInputUID: String?
     /// Said on the faceplate for a few seconds when the app changed the input
     /// by itself, since nothing asked.
@@ -875,14 +875,20 @@ class RecorderViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.inputNoticeSeconds, execute: clear)
     }
 
-    /// First hardware mic (built-in, USB, Bluetooth) in discovery order, with
-    /// a dock's audio port only if there is nothing else (`InputRanking`), or
-    /// nil if none are present. Used wherever the app needs to pick a sensible
-    /// default without user input. Virtual / aggregate devices are never
-    /// considered — the engine stays stopped instead.
-    private func preferredDefaultDevice() -> AVCaptureDevice? {
+    /// The input to start on, or to fall back to when one is lost
+    /// (`InputRanking.startingInput`): the Mac's system default input when it
+    /// is a real mic (a Bluetooth headset only when the built-in mic can't
+    /// hear), then the built-in mic unless the lid is closed, then the first
+    /// hardware input, a dock's audio port last. Nil when there is no
+    /// hardware input. Virtual and aggregate devices are never considered:
+    /// the engine stays stopped instead.
+    private func startingDevice() -> AVCaptureDevice? {
         let hardware = audioEngine.hardwareInputDevices()
-        let choice = InputRanking.defaultInput(among: hardware.map(audioEngine.inputCandidate))
+        let choice = InputRanking.startingInput(
+            systemDefault: audioEngine.systemDefaultInputUID(),
+            builtIn: audioEngine.builtInInputDevice()?.uniqueID,
+            hardware: hardware.map(audioEngine.inputCandidate),
+            lidClosed: AudioEngine.isLidClosed())
         return hardware.first { $0.uniqueID == choice?.uniqueID }
     }
 
@@ -930,25 +936,22 @@ class RecorderViewModel: ObservableObject {
                     self.audioEngine.refreshDevices()
                     self.recordCurrentUSBDevicesFirstSeen()
 
-                    // Deterministic launch: always seed the engine with the
-                    // Mac's built-in hardware mic, regardless of any saved
-                    // preference or currently-attached USB device. This
-                    // gives every launch the same predictable starting
-                    // state.
+                    // The launch starts on the input the Mac is using (its
+                    // system default), when that is a real mic, and on the
+                    // built-in mic otherwise, unless the lid is closed
+                    // (`startingDevice`). A Bluetooth headset gives way to
+                    // the built-in mic while that can hear, since as a mic
+                    // it records at call quality. Never on a saved preference: a
+                    // guest's input is whatever they have on today.
                     //
-                    // The post-init USB prompt below offers a one-tap
-                    // switch when a USB input is present, so podcast
-                    // guests still default to the mic they expect — they
-                    // just confirm the switch explicitly rather than have
-                    // it happen silently from saved state.
-                    if let builtIn = self.audioEngine.builtInInputDevice() {
-                        self.selectedInputDeviceID = builtIn.uniqueID
-                    } else if let fallback = self.preferredDefaultDevice() {
-                        // No built-in mic on this Mac (Mac mini, Mac
-                        // Studio, etc.). Fall back to the first hardware
-                        // input, a dock's audio port last, so we still have
-                        // an engine running when the USB prompt fires below.
-                        self.selectedInputDeviceID = fallback.uniqueID
+                    // The USB offer below still offers a one-tap switch to
+                    // a USB input that isn't the one started on, and Keep
+                    // Current keeps an input the Mac is actually using.
+                    // Until 2026-11-19 every launch started on the built-in
+                    // mic, which a guest on a Bluetooth headset with the
+                    // lid closed kept, and recorded silence.
+                    if let device = self.startingDevice() {
+                        self.selectedInputDeviceID = device.uniqueID
                     } else {
                         // No input devices at all — engine stays stopped;
                         // user will see the normal "no device" state.
@@ -1531,12 +1534,14 @@ class RecorderViewModel: ObservableObject {
     /// Returns the sentence that tells the user where this left them.
     private func switchToFallbackInputAfterLoss() -> String {
         audioEngine.refreshDevices()
-        if let builtIn = audioEngine.builtInInputDevice() {
-            selectedInputDeviceID = builtIn.uniqueID
-            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: builtIn), isBuiltIn: true)
-        } else if let fallback = preferredDefaultDevice() {
+        // The same choice as a launch: the lost input is gone from the list,
+        // so this is the system default when it is a real mic, then the
+        // built-in mic unless the lid is closed. Until 2026-11-19 it was the
+        // built-in mic whenever there was one, lid closed or not.
+        if let fallback = startingDevice() {
             selectedInputDeviceID = fallback.uniqueID
-            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: fallback), isBuiltIn: false)
+            let isBuiltIn = fallback.uniqueID == audioEngine.builtInInputDevice()?.uniqueID
+            return Self.fallbackInputMessage(audioEngine.inputCandidate(for: fallback), isBuiltIn: isBuiltIn)
         } else {
             audioEngine.start()
             return Self.fallbackInputMessage(nil, isBuiltIn: false)

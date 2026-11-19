@@ -8,6 +8,10 @@ struct InputCandidate: Equatable {
     let name: String
     let manufacturer: String
     let isUSB: Bool
+    /// A Bluetooth headset or earbuds. Used as a mic, it records in the call
+    /// profile, at 16 kHz or less, and what the guest hears in it drops to
+    /// call quality too.
+    var isBluetooth = false
 }
 
 /// Which input the app starts on or suggests when nobody has chosen one.
@@ -48,6 +52,39 @@ enum InputRanking {
     /// a headset may be plugged into it and the engine needs an input to run.
     static func defaultInput(among hardware: [InputCandidate]) -> InputCandidate? {
         hardware.first { !isDockPort($0) } ?? hardware.first
+    }
+
+    /// The input a launch starts on, and the one a lost input falls back to:
+    /// the Mac's system default input, the one its other apps are using, when
+    /// it is among `hardware` and not a dock's audio port; then the built-in
+    /// mic; then `defaultInput`. A closed lid passes over the built-in mic,
+    /// which hears nothing then, unless nothing else is there for the engine.
+    ///
+    /// A Bluetooth system default comes after the built-in mic while that
+    /// can hear (the lid open). Taken as a mic, a headset records at call
+    /// quality, 16 kHz or less, and drops what the guest hears in it to call
+    /// quality as well; the built-in mic records at full rate and leaves the
+    /// headset as it was. With the lid closed, or no built-in mic, the headset
+    /// is the input the guest is using, and it wins.
+    ///
+    /// Until 2026-11-19 every launch started on the built-in mic, so that it
+    /// started the same way every time, and offered only USB inputs. A guest
+    /// on a Bluetooth headset, laptop closed on external displays, answered
+    /// Keep Current to a webcam's offer and recorded silence: the input they
+    /// kept was not the one their Mac was using but a mic behind a shut lid.
+    /// The app still never sets the system default; it only reads it.
+    static func startingInput(systemDefault: String?, builtIn: String?, hardware: [InputCandidate],
+                              lidClosed: Bool) -> InputCandidate? {
+        let usable = hardware.filter { !(lidClosed && $0.uniqueID == builtIn) }
+        let builtInHears = !lidClosed && hardware.contains { $0.uniqueID == builtIn }
+        if let systemDefault, let input = usable.first(where: { $0.uniqueID == systemDefault }),
+           !isDockPort(input), !(input.isBluetooth && builtInHears) {
+            return input
+        }
+        if builtInHears, let input = hardware.first(where: { $0.uniqueID == builtIn }) {
+            return input
+        }
+        return defaultInput(among: usable) ?? defaultInput(among: hardware)
     }
 
     /// The USB input to offer first at launch: the most recently first-seen one

@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import AVFoundation
 import Combine
+import IOKit
 import OSLog
 
 private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "AudioEngine")
@@ -1016,20 +1017,22 @@ class AudioEngine: NSObject, ObservableObject {
 
     /// `device` as `InputRanking` sees it.
     func inputCandidate(for device: AVCaptureDevice) -> InputCandidate {
-        InputCandidate(
+        let transport = audioDeviceID(forUID: device.uniqueID).flatMap { transportType(for: $0) }
+        return InputCandidate(
             uniqueID: device.uniqueID,
             name: device.localizedName,
             manufacturer: device.manufacturer,
-            isUSB: isUSBDevice(device)
+            isUSB: transport == kAudioDeviceTransportTypeUSB,
+            isBluetooth: transport == kAudioDeviceTransportTypeBluetooth
+                || transport == kAudioDeviceTransportTypeBluetoothLE
         )
     }
 
     /// True if `device` is the Mac's built-in hardware input per CoreAudio
     /// transport. MacBook built-in mics return true; USB / Bluetooth /
     /// aggregate / virtual devices return false. RecorderViewModel uses
-    /// this at launch to seed the engine with the Mac's native hardware
-    /// input — a deterministic starting state independent of saved
-    /// preferences or currently-attached USB devices.
+    /// this to know the built-in mic among the inputs a launch may start on
+    /// (`InputRanking.startingInput`).
     func isBuiltInDevice(_ device: AVCaptureDevice) -> Bool {
         guard let id = audioDeviceID(forUID: device.uniqueID),
               let transport = transportType(for: id) else {
@@ -1043,6 +1046,24 @@ class AudioEngine: NSObject, ObservableObject {
     /// almost never more than one on a single machine.
     func builtInInputDevice() -> AVCaptureDevice? {
         availableInputDevices.first { isBuiltInDevice($0) }
+    }
+
+    /// The Mac's system default input, which its other apps use: read, never
+    /// set (`SystemDefaultInputTests`). Nil when there is none.
+    func systemDefaultInputUID() -> String? {
+        AVCaptureDevice.default(for: .audio)?.uniqueID
+    }
+
+    /// True when a laptop's lid is closed, running on external displays. Its
+    /// built-in mic is then cut off and records silence, though CoreAudio
+    /// still lists it. A Mac with no lid has no `AppleClamshellState`: false.
+    static func isLidClosed() -> Bool {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard root != 0 else { return false }
+        defer { IOObjectRelease(root) }
+        let value = IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString,
+                                                    kCFAllocatorDefault, 0)?.takeRetainedValue()
+        return (value as? Bool) ?? false
     }
 
     /// Hardware-only input devices in discovery order. Aggregate and virtual

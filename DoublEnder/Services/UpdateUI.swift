@@ -89,6 +89,21 @@ final class UpdatePanel: NSObject, UpdateProgressShowing {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Out of sight for a while, as `makeTransparent` but brought back by
+    /// `setHidden(false)`: while the launch asks its own questions (Host or
+    /// Guest, the move to Applications), when nothing is being checked yet and
+    /// "Checking for updates…" behind the question would only look stuck.
+    func setHidden(_ hidden: Bool) {
+        guard !retired else { return }
+        window.ignoresMouseEvents = hidden
+        window.alphaValue = hidden ? 0 : 1
+        if hidden {
+            bar.stopAnimation(nil)
+        } else if bar.isIndeterminate {
+            bar.startAnimation(nil)
+        }
+    }
+
     /// Gone from the screen but still on it as far as AppKit knows, so it does
     /// not count as the last window closed, which would quit the app.
     func makeTransparent() {

@@ -77,9 +77,18 @@ final class LaunchUpdate {
             self.finish(checkAfterLaunch: false)
         }
         window.show()
+        // A first launch asks Host or Guest before anything is checked, so the
+        // window waits out of sight until there is something to check. On
+        // screen all the same: SwiftUI has to find it there. Until 2026-11-19
+        // "Checking for updates…" animated beside the setup card, checking
+        // nothing, until the guest chose.
+        let existingMode = moving.storedMode()
+        if existingMode == nil {
+            window.setHidden(true)
+        }
         // The task holds self until it ends, and it ends in finish or a relaunch.
         Task { @MainActor in
-            if await settleWhereItRuns() { return }
+            if await settleWhereItRuns(existingMode: existingMode) { return }
             let outcome = await coordinator.runAtLaunch(window: window, checkTimeout: Self.checkTimeout,
                                                         budget: Self.installBudget)
             switch outcome {
@@ -96,8 +105,7 @@ final class LaunchUpdate {
     /// whether this copy is for a Regular Host or a One-Time Guest first. True
     /// when that settled the launch: the app is quitting for the other copy, or
     /// the recorder is opening.
-    private func settleWhereItRuns() async -> Bool {
-        let existingMode = moving.storedMode()
+    private func settleWhereItRuns(existingMode: CloudSessionMode?) async -> Bool {
         if existingMode == .guest {
             finish(checkAfterLaunch: false)
             return true
@@ -109,13 +117,14 @@ final class LaunchUpdate {
         switch decision {
         case .stay:
             if existingMode == nil {
-                let chosen = await ModalGate.runFromRunLoop { self.moving.askMode(false) } ?? .guest
+                let chosen = await asking { self.moving.askMode(false) } ?? .guest
                 moving.saveMode(chosen)
                 if chosen == .guest {
                     finish(checkAfterLaunch: false)
                     return true
                 }
             }
+            window.setHidden(false)
             return false
 
         case .openInstalled(let installed, let volume):
@@ -124,6 +133,7 @@ final class LaunchUpdate {
             }
             setHandingOver(true)
             window.showProgress("Opening \(Self.appName)…", fraction: nil)
+            window.setHidden(false)
             if moving.handOff(installed, volume) { return true }
             // The other copy could not be opened: this one carries on.
             setHandingOver(false)
@@ -133,11 +143,11 @@ final class LaunchUpdate {
         case .offer(let offer):
             let move: Bool
             if existingMode == nil {
-                let chosen = await ModalGate.runFromRunLoop { self.moving.askMode(true) } ?? .guest
+                let chosen = await asking { self.moving.askMode(true) } ?? .guest
                 moving.saveMode(chosen)
                 move = (chosen == .host)
             } else {
-                move = await ModalGate.runFromRunLoop { self.moving.ask(offer) } ?? false
+                move = await asking { self.moving.ask(offer) } ?? false
             }
             guard move else {
                 finish(checkAfterLaunch: false)
@@ -163,6 +173,17 @@ final class LaunchUpdate {
             finish(checkAfterLaunch: false)
             return true
         }
+    }
+
+    /// One of the launch's own questions, with the window out of sight while
+    /// it is up and back afterwards. An answer that opens the recorder retires
+    /// the window (`finish`) in the same pass of the run loop, before it is
+    /// drawn again.
+    private func asking<T>(_ question: @escaping @MainActor () -> T) async -> T? {
+        window.setHidden(true)
+        let answer = await ModalGate.runFromRunLoop { question() }
+        window.setHidden(false)
+        return answer
     }
 
     private func setHandingOver(_ on: Bool) {
