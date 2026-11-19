@@ -119,6 +119,31 @@ final class PendingUploadsTests: XCTestCase {
         XCTAssertEqual(left.map(\.path), [take("Kept.m4a").path])
     }
 
+    /// A take moved off the Desktop is still forgotten, but the launch now
+    /// learns which, to tell the guest; it used to say nothing.
+    func testTakesWhoseFilesAreGoneAreReported() throws {
+        try Data().write(to: take("Kept.m4a"))
+        var uploads = PendingUploads()
+        uploads.add(take("Moved.m4a"))
+        uploads.add(take("Kept.m4a"))
+        uploads.add(take("Deleted.m4a"))
+        let missing = uploads.removeMissing { FileManager.default.fileExists(atPath: $0) }
+        XCTAssertEqual(missing.map(\.path), [take("Moved.m4a").path, take("Deleted.m4a").path])
+        XCTAssertEqual(uploads.paths, [take("Kept.m4a").path])
+        XCTAssertEqual(uploads.removeMissing { FileManager.default.fileExists(atPath: $0) }, [], "told once")
+    }
+
+    func testTheNoticeNamesWhatIsMissing() {
+        XCTAssertEqual(MissingTakesNotice.title(count: 1), "A recording waiting to upload is missing")
+        XCTAssertEqual(MissingTakesNotice.title(count: 3), "3 recordings waiting to upload are missing")
+        XCTAssertEqual(MissingTakesNotice.message(names: ["Ada.m4a"]),
+                       "\u{201C}Ada.m4a\u{201D} is no longer where it was saved, so it can't be uploaded. "
+                       + "If you moved it, send it to your producer another way.")
+        XCTAssertEqual(MissingTakesNotice.message(names: ["Ada.m4a", "Bo.m4a", "Cy.m4a"]),
+                       "\u{201C}Ada.m4a\u{201D} and 2 more are no longer where they were saved, so they can't be "
+                       + "uploaded. If you moved them, send them to your producer another way.")
+    }
+
     func testTheListSurvivesAQuit() {
         var uploads = PendingUploads()
         uploads.add(take("A.m4a"))

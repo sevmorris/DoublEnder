@@ -622,6 +622,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for take in recovered where FileManager.default.fileExists(atPath: take.path) {
             vm.waitToUpload(take)
         }
+        let missing = vm.forgetMissingTakes()
+        if !missing.isEmpty {
+            presentMissingTakesNotice(missing)
+        }
         let waiting = vm.takesWaitingToUpload()
         guard let first = waiting.first else { return }
 
@@ -634,6 +638,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             vm.putOffWaitingTakesUntilNextLaunch()
         }
+    }
+
+    /// Takes that were waiting to upload and whose files are gone: they cannot
+    /// be uploaded, and the guest hears so once, before the question about the
+    /// rest.
+    private func presentMissingTakesNotice(_ missing: [URL]) {
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .warning
+        alert.messageText = MissingTakesNotice.title(count: missing.count)
+        alert.informativeText = MissingTakesNotice.message(names: missing.map(\.lastPathComponent))
+        alert.addButton(withTitle: "OK")
+        mainWindow?.orderOut(nil)
+        ModalGate.run { alert.runModal() }
+        mainWindow?.makeKeyAndOrderFront(nil)
     }
     #endif
 

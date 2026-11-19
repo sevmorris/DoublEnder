@@ -1659,6 +1659,16 @@ class RecorderViewModel: ObservableObject {
 
     // MARK: Launch
 
+    /// The takes an earlier run left waiting whose files are gone (moved off
+    /// the Desktop, deleted), forgotten now, for the launch to tell the guest
+    /// (`MissingTakesNotice`). Call before `takesWaitingToUpload`, which would
+    /// forget them without a word.
+    func forgetMissingTakes() -> [URL] {
+        let missing = uploads.change { $0.removeMissing { FileManager.default.fileExists(atPath: $0) } }
+        refreshWaitingUploads()
+        return missing.map { URL(fileURLWithPath: $0.path) }
+    }
+
     /// The takes an earlier run left waiting whose files are still there, for
     /// the launch question. The others are forgotten. A take another copy of
     /// the app is uploading is kept but not offered: that copy crosses it off.
