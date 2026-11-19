@@ -521,7 +521,7 @@ struct FaceplateSettingsPopover: View {
                 .disabled(viewModel.isCurrentlyRecording || viewModel.isCurrentlyUploading)
                 Text(viewModel.cloudSessionMode == .host
                      ? "Regular host: keeps DoublEnder Cloud installed and automatically up to date."
-                     : "One-time guest: skips automatic updates and offers to uninstall when you quit.")
+                     : "One-time guest: installs no update by itself, says when a newer version is out, and offers to uninstall when you quit.")
                     .font(.system(size: 11))
                     .foregroundColor(FaceplateDesign.secondaryText.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)

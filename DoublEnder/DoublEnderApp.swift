@@ -229,7 +229,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // did, is finished behind the recorder and installed at quit, rather
         // than offered in a prompt the guest has to answer. Only what this copy
         // cannot install by itself is still offered.
-        if !GuestUninstall.isGuestSession && checkForUpdatesAfterLaunch {
+        if GuestUninstall.isGuestSession {
+            // A guest copy installs nothing by itself, but one that is kept
+            // (Keep & Quit) has to hear of a newer version: until 2026-11-19 it
+            // never even read the manifest, so it stayed on its version for
+            // good, with no way to reach it. The check is the menu's, silent:
+            // only a newer version says anything, offered once nothing is
+            // under way, never over a take, and installed only if the guest
+            // chooses to (a copy on its disk image is offered the download).
+            Task { await UpdateCoordinator.shared.checkForUpdates(silent: true) }
+        } else if checkForUpdatesAfterLaunch {
             UpdateCoordinator.shared.startBackgroundUpdate(promptIfStuck: true)
         }
         scheduleUpdatesWhileOpen()
@@ -546,12 +555,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.messageText = "Uninstall \(updaterAppName)?"
         alert.informativeText = GuestUninstall.explanation(for: origin, appName: updaterAppName)
-        alert.addButton(withTitle: "Uninstall")                     // .alertFirstButtonReturn
-        alert.addButton(withTitle: "Uninstall & Get DoublEnder")    // .alertSecondButtonReturn
+        // No button answers Return: removing the app is never a reflex. Until
+        // 2026-11-19 Return was Uninstall, the alert's first button.
+        alert.addButton(withTitle: "Uninstall").keyEquivalent = ""     // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Uninstall & Get DoublEnder")       // .alertSecondButtonReturn
         alert.addButton(withTitle: "Keep & Quit").keyEquivalent = "\u{1b}"
         let response = ModalGate.run { alert.runModal() }
         let choice = GuestUninstall.choice(for: response)
-        didUninstallGuestSession = GuestUninstall.perform(choice, origin: origin, tools: tools)
+        switch GuestUninstall.perform(choice, origin: origin, tools: tools) {
+        case .removed(let clearedSettings):
+            didUninstallGuestSession = clearedSettings
+        case .notRemoved(let item):
+            presentGuestUninstallFailure(item)
+        case .kept:
+            break
+        }
+    }
+
+    /// The app, or its disk image, could not be moved to the Trash: the guest
+    /// is told, and shown where it is, rather than left believing it gone.
+    private func presentGuestUninstallFailure(_ item: URL) {
+        let alert = NSAlert()
+        alert.window.appearance = NSAppearance(named: .darkAqua)
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn\u{2019}t Uninstall \(updaterAppName)"
+        alert.informativeText = GuestUninstall.notRemovedMessage(for: item)
+        alert.addButton(withTitle: "Show in Finder")
+        alert.addButton(withTitle: "Quit").keyEquivalent = "\u{1b}"
+        let response = ModalGate.run { alert.runModal() }
+        if response == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([item])
+        }
     }
     #endif
 

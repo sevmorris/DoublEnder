@@ -109,7 +109,7 @@ struct HelpView: View {
                     definition("Notes", "Optional text written into the recording as description metadata. View it in Finder → Get Info → More Info. Not stored in WAV files, and not kept after DoublEnder quits.")
                     definition("Format", "Choose AAC / M4A (256 kbps, smaller) or WAV (24-bit PCM, uncompressed). Defaults to AAC, and DoublEnder remembers your choice.")
                     #if GCS_ENABLED
-                    definition("Mode", "Switch between Regular Host (keeps DoublEnder Cloud installed and automatically up to date) and One-Time Guest (skips automatic updates and offers to uninstall when you quit).")
+                    definition("Mode", "Switch between Regular Host (keeps DoublEnder Cloud installed and automatically up to date) and One-Time Guest (installs no update by itself, says when a newer version is out, and offers to uninstall when you quit).")
                     #endif
                 }
 
@@ -192,7 +192,9 @@ struct HelpView: View {
                     """)
                     #if GCS_ENABLED
                     text("""
-                    In One-Time Guest mode, when you quit DoublEnder Cloud after your \
+                    In One-Time Guest mode, DoublEnder Cloud installs no update by \
+                    itself, but if you keep it and a newer version comes out, it \
+                    says so when it opens. When you quit after your \
                     recording has uploaded, it offers to move itself to the Trash \
                     (or eject its disk image) so nothing is left behind on your Mac. \
                     Your recordings on the Desktop are always kept. If you'd like to \

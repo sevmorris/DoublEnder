@@ -247,8 +247,8 @@ class RecorderViewModel: ObservableObject {
 
     #if GCS_ENABLED
     /// How this copy of DoublEnder Cloud behaves: `.host` (keeps installed &
-    /// auto-updated) or `.guest` (skips auto-updates and offers to uninstall
-    /// when quitting). Chosen once at first launch and adjustable in Settings.
+    /// auto-updated) or `.guest` (installs no update by itself, but says when a
+    /// newer version is out, and offers to uninstall when quitting). Chosen once at first launch and adjustable in Settings.
     @Published var cloudSessionMode: CloudSessionMode = .host {
         didSet {
             guard cloudSessionMode != oldValue else { return }
