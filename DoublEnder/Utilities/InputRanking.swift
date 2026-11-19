@@ -84,6 +84,13 @@ enum InputRanking {
 /// and a USB mic plugged in, Keep Current to the webcam meant the mic was never
 /// offered that session, and the guest recorded on the built-in mic unless
 /// they found it in the picker.
+///
+/// An input that cannot be offered when its turn comes (`isWanted`: already
+/// the current input, unplugged since launch) is passed over for the one after
+/// it. Only Keep Current moves the series on, and an offer that is never shown
+/// gets no Keep Current: on a Mac with no built-in mic, which starts on its
+/// first hardware input, a webcam that was both that input and the newest
+/// stopped the series before the USB mic beside it.
 struct LaunchUSBOffers: Equatable {
     private var queue: [String]
     private var offered: String?
@@ -92,17 +99,24 @@ struct LaunchUSBOffers: Equatable {
         queue = uids
     }
 
-    /// The first to offer.
-    mutating func first() -> String? {
-        offered = queue.isEmpty ? nil : queue.removeFirst()
+    /// The first to offer: the first in the queue that `isWanted`.
+    mutating func first(isWanted: (String) -> Bool = { _ in true }) -> String? {
+        offered = nil
+        while !queue.isEmpty {
+            let uid = queue.removeFirst()
+            if isWanted(uid) {
+                offered = uid
+                break
+            }
+        }
         return offered
     }
 
-    /// The guest kept the current input over `uid`: the next to offer, when
-    /// `uid` was the one this launch offered last.
-    mutating func next(afterDeclining uid: String) -> String? {
+    /// The guest kept the current input over `uid`: the next to offer that
+    /// `isWanted`, when `uid` was the one this launch offered last.
+    mutating func next(afterDeclining uid: String, isWanted: (String) -> Bool = { _ in true }) -> String? {
         guard uid == offered else { return nil }
-        return first()
+        return first(isWanted: isWanted)
     }
 
     /// The guest switched, or picked an input themselves: nothing more.

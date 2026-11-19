@@ -808,16 +808,11 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// After Keep Current on one of the launch's offers, the next USB input
-    /// present, if there is one.
+    /// worth offering, if there is one.
     private func offerNextLaunchUSBInput(afterDeclining uid: String) {
-        var declined = uid
-        while let next = launchUSBOffers.next(afterDeclining: declined) {
-            if let device = audioEngine.usbInputDevices().first(where: { $0.uniqueID == next }) {
-                offerUSBInput(device)
-                return
-            }
-            // Unplugged since launch: the one after it.
-            declined = next
+        let next = launchUSBOffers.next(afterDeclining: uid) { [self] in usbDeviceToOffer($0) != nil }
+        if let next, let device = usbDeviceToOffer(next) {
+            offerUSBInput(device)
         }
     }
 
@@ -967,10 +962,13 @@ class RecorderViewModel: ObservableObject {
                     // "the one I just plugged in" intent across launches.
                     // A dock's audio port is never the one offered.
                     // Keep Current on it offers the next (`LaunchUSBOffers`).
+                    // One that can't be offered, such as the input this Mac
+                    // with no built-in mic has just started on, is passed
+                    // over rather than ending the series.
                     let inOrder = self.usbDevicesInOfferOrder()
                     self.launchUSBOffers = LaunchUSBOffers(inOrder.map(\.uniqueID))
-                    if let first = self.launchUSBOffers.first(),
-                       let usbDevice = inOrder.first(where: { $0.uniqueID == first }) {
+                    if let first = self.launchUSBOffers.first(isWanted: { self.usbDeviceToOffer($0) != nil }),
+                       let usbDevice = self.usbDeviceToOffer(first) {
                         self.offerUSBInput(usbDevice)
                     }
                 } else {

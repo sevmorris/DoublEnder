@@ -127,6 +127,26 @@ final class InputRankingTests: XCTestCase {
         XCTAssertNil(none.first())
     }
 
+    /// A Mac with no built-in mic starts on its first hardware input, here the
+    /// webcam, which is also the newest. Its offer can't be shown (it is the
+    /// current input), so no Keep Current would ever move the series on: it is
+    /// passed over, and the mic is offered first.
+    func testAnInputThatCannotBeOfferedIsPassedOver() {
+        var offers = LaunchUSBOffers(["webcam", "mic"])
+        XCTAssertEqual(offers.first { $0 != "webcam" }, "mic")
+        XCTAssertNil(offers.next(afterDeclining: "mic"))
+
+        // Later in the series too: an input unplugged since launch.
+        var later = LaunchUSBOffers(["webcam", "gone", "mic"])
+        XCTAssertEqual(later.first(), "webcam")
+        XCTAssertEqual(later.next(afterDeclining: "webcam") { $0 != "gone" }, "mic")
+
+        // None worth offering: nothing.
+        var nothing = LaunchUSBOffers(["webcam"])
+        XCTAssertNil(nothing.first { _ in false })
+        XCTAssertNil(nothing.next(afterDeclining: "webcam"))
+    }
+
     // MARK: - The alert after losing an input
 
     func testLosingAnInputNamesWhatItFellBackTo() {
