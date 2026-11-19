@@ -78,6 +78,22 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertFalse(plain.exportText().contains("PINNED"), "no header with nothing pinned")
     }
 
+    /// `clear` also drops what was logged but not yet shown, so the `> clear`
+    /// that asked for it does not come back on the empty screen.
+    func testClearLeavesAnEmptyScreen() {
+        let logger = DiagnosticLogger()
+        logger.log("TLM // 1")
+        flushed(logger) { logger.lines.count == 1 }
+        logger.log("> clear")
+        logger.clear()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertTrue(logger.lines.isEmpty, "\(logger.lines.map(\.text))")
+
+        logger.log("after")
+        flushed(logger) { logger.lines.count == 1 }
+        XCTAssertEqual(logger.lines.first?.text, "after")
+    }
+
     /// With the system log, `dump` gets a third section, and the log keeps its
     /// header with nothing pinned.
     func testDumpEndsWithTheSystemLog() {
@@ -136,5 +152,34 @@ final class TelemetryWindowTests: XCTestCase {
         window.add(frames: 512, mono: nil, peak: 0)
         XCTAssertNil(window.rms)
         XCTAssertEqual(window.line, "TLM // 1 buf · 512 fr · level unreadable (unsupported format)")
+    }
+}
+
+/// Where the Service Monitor opens, next to the About window.
+final class ServiceMonitorPlacementTests: XCTestCase {
+    private let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
+    private let panel = NSSize(width: 580, height: 380)
+
+    /// With room, centred under About.
+    func testUnderTheAboutWindow() {
+        let about = NSRect(x: 570, y: 450, width: 300, height: 285)
+        XCTAssertEqual(ServiceMonitorPanel.topLeft(for: panel, near: about, within: screen),
+                       NSPoint(x: 430, y: 438))
+    }
+
+    /// No room below: above it instead.
+    func testAboveWhenAboutIsLow() {
+        let about = NSRect(x: 570, y: 40, width: 300, height: 285)
+        XCTAssertEqual(ServiceMonitorPanel.topLeft(for: panel, near: about, within: screen),
+                       NSPoint(x: 430, y: 40 + 285 + 12 + 380))
+    }
+
+    /// No room either way, or near a side: kept inside the screen.
+    func testInsideTheScreenWhateverTheRoom() {
+        let about = NSRect(x: 1300, y: 300, width: 300, height: 285)
+        let point = ServiceMonitorPanel.topLeft(for: panel, near: about, within: screen)
+        XCTAssertEqual(point.x, 1440 - 580)
+        XCTAssertGreaterThanOrEqual(point.y - panel.height, screen.minY)
+        XCTAssertLessThanOrEqual(point.y, screen.maxY)
     }
 }
