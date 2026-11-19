@@ -5,8 +5,9 @@ import SwiftUI
 ///   - `.host`: permanent installation for a regular host; moves to the
 ///     Applications folder and keeps itself up to date automatically.
 ///   - `.guest`: temporary session for a one-time guest; runs from where it is
-///     without self-updating, and offers to uninstall itself and point to the
-///     free Local recorder when quitting.
+///     and installs no update by itself, but says when a newer version is out
+///     (the menu's check, silent, at launch), and offers to uninstall itself
+///     and point to the free Local recorder when quitting.
 enum CloudSessionMode: String, CaseIterable, Identifiable, Equatable {
     case host
     case guest
@@ -38,6 +39,12 @@ enum CloudSessionMode: String, CaseIterable, Identifiable, Equatable {
 enum GuestUninstall {
 
     static let sessionModeKey = "cloudSessionMode"
+
+    /// The Applications folders a copy is installed in.
+    static var applicationsFolders: [URL] {
+        [URL(fileURLWithPath: "/Applications", isDirectory: true),
+         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)]
+    }
     static let publicRecorderURL = URL(string: "https://sevmorris.github.io/DoublEnder/")!
 
     /// True when the user has selected One-Time Guest mode. Reads `UserDefaults.app`
@@ -62,13 +69,17 @@ enum GuestUninstall {
     /// The mode already chosen on an earlier launch, or `.host` inferred for an
     /// existing host upgrading from a version before `cloudSessionMode` existed,
     /// or `nil` on a brand-new first run so the launch flow asks once.
+    ///
+    /// Prior history is a move to Applications, a guest name, or an update
+    /// this copy has been through (`hasUpdateHistory`, the update state on
+    /// disk). Until 2026-11-19 only the first two counted, so a host who had
+    /// put the app in Applications by hand and never typed a name was asked
+    /// after upgrading, as if new.
     static func storedOrInferredMode(in defaults: UserDefaults = .app,
                                      appURL: URL = Bundle.main.bundleURL,
-                                     applicationsFolders: [URL] = [
-                                         URL(fileURLWithPath: "/Applications", isDirectory: true),
-                                         FileManager.default.homeDirectoryForCurrentUser
-                                             .appendingPathComponent("Applications", isDirectory: true),
-                                     ]) -> CloudSessionMode? {
+                                     applicationsFolders: [URL] = GuestUninstall.applicationsFolders,
+                                     hasUpdateHistory: Bool = FileManager.default.fileExists(
+                                         atPath: UpdateStateStore.app.url.path)) -> CloudSessionMode? {
         if let raw = defaults.string(forKey: sessionModeKey),
            let mode = CloudSessionMode(rawValue: raw) {
             return mode
@@ -79,6 +90,7 @@ enum GuestUninstall {
         }
         let hasPriorHistory = defaults.object(forKey: MoveToApplications.lastMoveKey) != nil
             || !(defaults.string(forKey: "lastGuestName") ?? "").isEmpty
+            || hasUpdateHistory
         if inApplications && hasPriorHistory {
             setMode(.host, in: defaults)
             return .host
@@ -118,14 +130,35 @@ enum GuestUninstall {
         case keepAndQuit
     }
 
+    /// What `perform` did.
+    enum Outcome: Equatable {
+        /// Keep & Quit: nothing touched.
+        case kept
+        /// The app (or its disk image) is in the Trash. `clearedSettings` is
+        /// false when another installed copy shares the settings and the
+        /// Application Support folder, which then stay.
+        case removed(clearedSettings: Bool)
+        /// The item at this URL could not be moved to the Trash (a copy in
+        /// /Applications on a standard account, say), so it is still there,
+        /// and the settings are kept. The guest is told.
+        case notRemoved(URL)
+    }
+
     struct Tools {
         var isTranslocated: (URL) -> Bool
         var originalLocation: (URL) -> URL?
         var diskImageVolume: (URL) -> URL?
         var diskImageFile: (URL) -> URL?
         var isWritableFolder: (URL) -> Bool
-        var trash: (URL) -> Void
+        /// False when the item could not be moved to the Trash.
+        var trash: (URL) -> Bool
         var detachVolumeAfterExit: (URL) -> Void
+        /// Another copy of this app installed in an Applications folder, which
+        /// shares this one's settings and Application Support folder.
+        var otherCopyInstalled: () -> Bool
+        /// Moves this app's Application Support folder (the update state, and
+        /// any version kept for going back) to the Trash.
+        var trashSupportFolder: () -> Void
         var clearDefaults: () -> Void
         var openURL: (URL) -> Void
     }
@@ -182,25 +215,43 @@ enum GuestUninstall {
 
     // MARK: - Uninstalling
 
-    /// Carries out the guest's choice. Returns `true` when the app uninstalled
-    /// itself (so termination cleanup knows not to write defaults back).
+    /// Carries out the guest's choice.
+    ///
+    /// The settings and the Application Support folder go only once the app
+    /// is in the Trash, and only when no other installed copy shares them.
+    /// Until 2026-11-19 a trash that failed went unnoticed: the settings were
+    /// wiped and the app quit, so the guest believed it was gone, and the next
+    /// launch asked Host or Guest again. The support folder was never removed.
     @discardableResult
-    static func perform(_ choice: Choice, origin: Origin, tools: Tools) -> Bool {
-        guard choice != .keepAndQuit else { return false }
+    static func perform(_ choice: Choice, origin: Origin, tools: Tools) -> Outcome {
+        guard choice != .keepAndQuit else { return .kept }
         if choice == .uninstallAndGetLocal {
             tools.openURL(publicRecorderURL)
         }
         switch origin {
         case .installed(let app):
-            tools.trash(app)
+            guard tools.trash(app) else { return .notRemoved(app) }
         case .translocated(let original):
-            if let original { tools.trash(original) }
+            if let original, !tools.trash(original) { return .notRemoved(original) }
         case .diskImage(let volume, let imageFile):
-            if let imageFile { tools.trash(imageFile) }
+            // The volume is ejected after the exit whether or not its image
+            // file can go: the app on it is not run again from there.
             tools.detachVolumeAfterExit(volume)
+            if let imageFile, !tools.trash(imageFile) { return .notRemoved(imageFile) }
         }
+        // Asked after the trash, so this copy, if it was in Applications, is
+        // gone and not counted.
+        guard !tools.otherCopyInstalled() else { return .removed(clearedSettings: false) }
+        tools.trashSupportFolder()
         tools.clearDefaults()
-        return true
+        return .removed(clearedSettings: true)
+    }
+
+    /// The words when the trash failed.
+    static func notRemovedMessage(for item: URL) -> String {
+        "\u{201C}\(item.lastPathComponent)\u{201D} couldn't be moved to the Trash, so it's still where it was. "
+            + "You can drag it to the Trash yourself; your Mac may ask for an administrator's password. "
+            + "Your recordings on the Desktop are kept."
     }
 
     // MARK: - Backing disk image
@@ -256,7 +307,10 @@ enum GuestUninstall {
 // MARK: - The real thing
 
 extension GuestUninstall.Tools {
-    static func live(bundleID: String, defaults: UserDefaults = .app) -> Self {
+    static func live(bundleID: String, defaults: UserDefaults = .app,
+                     applicationsFolders: [URL] = GuestUninstall.applicationsFolders,
+                     appName: String = Bundle.main.bundleURL.lastPathComponent,
+                     supportFolder: URL = UpdateStateStore.app.url.deletingLastPathComponent()) -> Self {
         let fm = FileManager.default
         return Self(
             isTranslocated: { SelfUpdater.isTranslocated($0) },
@@ -286,9 +340,23 @@ extension GuestUninstall.Tools {
                 return GuestUninstall.diskImageFile(forVolume: volume, infoPlistData: data)
             },
             isWritableFolder: { fm.isWritableFile(atPath: $0.path) },
-            trash: { try? fm.trashItem(at: $0, resultingItemURL: nil) },
+            trash: { (try? fm.trashItem(at: $0, resultingItemURL: nil)) != nil },
             detachVolumeAfterExit: { volume in
                 _ = try? GuestUninstall.prepareDetach(volume: volume)
+            },
+            otherCopyInstalled: {
+                applicationsFolders.contains { folder in
+                    let copy = folder.appendingPathComponent(appName)
+                    // The plist itself, not Bundle(url:), which keeps the
+                    // first answer for a path for as long as the app runs.
+                    let plist = copy.appendingPathComponent("Contents/Info.plist")
+                    guard let info = NSDictionary(contentsOf: plist) else { return false }
+                    return info["CFBundleIdentifier"] as? String == bundleID
+                }
+            },
+            trashSupportFolder: {
+                guard fm.fileExists(atPath: supportFolder.path) else { return }
+                _ = try? fm.trashItem(at: supportFolder, resultingItemURL: nil)
             },
             clearDefaults: {
                 guard !bundleID.isEmpty else { return }
