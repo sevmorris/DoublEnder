@@ -412,14 +412,16 @@ A hidden diagnostics console, in both builds, for when a take goes wrong and the
 - `AudioEngine`:
   - the capture session's handshake on each rebuild: device, native sample rate, channels, the device's IO buffer size (`kAudioDevicePropertyBufferFrameSize`), and whether the session is running;
   - an input at 16 kHz or below (a Bluetooth headset's call profile, usually);
+  - the inputs present at launch, and each one that arrives or goes after;
   - an input selected, or refused for having no input streams;
-  - a session interruption;
+  - a session interruption, and its end;
   - a capture fault (`dispatchDisconnectIfNeeded`);
   - the writer opening on its first buffer, with that buffer's format;
   - the take's first dropped buffer.
-- While recording, the engine adds one `TLM` line every 5 seconds, on the writer queue (`recordTelemetry`): the buffers and frames since the last line, the highest meter peak among them, and an RMS. Per buffer it only counts and compares the meter's already-computed peak. The RMS and the formatting happen once per interval, so the RMS is that of the buffer that ends the interval, not of the interval as a whole.
+- While recording, the engine adds one `TLM` line every 5 seconds, on the writer queue (`recordTelemetry`, `TelemetryWindow`): the buffers and frames since the last line (frames from the sample buffers themselves, so a format the mono mix cannot read still counts), the highest sample peak among them, and the RMS of the whole interval. Per buffer it adds one `vDSP_svesq` pass to the meter's own peak; the formatting happens once per interval. The levels are the samples', not the meter's: an interval of nothing but zeros reads **SILENT** (logged as a warning), the sign of a denied microphone or a muted interface, and one the mix cannot read says its level is unreadable. Until 2026-11-19 the peak was the meter's, which reads no lower than -36 dB, and the RMS was the last buffer's, through `LevelMeter.dbFS`, which turns zero into that floor, so a dead input read "peak -36.0 · rms -36.0", louder than a quiet working one.
 - `RecorderViewModel`:
-  - the take's states: armed, recording, flushing, saved, nothing captured, fault, aborted;
+  - the take's states: armed, recording, flushing, saved, nothing captured, fault, aborted, and, when the writer fails, recovering from the sidecar and how that ended;
+  - Cloud: each upload's start, each failed attempt (with the same sanitized summary as the system log, and the retry or the wait for the connection that follows), its end, and LATER;
   - on every disk-watch tick (5 s), the file's size so far, the volume's free space, and whether data is flowing (`logDiskHealth`).
 
 **How it records.** `log` is safe from any queue and never waits on the main thread. It takes a lock, appends the line with its time, and schedules at most one `DispatchQueue.main.async` per batch. The batch is stamped (`HH:mm:ss.SSS`) and published on the main thread. So a blocked UI cannot stall the writer queue. A modal that keeps the main queue waiting ("Modals and the main queue", §8) holds lines back, and they arrive when it closes, still carrying the time they were logged.
@@ -428,21 +430,23 @@ A hidden diagnostics console, in both builds, for when a take goes wrong and the
 
 - the input's handshake, or its failure;
 - a low-quality input, removed when the next handshake is not one;
-- the writer opening on the take's first buffer;
-- the take's start, with its file and format.
+- the writer opening on the take's first buffer, removed when the next take is armed, so a take is never shown beside the last one's writer;
+- the take's start, with its file and format, once the engine has started it; or, when it could not start, that failure. Until 2026-11-19 the take was pinned as armed before the engine tried, so a take that never started stayed pinned as one.
 
 Each is also in the scrollback as usual. Until 2026-11-18 nothing was pinned, so on a take longer than about 20 minutes the handshake and the take's start had scrolled out by the time it ended.
 
 The lines name files and folders, and a take's name carries the guest's name. They leave the app only through `dump`, which copies them to the clipboard for the guest to send.
 
-**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. It takes these commands:
+**The system log in `dump`.** `dump` also copies the app's own entries in the unified log since this launch, the latest 2,000 (`DiagnosticLogger.systemLogLines`, an `OSLogStore` of the current process, filtered to the app's subsystem): everything its `Logger`s wrote, which the ring never saw. Values the code marks private stay `<private>`, as the upload code marks every path and name. Reading the process's own log needs no entitlement, but takes a second or so, so it runs off the main thread and the panel says when it is done. Debug and info entries can be missing, since the system keeps those in memory only.
+
+**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. Its sounds (a click as it opens and closes, and `degauss`) play through the Mac's output, so during a take they stay silent (`ServiceSound`): a guest on speakers would record them. The scrollback follows new lines while it is at the bottom; scrolling up holds it, and the header says so, so a take's line every few seconds does not pull the view away from what is being read. Scrolling back down, End, or any command follows again. It takes these commands:
 
 | Command | Does |
 |---|---|
 | `help` | Lists the commands |
 | `status` | The engine's state, the bound input (transport, sample rate, channels, format, layout), the output format, the active file and its size, whether data is flowing, and any recording warning (`serviceStatusLines`) |
-| `paths` | The output folder, working directory, app bundle and temporary folder. `paths open` reveals the active file in Finder, or opens the output folder |
-| `dump` | Copies the pinned lines, then the buffer, to the clipboard |
+| `paths` | The output folder, the app's Application Support folder (update state, the version kept for going back), the app bundle and the temporary folder. `paths open` reveals the active file in Finder, or opens the output folder, and says which, or that it could not |
+| `dump` | Copies the pinned lines, the buffer and the system log since launch to the clipboard |
 | `clear` (`cls`) | Empties the buffer; the pinned lines stay |
 | `degauss` | A shake and a flash; it does nothing else |
 

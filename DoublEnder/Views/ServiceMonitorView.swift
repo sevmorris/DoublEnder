@@ -60,11 +60,23 @@ final class ServiceMonitorPanel {
         return panel
     }
 
-    /// A soft system click, like a relay closing. Non-blocking; silent if the
-    /// sound is missing.
+    /// A soft system click, like a relay closing (`ServiceSound`).
     private func relayClick() {
-        guard let sound = NSSound(named: "Tink")?.copy() as? NSSound else { return }
-        sound.volume = 0.35
+        ServiceSound.play("Tink", volume: 0.35)
+    }
+}
+
+/// The panel's sounds. They play through the Mac's output, so a guest on
+/// speakers would record them into a take, and support may well ask for the
+/// panel mid-take: during one they stay silent.
+@MainActor
+enum ServiceSound {
+    static var muted: Bool { RecorderViewModel.shared.isCurrentlyRecording }
+
+    /// Non-blocking; silent if the sound is missing or a take is recording.
+    static func play(_ name: String, volume: Float = 1) {
+        guard !muted, let sound = NSSound(named: name)?.copy() as? NSSound else { return }
+        sound.volume = volume
         sound.play()
     }
 }
@@ -78,6 +90,11 @@ struct ServiceMonitorView: View {
     @State private var historyIndex: Int?
     @State private var shake: CGFloat = 0
     @State private var flash: Double = 0
+    /// Whether the scrollback follows new lines: while it is at the bottom.
+    /// Scrolling up holds it, so a take's line every few seconds does not
+    /// pull the view away from what is being read; scrolling back down, End,
+    /// or a command lets go.
+    @State private var following = true
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -135,6 +152,10 @@ struct ServiceMonitorView: View {
             Text("DE-DIAG // SERVICE MONITOR")
                 .foregroundColor(CRT.amber)
             Spacer()
+            if !following {
+                Text("HOLD — END TO FOLLOW")
+                    .foregroundColor(CRT.warn)
+            }
             Text("BUF \(log.lines.count)/\(DiagnosticLogger.capacity)")
                 .foregroundColor(CRT.dim)
         }
@@ -191,8 +212,21 @@ struct ServiceMonitorView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.never)
+            .onScrollGeometryChange(for: ScrollSpot.self, of: ScrollSpot.init) { old, new in
+                // New lines grow the content without moving the offset; only
+                // a scroll up moves it back.
+                if new.atBottom {
+                    following = true
+                } else if new.offset < old.offset - 0.5 {
+                    following = false
+                }
+            }
             .onChange(of: log.lines.last?.id) { _, last in
-                guard let last else { return }
+                guard following, let last else { return }
+                proxy.scrollTo(last, anchor: .bottom)
+            }
+            .onChange(of: following) { _, now in
+                guard now, let last = log.lines.last?.id else { return }
                 proxy.scrollTo(last, anchor: .bottom)
             }
             .onAppear {
@@ -241,6 +275,9 @@ struct ServiceMonitorView: View {
         case .escape:
             input = ""
             return .handled
+        case .end:
+            following = true
+            return .handled
         case .upArrow:
             guard !history.isEmpty else { return .handled }
             let i = max(0, (historyIndex ?? history.count) - 1)
@@ -278,6 +315,8 @@ struct ServiceMonitorView: View {
         input = ""
         historyIndex = nil
         guard !command.isEmpty else { return }
+        // A command's answer is to be seen.
+        following = true
         if history.last != command { history.append(command) }
         if history.count > 50 { history.removeFirst() }
         ServiceConsole.run(command, degauss: degauss)
@@ -289,7 +328,7 @@ struct ServiceMonitorView: View {
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 1.2)) { flash = 0 }
         }
-        NSSound(named: "Bottle")?.play()
+        ServiceSound.play("Bottle")
     }
 }
 
@@ -315,6 +354,18 @@ private struct CRTOverlay: View {
         }
         .allowsHitTesting(false)
         .drawingGroup()
+    }
+}
+
+/// Where the scrollback is, for `ServiceMonitorView.following`.
+private struct ScrollSpot: Equatable {
+    var offset: CGFloat
+    /// Within a few lines of the end, or with everything in view.
+    var atBottom: Bool
+
+    init(_ geometry: ScrollGeometry) {
+        offset = geometry.contentOffset.y
+        atBottom = geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 40
     }
 }
 
@@ -344,37 +395,54 @@ enum ServiceConsole {
             [
                 "help      list service commands",
                 "status    audio device, sample rate, engine state, active file",
-                "paths     working / output directories   (paths open → reveal in Finder)",
-                "dump      copy the pinned lines and the log buffer to the clipboard",
+                "paths     output, app support, bundle and temp folders   (paths open → Finder)",
+                "dump      copy the pinned lines, the log buffer and the app's system log",
+                "          since launch to the clipboard",
                 "clear     clear the console buffer (the pinned lines stay)",
                 "degauss   demagnetize the tube",
+                "scrolling up holds the scrollback; End or any command follows again",
             ].forEach { log.log($0) }
         case "status":
             RecorderViewModel.shared.serviceStatusLines().forEach { log.log($0) }
         case "paths":
             let output = RecorderViewModel.recordingsDirectory
+            // The update state, the version kept for going back, and the
+            // like. (The working directory, shown until 2026-11-19, is always
+            // "/" for an app opened from Finder.)
+            let support = UpdateStateStore.app.url.deletingLastPathComponent()
             log.log("OUTPUT ......... \(output.path)")
-            log.log("WORKING DIR .... \(FileManager.default.currentDirectoryPath)")
+            log.log("APP SUPPORT .... \(support.path)")
             log.log("APP BUNDLE ..... \(Bundle.main.bundlePath)")
             log.log("TEMP ........... \(FileManager.default.temporaryDirectory.path)")
             if parts.dropFirst().first == "open" {
                 if let file = RecorderViewModel.shared.recordedFileURL,
                    FileManager.default.fileExists(atPath: file.path) {
                     NSWorkspace.shared.activateFileViewerSelecting([file])
+                    log.log("ACTIVE FILE REVEALED IN FINDER // \(file.lastPathComponent)", level: .system)
+                } else if NSWorkspace.shared.open(output) {
+                    log.log("OUTPUT FOLDER OPENED IN FINDER", level: .system)
                 } else {
-                    NSWorkspace.shared.open(output)
+                    log.log("COULD NOT OPEN THE OUTPUT FOLDER // \(output.path)", level: .warn)
                 }
-                log.log("OUTPUT FOLDER REVEALED IN FINDER", level: .system)
             }
         case "dump":
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(log.exportText(), forType: .string)
-            log.log("\(log.lines.count) LINES COPIED TO PASTEBOARD", level: .system)
+            // Reading the system log takes a moment, so off the main thread.
+            log.log("COLLECTING THE SYSTEM LOG…", level: .system)
+            Task.detached(priority: .userInitiated) {
+                let system = DiagnosticLogger.systemLogLines()
+                await MainActor.run {
+                    let log = DiagnosticLogger.shared
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(log.exportText(systemLog: system), forType: .string)
+                    log.log("COPIED TO PASTEBOARD // \(log.pinnedLines.count) pinned · \(log.lines.count) log · "
+                            + "\(system.count) system log lines", level: .system)
+                }
+            }
         case "clear", "cls":
             log.clear()
         case "degauss":
             degauss()
-            log.log("DEGAUSS CYCLE COMPLETE", level: .system)
+            log.log("DEGAUSS CYCLE COMPLETE" + (ServiceSound.muted ? " (SILENT: A TAKE IS RECORDING)" : ""), level: .system)
         default:
             log.log("?SYNTAX ERROR — '\(parts.first ?? raw)' unknown. Type 'help'.", level: .warn)
         }

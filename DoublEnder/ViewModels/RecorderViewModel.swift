@@ -1044,13 +1044,25 @@ class RecorderViewModel: ObservableObject {
         }
         do {
             let fileURL = makeRecordingURL(nameOverride: nameOverride)
-            DiagnosticLogger.shared.log("STATE IDLE -> ARMED // \(fileURL.lastPathComponent) [\(outputFormat.rawValue.uppercased())]", level: .event, pin: .take)
+            let takeLabel = "\(fileURL.lastPathComponent) [\(outputFormat.rawValue.uppercased())]"
+            DiagnosticLogger.shared.log("STATE IDLE -> ARMED // \(takeLabel)", level: .event)
+            // The last take's writer line is not this one's. The pin returns
+            // with this take's first buffer.
+            DiagnosticLogger.shared.unpin(.writer)
 
             // Crash recovery is keyed off the PCM sidecar file, which the
             // audio engine creates the moment the writer starts — no
             // separate UserDefaults flag to keep in sync.
-            try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
-            DiagnosticLogger.shared.log("STATE ARMED -> RECORDING", level: .event)
+            do {
+                try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
+            } catch {
+                // Pinned in the take's place: a take that never started is
+                // what support has to see, not an "armed" one that never was.
+                DiagnosticLogger.shared.log("STATE ARMED -> FAULT // \(takeLabel) did not start: \(error.localizedDescription)",
+                                            level: .warn, pin: .take)
+                throw error
+            }
+            DiagnosticLogger.shared.log("STATE ARMED -> RECORDING // \(takeLabel)", level: .event, pin: .take)
 
             recordedFileURL = fileURL
             state = .recording
@@ -1075,7 +1087,6 @@ class RecorderViewModel: ObservableObject {
                 .autoconnect()
                 .sink { [weak self] _ in self?.audioEngine.checkRecordingInputHealth() }
         } catch {
-            DiagnosticLogger.shared.log("STATE ARMED -> FAULT // \(error.localizedDescription)", level: .warn)
             state = .error("Failed to start recording: \(error.localizedDescription)")
         }
     }
@@ -1267,11 +1278,11 @@ class RecorderViewModel: ObservableObject {
                     self.state = .ready
                 }
             case .failure(let error):
-                DiagnosticLogger.shared.log("STATE FLUSHING -> FAULT // \(error.localizedDescription)", level: .warn)
                 self.recordingTime = 0
                 let mainOutput = self.recordedFileURL
                 let disconnectReason = self.pendingDisconnectReason
-                let failed = {
+                let failed = { (from: String) in
+                    DiagnosticLogger.shared.log("STATE \(from) -> FAULT // \(error.localizedDescription)", level: .warn)
                     if sidecarHasAudio {
                         // The re-wrap failed; the next launch tries again.
                         self.lastTake?.end = .recoverAtLaunch
@@ -1285,6 +1296,8 @@ class RecorderViewModel: ObservableObject {
                 }
                 let recovering = self.recoverSidecar(from: mainOutput, note: takeNote) { recovered in
                     if let recovered {
+                        DiagnosticLogger.shared.log("STATE RECOVERING -> SAVED // \(recovered.lastPathComponent), rebuilt from the sidecar",
+                                                    level: .event)
                         #if GCS_ENABLED
                         if self.cloudUploadEnabled {
                             // The recovered WAV is the take now: upload it like one
@@ -1301,7 +1314,7 @@ class RecorderViewModel: ObservableObject {
                         self.state = .ready
                         #endif
                     } else {
-                        failed()
+                        failed("RECOVERING")
                     }
                     // The take ends here, not before: the file was being written.
                     self.isFinalizingRecording = false
@@ -1309,12 +1322,14 @@ class RecorderViewModel: ObservableObject {
                     finish()
                 }
                 if recovering {
+                    DiagnosticLogger.shared.log("STATE FLUSHING -> RECOVERING // writer failed (\(error.localizedDescription)); rebuilding from the sidecar",
+                                                level: .warn)
                     // Still the take's until its WAV is whole: no new take, no
                     // update, and a quit asks and waits for it.
                     self.isFinalizingRecording = true
                     return
                 }
-                failed()
+                failed("FLUSHING")
             }
             self.pendingDisconnectReason = nil
             finish()
@@ -1505,6 +1520,8 @@ class RecorderViewModel: ObservableObject {
                 done(recovered)
             case .failure(let error):
                 logger.error("Sidecar recovery failed: \(error.localizedDescription, privacy: .public)")
+                DiagnosticLogger.shared.log("SIDECAR REBUILD FAILED // \(error.localizedDescription); the sidecar stays for the next launch",
+                                            level: .warn)
                 done(nil)
             }
         }
@@ -1987,6 +2004,10 @@ class RecorderViewModel: ObservableObject {
         // and keeps the guarantee where the upload is: a crash before a
         // session opens still leaves something for the next-launch prompt.
         rememberUpload(of: fileURL)
+        // The Service Monitor's upload lines carry the same sanitized summary
+        // as the system log, and the file's name, which `dump` alone takes out.
+        let diag = DiagnosticLogger.shared
+        diag.log("UPLOAD START // \(fileURL.lastPathComponent) (\(automatic ? "automatic" : "by the guest"))", level: .event)
 
         // The waits between attempts, and whether one is spent (`UploadRetry`).
         var retry = UploadRetry()
@@ -2001,6 +2022,7 @@ class RecorderViewModel: ObservableObject {
 
         while true {
             if Task.isCancelled {
+                diag.log("UPLOAD PUT OFF // the take waits")
                 putOff(true)
                 return
             }
@@ -2033,6 +2055,7 @@ class RecorderViewModel: ObservableObject {
 
                 // This take only: others may be waiting behind it.
                 uploads.change { $0.remove(fileURL) }
+                diag.log("UPLOAD DONE // \(fileURL.lastPathComponent) · attempt \(attempt + 1)", level: .event)
                 // From the run loop, not a main actor job: the confirmation is
                 // modal, and from a job it would hold the main queue for as
                 // long as it went unanswered (`MainRunLoop`).
@@ -2067,6 +2090,7 @@ class RecorderViewModel: ObservableObject {
             } catch {
                 // LATER on an upload that started by itself.
                 if Task.isCancelled {
+                    diag.log("UPLOAD PUT OFF // the take waits")
                     putOff(true)
                     return
                 }
@@ -2099,6 +2123,9 @@ class RecorderViewModel: ObservableObject {
                 let wait = retry.next(after: error, nonRetryable: nonRetryable,
                                       networkReady: networkReadiness.isReady)
                 guard wait != .giveUp else {
+                    diag.log("UPLOAD FAILED // \(summary.label), status \(statusText), after \(attempt + 1) attempt(s)"
+                             + (Self.statusSuggestsClockSkew(summary.status) ? " · check the Mac's date & time" : ""),
+                             level: .warn)
                     logger.error("Upload failed after \(attempt + 1, privacy: .public) attempt(s): \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Recording kept on Desktop; pending upload persisted for next launch.")
                     if Self.statusSuggestsClockSkew(summary.status) {
                         logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
@@ -2130,9 +2157,13 @@ class RecorderViewModel: ObservableObject {
                 // called off (LATER) ends at the top of the loop.
                 switch wait {
                 case .backoff(let delay):
+                    diag.log("UPLOAD ATTEMPT \(attempt) FAILED // \(summary.label), status \(statusText), \(elapsedText) · retry in \(delay) s",
+                             level: .warn)
                     logger.warning("Upload attempt \(attempt, privacy: .public) failed: \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Resuming in \(delay, privacy: .public)s.")
                     try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
                 case .network:
+                    diag.log("UPLOAD ATTEMPT \(attempt) FAILED // no connection (\(summary.label)) · waiting for it, up to \(UploadRetry.networkWaitLimit) s in all",
+                             level: .warn)
                     logger.warning("Upload attempt \(attempt, privacy: .public) failed with no connection: \(summary.label, privacy: .public), \(elapsedText, privacy: .public). Resuming when the connection is back.")
                     let readiness = networkReadiness
                     try? await retry.waitForNetwork(isReady: { readiness.isReady },
