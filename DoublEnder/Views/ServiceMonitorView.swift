@@ -430,10 +430,15 @@ enum ServiceConsole {
             log.log("COLLECTING THE SYSTEM LOG…", level: .system)
             Task.detached(priority: .userInitiated) {
                 let system = DiagnosticLogger.systemLogLines()
+                // The app logs only what goes wrong, so a calm session has
+                // nothing here; say so rather than leave the section out.
+                let shown = system.isEmpty
+                    ? ["(nothing since launch: the app writes to the system log only when something goes wrong)"]
+                    : system
                 await MainActor.run {
                     let log = DiagnosticLogger.shared
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(log.exportText(systemLog: system), forType: .string)
+                    NSPasteboard.general.setString(log.exportText(systemLog: shown), forType: .string)
                     log.log("COPIED TO PASTEBOARD // \(log.pinnedLines.count) pinned · \(log.lines.count) log · "
                             + "\(system.count) system log lines", level: .system)
                 }
