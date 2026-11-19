@@ -93,8 +93,9 @@ enum MoveToApplications {
         /// itself from (`SelfUpdater.Obstacle.readOnlyLocation`).
         var isStuck: (URL) -> Bool
         var isTranslocated: (URL) -> Bool
-        /// The read-only volume holding a copy that is not translocated, when
-        /// that volume is a mounted disk image.
+        /// The read-only volume holding a copy, when that volume is a mounted
+        /// disk image. Asked of the running copy, or of a translocated copy's
+        /// original.
         var diskImageVolume: (URL) -> URL?
         /// Where a translocated copy was downloaded to.
         var originalLocation: (URL) -> URL?
@@ -123,9 +124,19 @@ enum MoveToApplications {
         guard tools.isStuck(app) else { return .stay }
         if let lastMove, now.timeIntervalSince(lastMove) < retryAfter { return .stay }
 
+        // A copy translocated from a disk image is on the disk image: macOS
+        // translocates an app opened from a quarantined image too. Until
+        // 2026-11-19 it counted as downloaded, so the question said it ran
+        // from the folder it was downloaded to, the move tried to trash the
+        // original on the read-only volume, and the image stayed mounted.
         let origin: Origin
         if tools.isTranslocated(app) {
-            origin = .downloaded(original: tools.originalLocation(app))
+            let original = tools.originalLocation(app)
+            if let original, let volume = tools.diskImageVolume(original) {
+                origin = .diskImage(volume: volume)
+            } else {
+                origin = .downloaded(original: original)
+            }
         } else if let volume = tools.diskImageVolume(app) {
             origin = .diskImage(volume: volume)
         } else {
