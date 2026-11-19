@@ -262,6 +262,56 @@ final class ModalGateTests: XCTestCase {
         XCTAssertEqual(serviced, true)
     }
 
+    /// The way it happens: "Microphone disconnected" is up, its modal loop
+    /// running, when the upload's result arrives from the run loop
+    /// (`MainRunLoop.deliver` runs under a modal). The result used to open
+    /// there, on top of the alert; it now opens once the alert has closed.
+    @MainActor
+    func testAResultArrivingUnderADialogOpensAfterIt() {
+        let activity = AppActivity()
+        let shown = expectation(description: "the result opened")
+        var steps: [String] = []
+        ModalGate.run(activity: activity) {
+            MainRunLoop.deliver {
+                steps.append("result arrives")
+                ModalGate.afterDialogs {
+                    steps.append(ModalGate.isPresenting ? "result opens over a dialog" : "result opens")
+                    shown.fulfill()
+                }
+            }
+            // The alert's modal loop, which services the run loop.
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+            steps.append("alert closes")
+        }
+        wait(for: [shown], timeout: 5)
+        XCTAssertEqual(steps, ["result arrives", "alert closes", "result opens"])
+    }
+
+    /// With nothing up it opens at once; under two dialogs it waits for both.
+    @MainActor
+    func testAResultWaitsForEveryDialogUp() {
+        let activity = AppActivity()
+        var opened = 0
+        ModalGate.afterDialogs { opened += 1 }
+        XCTAssertEqual(opened, 1)
+
+        let shown = expectation(description: "opened")
+        var depthWhenOpened = -1
+        ModalGate.run(activity: activity) {
+            ModalGate.run(activity: activity) {
+                ModalGate.afterDialogs {
+                    depthWhenOpened = ModalGate.depth
+                    shown.fulfill()
+                }
+            }
+            XCTAssertEqual(depthWhenOpened, -1, "opened over the outer dialog")
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            XCTAssertEqual(depthWhenOpened, -1, "opened over the outer dialog")
+        }
+        wait(for: [shown], timeout: 5)
+        XCTAssertEqual(depthWhenOpened, 0)
+    }
+
     /// The check and the dialog are one step: nothing can start in between.
     @MainActor
     func testASuppressedDialogNeverOpens() {
