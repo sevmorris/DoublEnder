@@ -586,6 +586,42 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertTrue(h.removed.isEmpty)
     }
 
+    /// A copy waits for the quit, and the check every few hours is under way
+    /// when the guest quits. The quit used to install only in `.readyAtQuit`,
+    /// and the check had set `.checking`, so the copy was thrown away
+    /// (`cleanUpForQuit`) and the update waited a launch longer.
+    @MainActor
+    func testAQuitDuringABackgroundCheckStillInstallsTheCopyWaitingForIt() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertEqual(h.coordinator.phase, .readyAtQuit)
+
+        let firstCheck = h.coordinator.lastCheck
+        h.checkDelay = .milliseconds(300)
+        h.result = .upToDate(version: "9.0.0")
+        h.coordinator.startBackgroundUpdate(promptIfStuck: false)
+        await waitUntil { h.coordinator.phase == .checking }
+
+        // What AppDelegate's applicationWillTerminate does.
+        XCTAssertTrue(h.coordinator.installAtQuit(), "the copy waiting for the quit was not installed")
+        h.coordinator.cleanUpForQuit()
+        XCTAssertEqual(h.quitCommits.map(\.version), ["9.0.0"])
+        XCTAssertTrue(h.removed.isEmpty, "the installed update's folder was deleted")
+        XCTAssertNil(h.coordinator.stagedForQuit)
+        // The check ends before the harness goes.
+        await waitUntil { h.coordinator.lastCheck != firstCheck }
+    }
+
+    /// Not while that copy is being installed already.
+    @MainActor
+    func testAQuitDuringTheInstallAtQuitDoesNotInstallTwice() async {
+        let h = Harness()
+        await h.coordinator.updateInBackground(promptIfStuck: false)
+        XCTAssertTrue(h.coordinator.installAtQuit())
+        XCTAssertFalse(h.coordinator.installAtQuit())
+        XCTAssertEqual(h.quitCommits.count, 1)
+    }
+
     @MainActor
     func testNothingStagedNothingInstalledAtQuit() {
         let h = Harness()
