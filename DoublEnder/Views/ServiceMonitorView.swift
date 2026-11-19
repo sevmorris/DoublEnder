@@ -21,28 +21,55 @@ private enum CRT {
 /// The compact utility panel `DE-DIAG // SERVICE MONITOR`. Opened and closed
 /// from the About window's hidden trigger.
 @MainActor
-final class ServiceMonitorPanel {
+final class ServiceMonitorPanel: NSObject, NSWindowDelegate {
     static let shared = ServiceMonitorPanel()
     private var panel: NSPanel?
 
     func toggle() {
         if let panel, panel.isVisible {
             panel.orderOut(nil)
-            relayClick()
-            DiagnosticLogger.shared.log("SERVICE MODE // OFF", level: .system)
+            switchedOff()
             return
         }
         let panel = self.panel ?? makePanel()
         self.panel = panel
         relayClick()
         DiagnosticLogger.shared.log("SERVICE MODE // ON — type 'help'", level: .system)
-        if let about = NSApp.keyWindow {
-            let f = about.frame
-            panel.setFrameTopLeftPoint(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY - 12))
+        if let about = NSApp.keyWindow, let screen = about.screen ?? NSScreen.main {
+            panel.setFrameTopLeftPoint(Self.topLeft(for: panel.frame.size, near: about.frame,
+                                                    within: screen.visibleFrame))
         } else {
             panel.center()
         }
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// The close button and ⌘W close the panel rather than toggle it; it
+    /// is switched off either way.
+    func windowWillClose(_ notification: Notification) {
+        switchedOff()
+    }
+
+    private func switchedOff() {
+        relayClick()
+        DiagnosticLogger.shared.log("SERVICE MODE // OFF", level: .system)
+    }
+
+    /// Where the panel's top-left corner goes: centred under the About
+    /// window, or above it when there is no room below, and always inside
+    /// the screen's visible frame. Until 2026-11-19 it went under About
+    /// whatever the room, so an About window low on the screen put the
+    /// panel partly off it.
+    nonisolated static func topLeft(for size: NSSize, near about: NSRect, within visible: NSRect) -> NSPoint {
+        let gap: CGFloat = 12
+        var top = about.minY - gap
+        if top - size.height < visible.minY, about.maxY + gap + size.height <= visible.maxY {
+            top = about.maxY + gap + size.height
+        }
+        top = min(max(top, visible.minY + size.height), visible.maxY)
+        var x = about.midX - size.width / 2
+        x = min(max(x, visible.minX), max(visible.minX, visible.maxX - size.width))
+        return NSPoint(x: x, y: top)
     }
 
     private func makePanel() -> NSPanel {
@@ -57,6 +84,7 @@ final class ServiceMonitorPanel {
         panel.minSize = NSSize(width: 460, height: 280)
         panel.backgroundColor = NSColor(red: 0x1C/255, green: 0x19/255, blue: 0x13/255, alpha: 1)
         panel.contentView = NSHostingView(rootView: ServiceMonitorView())
+        panel.delegate = self
         return panel
     }
 
@@ -96,6 +124,9 @@ struct ServiceMonitorView: View {
     /// or a command lets go.
     @State private var following = true
     @FocusState private var focused: Bool
+
+    /// The longest command line the prompt takes, typed or pasted.
+    static let inputLimit = 120
 
     var body: some View {
         screen
@@ -299,14 +330,15 @@ struct ServiceMonitorView: View {
         }
         if press.modifiers.contains(.command) {
             if press.characters == "v", let text = NSPasteboard.general.string(forType: .string) {
-                input += text.filter { !$0.isNewline }
+                // The same limit as typing: a long paste would be one long line.
+                input = String((input + text.filter { !$0.isNewline }).prefix(Self.inputLimit))
                 return .handled
             }
             return .ignored
         }
         let typed = press.characters.filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }
         guard !typed.isEmpty else { return .ignored }
-        if input.count < 120 { input += typed }
+        input = String((input + typed).prefix(Self.inputLimit))
         return .handled
     }
 

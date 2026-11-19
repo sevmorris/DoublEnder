@@ -439,7 +439,7 @@ The lines name files and folders, and a take's name carries the guest's name. Th
 
 **The system log in `dump`.** `dump` also copies the app's own entries in the unified log since this launch, the latest 2,000 (`DiagnosticLogger.systemLogLines`, an `OSLogStore` of the current process, filtered to the app's subsystem): everything its `Logger`s wrote, which the ring never saw. Values the code marks private stay `<private>`, as the upload code marks every path and name. Reading the process's own log needs no entitlement, but takes a second or so, so it runs off the main thread and the panel says when it is done. The app logs only what goes wrong, so a calm session has nothing there, and the section says so. Debug and info entries can be missing, since the system keeps those in memory only.
 
-**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. Its sounds (a click as it opens and closes, and `degauss`) play through the Mac's output, so during a take they stay silent (`ServiceSound`): a guest on speakers would record them. The scrollback follows new lines while it is at the bottom; scrolling up holds it, and the header says so, so a take's line every few seconds does not pull the view away from what is being read. Scrolling back down, End, or any command follows again. It takes these commands:
+**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. Its sounds (a click as it opens and closes, and `degauss`) play through the Mac's output, so during a take they stay silent (`ServiceSound`): a guest on speakers would record them. The scrollback follows new lines while it is at the bottom; scrolling up holds it, and the header says so, so a take's line every few seconds does not pull the view away from what is being read. Scrolling back down, End, or any command follows again. It opens centred under the About window, or above it when there is no room below, and always inside the screen's visible frame (`ServiceMonitorPanel.topLeft`). Closing it with its close button or ⌘W logs `SERVICE MODE // OFF`, as toggling it off does. A command line takes at most 120 characters, typed or pasted. It takes these commands:
 
 | Command | Does |
 |---|---|
@@ -447,7 +447,7 @@ The lines name files and folders, and a take's name carries the guest's name. Th
 | `status` | The engine's state, the bound input (transport, sample rate, channels, format, layout), the output format, the active file and its size, whether data is flowing, and any recording warning (`serviceStatusLines`) |
 | `paths` | The output folder, the app's Application Support folder (update state, the version kept for going back), the app bundle and the temporary folder. `paths open` reveals the active file in Finder, or opens the output folder, and says which, or that it could not |
 | `dump` | Copies the pinned lines, the buffer and the system log since launch to the clipboard |
-| `clear` (`cls`) | Empties the buffer; the pinned lines stay |
+| `clear` (`cls`) | Empties the buffer, with any line logged but not yet shown, so its own `> clear` is gone too; the pinned lines stay |
 | `degauss` | A shake and a flash; it does nothing else |
 
 ---

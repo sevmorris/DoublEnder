@@ -128,8 +128,12 @@ final class DiagnosticLogger: ObservableObject {
         Pin.allCases.compactMap { pinned[$0] }
     }
 
-    /// Empties the scrollback. The pinned lines stay. Main thread.
+    /// Empties the scrollback, with the lines logged but not yet shown, such
+    /// as the `> clear` that asked for it. The pinned lines stay. Main thread.
     func clear() {
+        lock.lock()
+        pending.removeAll(keepingCapacity: true)
+        lock.unlock()
         lines.removeAll()
     }
 
