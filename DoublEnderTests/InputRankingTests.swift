@@ -80,6 +80,73 @@ final class InputRankingTests: XCTestCase {
         )
     }
 
+    // MARK: - More than one USB input at launch
+
+    private let webcam = InputCandidate(
+        uniqueID: "webcam", name: "Logitech BRIO", manufacturer: "Logitech", isUSB: true
+    )
+
+    /// A webcam, a USB mic and a dock: both real inputs are offered, the newest
+    /// first, and never the dock.
+    func testEveryRealUSBInputIsOfferedNewestFirst() {
+        XCTAssertEqual(
+            InputRanking.usbOffers(among: [usbMic, dock, webcam],
+                                   firstSeen: ["mic": 100, "webcam": 200, "dock": 300]),
+            [webcam, usbMic]
+        )
+        // Unstamped ones come last, in the order given.
+        XCTAssertEqual(
+            InputRanking.usbOffers(among: [usbMic, interface, webcam], firstSeen: ["webcam": 1]),
+            [webcam, usbMic, interface]
+        )
+    }
+
+    /// Keep Current to the webcam used to end it, and the mic plugged in beside
+    /// it was never offered that session. Now the mic is offered next.
+    func testKeepCurrentOffersTheNextUSBInput() {
+        var offers = LaunchUSBOffers(["webcam", "mic", "interface"])
+        XCTAssertEqual(offers.first(), "webcam")
+        XCTAssertEqual(offers.next(afterDeclining: "webcam"), "mic")
+        XCTAssertEqual(offers.next(afterDeclining: "mic"), "interface")
+        XCTAssertNil(offers.next(afterDeclining: "interface"))
+    }
+
+    /// A switch, or a pick in the picker, ends it; and a Keep Current to a
+    /// USB input plugged in later (not one of the launch's) offers nothing.
+    func testASwitchEndsTheLaunchOffers() {
+        var offers = LaunchUSBOffers(["webcam", "mic"])
+        XCTAssertEqual(offers.first(), "webcam")
+        offers.stop()
+        XCTAssertNil(offers.next(afterDeclining: "webcam"))
+
+        var other = LaunchUSBOffers(["webcam", "mic"])
+        XCTAssertEqual(other.first(), "webcam")
+        XCTAssertNil(other.next(afterDeclining: "hot-plugged"))
+        XCTAssertEqual(other.next(afterDeclining: "webcam"), "mic")
+        var none = LaunchUSBOffers()
+        XCTAssertNil(none.first())
+    }
+
+    /// A Mac with no built-in mic starts on its first hardware input, here the
+    /// webcam, which is also the newest. Its offer can't be shown (it is the
+    /// current input), so no Keep Current would ever move the series on: it is
+    /// passed over, and the mic is offered first.
+    func testAnInputThatCannotBeOfferedIsPassedOver() {
+        var offers = LaunchUSBOffers(["webcam", "mic"])
+        XCTAssertEqual(offers.first { $0 != "webcam" }, "mic")
+        XCTAssertNil(offers.next(afterDeclining: "mic"))
+
+        // Later in the series too: an input unplugged since launch.
+        var later = LaunchUSBOffers(["webcam", "gone", "mic"])
+        XCTAssertEqual(later.first(), "webcam")
+        XCTAssertEqual(later.next(afterDeclining: "webcam") { $0 != "gone" }, "mic")
+
+        // None worth offering: nothing.
+        var nothing = LaunchUSBOffers(["webcam"])
+        XCTAssertNil(nothing.first { _ in false })
+        XCTAssertNil(nothing.next(afterDeclining: "webcam"))
+    }
+
     // MARK: - The alert after losing an input
 
     func testLosingAnInputNamesWhatItFellBackTo() {

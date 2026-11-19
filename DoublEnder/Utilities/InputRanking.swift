@@ -50,14 +50,78 @@ enum InputRanking {
         hardware.first { !isDockPort($0) } ?? hardware.first
     }
 
-    /// The USB input to offer at launch: the most recently first-seen one that
-    /// isn't a dock's port. Never a dock's port, even as the only one. Inputs
-    /// with no first-seen stamp count as oldest.
+    /// The USB input to offer first at launch: the most recently first-seen one
+    /// that isn't a dock's port. Never a dock's port, even as the only one.
+    /// Inputs with no first-seen stamp count as oldest.
     static func usbOffer(
         among usb: [InputCandidate],
         firstSeen: [String: Double]
     ) -> InputCandidate? {
+        usbOffers(among: usb, firstSeen: firstSeen).first
+    }
+
+    /// Every USB input a launch may offer, in the order it offers them: the
+    /// most recently first-seen first, ties in the order given, no dock's port
+    /// (`LaunchUSBOffers`).
+    static func usbOffers(
+        among usb: [InputCandidate],
+        firstSeen: [String: Double]
+    ) -> [InputCandidate] {
         usb.filter { !isDockPort($0) }
-            .max { (firstSeen[$0.uniqueID] ?? 0) < (firstSeen[$1.uniqueID] ?? 0) }
+            .enumerated()
+            .sorted { a, b in
+                let seenA = firstSeen[a.element.uniqueID] ?? 0, seenB = firstSeen[b.element.uniqueID] ?? 0
+                return seenA != seenB ? seenA > seenB : a.offset < b.offset
+            }
+            .map(\.element)
+    }
+}
+
+/// The USB inputs a launch offers, one after another. The first is the newest
+/// (`InputRanking.usbOffers`); the next is offered only once the guest has
+/// kept the current input over the one before ("Keep Current"), and a switch
+/// ends it. Until 2026-11-18 a launch offered only the newest: with a webcam
+/// and a USB mic plugged in, Keep Current to the webcam meant the mic was never
+/// offered that session, and the guest recorded on the built-in mic unless
+/// they found it in the picker.
+///
+/// An input that cannot be offered when its turn comes (`isWanted`: already
+/// the current input, unplugged since launch) is passed over for the one after
+/// it. Only Keep Current moves the series on, and an offer that is never shown
+/// gets no Keep Current: on a Mac with no built-in mic, which starts on its
+/// first hardware input, a webcam that was both that input and the newest
+/// stopped the series before the USB mic beside it.
+struct LaunchUSBOffers: Equatable {
+    private var queue: [String]
+    private var offered: String?
+
+    init(_ uids: [String] = []) {
+        queue = uids
+    }
+
+    /// The first to offer: the first in the queue that `isWanted`.
+    mutating func first(isWanted: (String) -> Bool = { _ in true }) -> String? {
+        offered = nil
+        while !queue.isEmpty {
+            let uid = queue.removeFirst()
+            if isWanted(uid) {
+                offered = uid
+                break
+            }
+        }
+        return offered
+    }
+
+    /// The guest kept the current input over `uid`: the next to offer that
+    /// `isWanted`, when `uid` was the one this launch offered last.
+    mutating func next(afterDeclining uid: String, isWanted: (String) -> Bool = { _ in true }) -> String? {
+        guard uid == offered else { return nil }
+        return first(isWanted: isWanted)
+    }
+
+    /// The guest switched, or picked an input themselves: nothing more.
+    mutating func stop() {
+        queue = []
+        offered = nil
     }
 }
