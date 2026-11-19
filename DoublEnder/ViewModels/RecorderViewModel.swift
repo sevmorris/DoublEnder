@@ -877,8 +877,9 @@ class RecorderViewModel: ObservableObject {
 
     /// The input to start on, or to fall back to when one is lost
     /// (`InputRanking.startingInput`): the Mac's system default input when it
-    /// is a real mic, then the built-in mic unless the lid is closed, then the
-    /// first hardware input, a dock's audio port last. Nil when there is no
+    /// is a real mic (a Bluetooth headset only when the built-in mic can't
+    /// hear), then the built-in mic unless the lid is closed, then the first
+    /// hardware input, a dock's audio port last. Nil when there is no
     /// hardware input. Virtual and aggregate devices are never considered:
     /// the engine stays stopped instead.
     private func startingDevice() -> AVCaptureDevice? {
@@ -938,7 +939,9 @@ class RecorderViewModel: ObservableObject {
                     // The launch starts on the input the Mac is using (its
                     // system default), when that is a real mic, and on the
                     // built-in mic otherwise, unless the lid is closed
-                    // (`startingDevice`). Never on a saved preference: a
+                    // (`startingDevice`). A Bluetooth headset gives way to
+                    // the built-in mic while that can hear, since as a mic
+                    // it records at call quality. Never on a saved preference: a
                     // guest's input is whatever they have on today.
                     //
                     // The USB offer below still offers a one-tap switch to

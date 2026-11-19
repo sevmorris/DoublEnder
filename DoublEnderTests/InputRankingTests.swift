@@ -25,7 +25,7 @@ final class InputRankingTests: XCTestCase {
         uniqueID: "builtin", name: "MacBook Pro Microphone", manufacturer: "Apple Inc.", isUSB: false
     )
     private let headset = InputCandidate(
-        uniqueID: "headset", name: "AirPods Pro", manufacturer: "Apple Inc.", isUSB: false
+        uniqueID: "headset", name: "AirPods Pro", manufacturer: "Apple Inc.", isUSB: false, isBluetooth: true
     )
 
     /// The tester of 2026-11-19: a Bluetooth headset as the Mac's input, a
@@ -34,8 +34,24 @@ final class InputRankingTests: XCTestCase {
     func testStartsOnTheInputTheMacIsUsing() {
         XCTAssertEqual(InputRanking.startingInput(systemDefault: "headset", builtIn: "builtin",
                                                   hardware: [builtIn, webcam, headset], lidClosed: true), headset)
+        // A Mac with no built-in mic: the headset too.
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "headset", builtIn: nil,
+                                                  hardware: [webcam, headset], lidClosed: false), headset)
+    }
+
+    /// The same headset with the lid open: the built-in mic, which records at
+    /// full rate and leaves the headset out of its call profile.
+    func testABluetoothHeadsetGivesWayToABuiltInMicThatHears() {
         XCTAssertEqual(InputRanking.startingInput(systemDefault: "headset", builtIn: "builtin",
-                                                  hardware: [builtIn, webcam, headset], lidClosed: false), headset)
+                                                  hardware: [builtIn, webcam, headset], lidClosed: false), builtIn)
+    }
+
+    /// A USB mic the Mac is using wins over the built-in mic, lid open or not.
+    func testAUSBMicTheMacIsUsingWinsOverTheBuiltInMic() {
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "mic", builtIn: "builtin",
+                                                  hardware: [builtIn, usbMic], lidClosed: false), usbMic)
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "mic", builtIn: "builtin",
+                                                  hardware: [builtIn, usbMic], lidClosed: true), usbMic)
     }
 
     /// With the Mac on its built-in mic, the lid open, it starts there, as

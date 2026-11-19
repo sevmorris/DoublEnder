@@ -1017,11 +1017,14 @@ class AudioEngine: NSObject, ObservableObject {
 
     /// `device` as `InputRanking` sees it.
     func inputCandidate(for device: AVCaptureDevice) -> InputCandidate {
-        InputCandidate(
+        let transport = audioDeviceID(forUID: device.uniqueID).flatMap { transportType(for: $0) }
+        return InputCandidate(
             uniqueID: device.uniqueID,
             name: device.localizedName,
             manufacturer: device.manufacturer,
-            isUSB: isUSBDevice(device)
+            isUSB: transport == kAudioDeviceTransportTypeUSB,
+            isBluetooth: transport == kAudioDeviceTransportTypeBluetooth
+                || transport == kAudioDeviceTransportTypeBluetoothLE
         )
     }
 
