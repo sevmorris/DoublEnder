@@ -1,4 +1,5 @@
 import XCTest
+import OSLog
 @testable import DoublEnder
 
 /// The Service Monitor's log. Each test makes its own logger, never `shared`.
@@ -75,5 +76,65 @@ final class DiagnosticLoggerTests: XCTestCase {
         plain.log("TLM // 1")
         flushed(plain) { plain.lines.count == 1 }
         XCTAssertFalse(plain.exportText().contains("PINNED"), "no header with nothing pinned")
+    }
+
+    /// With the system log, `dump` gets a third section, and the log keeps its
+    /// header with nothing pinned.
+    func testDumpEndsWithTheSystemLog() {
+        let logger = DiagnosticLogger()
+        logger.log("TLM // 1")
+        flushed(logger) { logger.lines.count == 1 }
+        let dump = logger.exportText(systemLog: ["[00:00:00.000] NOTICE AudioEngine: hello"])
+            .split(separator: "\n").map { $0.replacing(#/^\[[^\]]*\] /#, with: "") }
+        XCTAssertEqual(dump, ["-- LOG --", "TLM // 1", "-- SYSTEM LOG --", "NOTICE AudioEngine: hello"])
+    }
+
+    /// The app's own `Logger` output comes back from the unified log.
+    func testTheSystemLogHoldsTheAppsOwnEntries() {
+        let token = UUID().uuidString
+        Logger(subsystem: DiagnosticLogger.subsystem, category: "Tests").error("dump probe \(token, privacy: .public)")
+        let deadline = Date().addingTimeInterval(10)
+        var found = false
+        while !found && Date() < deadline {
+            found = DiagnosticLogger.systemLogLines().contains { $0.contains(token) && $0.contains("ERROR Tests:") }
+        }
+        XCTAssertTrue(found, "the probe never showed up in the system log")
+    }
+}
+
+/// The `TLM` line's levels.
+final class TelemetryWindowTests: XCTestCase {
+
+    /// Zeros are SILENT, not the meter's -36 dB floor, which a quiet working
+    /// input reads below.
+    func testDigitalSilenceSaysSo() {
+        var window = TelemetryWindow()
+        window.add(frames: 480, mono: [Float](repeating: 0, count: 480), peak: 0)
+        XCTAssertEqual(window.line, "TLM // 1 buf · 480 fr · SILENT (every sample zero)")
+
+        var quiet = TelemetryWindow()
+        quiet.add(frames: 480, mono: [Float](repeating: 0.001, count: 480), peak: 0.001)
+        XCTAssertEqual(quiet.line, "TLM // 1 buf · 480 fr · peak -60.0 dBFS · rms -60.0 dBFS")
+    }
+
+    /// The RMS is the interval's: a loud buffer then a quiet one is not the
+    /// quiet one's level.
+    func testTheRMSCoversTheWholeInterval() {
+        var window = TelemetryWindow()
+        window.add(frames: 100, mono: [Float](repeating: 0.5, count: 100), peak: 0.5)
+        window.add(frames: 100, mono: [Float](repeating: 0, count: 100), peak: 0)
+        XCTAssertEqual(window.rms ?? 0, Float(0.5 / 2.0.squareRoot()), accuracy: 1e-6)
+        XCTAssertEqual(window.peak, 0.5)
+        XCTAssertEqual(window.frames, 200)
+        XCTAssertTrue(window.line.hasSuffix("peak -6.0 dBFS · rms -9.0 dBFS"), window.line)
+    }
+
+    /// A format the mix cannot read still counts its frames, and says its
+    /// level is unknown rather than silent.
+    func testAnUnreadableFormatIsNotSilence() {
+        var window = TelemetryWindow()
+        window.add(frames: 512, mono: nil, peak: 0)
+        XCTAssertNil(window.rms)
+        XCTAssertEqual(window.line, "TLM // 1 buf · 512 fr · level unreadable (unsupported format)")
     }
 }

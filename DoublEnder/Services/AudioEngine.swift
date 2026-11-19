@@ -2,7 +2,6 @@ import Foundation
 import AppKit
 import AVFoundation
 import Combine
-import Accelerate
 import OSLog
 
 private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "AudioEngine")
@@ -306,9 +305,7 @@ class AudioEngine: NSObject, ObservableObject {
     // ── Service Monitor telemetry (writerQueue only) ─────────────────────
     // One timestamp compare per buffer; a formatted line every few seconds.
     private var telemetryLastTick: CFAbsoluteTime = 0
-    private var telemetryBuffers = 0
-    private var telemetryFrames = 0
-    private var telemetryPeakDb: Float = LevelMeter.dbFloor
+    private var telemetry = TelemetryWindow()
     private static let telemetryInterval: CFAbsoluteTime = 5
 
     override init() {
@@ -708,6 +705,7 @@ class AudioEngine: NSObject, ObservableObject {
         let visibleDevices = discoveredDevices.filter {
             !$0.localizedName.hasPrefix("CADefaultDeviceAggregate")
         }
+        let previousDevices = self.availableInputDevices
         self.availableInputDevices = visibleDevices
         deviceKindCache = Dictionary(
             uniqueKeysWithValues: visibleDevices.map { ($0.uniqueID, classify($0)) }
@@ -733,6 +731,12 @@ class AudioEngine: NSObject, ObservableObject {
         let currentUIDs = Set(visibleDevices.map { $0.uniqueID })
         if hasSeededKnownDevices {
             let newUIDs = currentUIDs.subtracting(knownInputDeviceUIDs)
+            for device in visibleDevices where newUIDs.contains(device.uniqueID) {
+                DiagnosticLogger.shared.log("INPUT ARRIVED // \(device.localizedName) (\(deviceKindCache[device.uniqueID].map { "\($0)" } ?? "?"))")
+            }
+            for device in previousDevices where knownInputDeviceUIDs.contains(device.uniqueID) && !currentUIDs.contains(device.uniqueID) {
+                DiagnosticLogger.shared.log("INPUT GONE // \(device.localizedName)", level: .warn)
+            }
             knownInputDeviceUIDs = currentUIDs
             // During a take too: the recorder keeps the offer until the take
             // is over. This used to stay quiet during a take, and the device,
@@ -746,6 +750,8 @@ class AudioEngine: NSObject, ObservableObject {
         } else {
             hasSeededKnownDevices = true
             knownInputDeviceUIDs = currentUIDs
+            DiagnosticLogger.shared.log("INPUTS // \(visibleDevices.count) present: "
+                                        + visibleDevices.map(\.localizedName).joined(separator: ", "))
         }
 
         notifyIfRecordingInputDisconnected()
@@ -953,6 +959,7 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
     @objc private func captureSessionInterruptionEnded(_ notification: Notification) {
+        DiagnosticLogger.shared.log("SESSION INTERRUPTION ENDED — watchdog disarmed", level: .event)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             // Disarm the watchdog before any other work — the interruption resolved.
@@ -1205,9 +1212,7 @@ class AudioEngine: NSObject, ObservableObject {
             self.voiceDetector = VoiceDetector()
             self.publishedVoiceStatus = VoiceDetector.Status()
             self.telemetryLastTick = 0
-            self.telemetryBuffers = 0
-            self.telemetryFrames = 0
-            self.telemetryPeakDb = LevelMeter.dbFloor
+            self.telemetry = TelemetryWindow()
         }
         isRecording = true
 
@@ -1608,7 +1613,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
     ) {
         let mono = PCMSidecar.normalizedMonoFloatSamples(from: sampleBuffer)
         // Live peak-hold meter, always — independent of recording state.
-        updateMeterLevels(from: mono)
+        let peakLinear = updateMeterLevels(from: mono)
         // Keep the input's format for diagnostics. Capture reuses one format
         // description while the format holds, so this locks only on a change.
         if let format = CMSampleBufferGetFormatDescription(sampleBuffer), format !== lastInputFormat {
@@ -1620,7 +1625,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         guard isRecording else { return }
 
         listenForVoice(in: mono, from: sampleBuffer)
-        recordTelemetry(mono)
+        recordTelemetry(mono, peak: peakLinear, frames: CMSampleBufferGetNumSamples(sampleBuffer))
 
         writerLock.lock()
         guard let writer = assetWriter else {
@@ -1836,7 +1841,9 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
     /// layout whose writer mix has been measured, so the meter shows the level
     /// the file records. Other layouts can differ (see that function). Nil, for
     /// an unsupported PCM format, reads as silence.
-    private func updateMeterLevels(from mono: [Float]?) {
+    /// Returns the buffer's peak, linear, for the Service Monitor.
+    @discardableResult
+    private func updateMeterLevels(from mono: [Float]?) -> Float {
         let peakLinear = mono.map { LevelMeter.peakLinear(in: $0) } ?? 0
         let instantDb = LevelMeter.clampedDisplayDB(fromLinear: peakLinear)
         let coef = instantDb > smoothedPeakLevel ? LevelMeter.peakAttack : LevelMeter.peakRelease
@@ -1845,29 +1852,20 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.meterLevel = level
         }
+        return peakLinear
     }
 
-    /// Service Monitor tick, on writerQueue. Per buffer it only counts and
-    /// compares the meter's already-computed peak; the RMS and the formatted
-    /// line happen once every `telemetryInterval`.
-    private func recordTelemetry(_ mono: [Float]?) {
-        telemetryBuffers += 1
-        telemetryFrames += mono?.count ?? 0
-        telemetryPeakDb = max(telemetryPeakDb, smoothedPeakLevel)
+    /// Service Monitor tick, on writerQueue. Per buffer it adds the buffer to
+    /// `telemetry` (one vDSP pass, the peak being the meter's); the line is
+    /// formatted once every `telemetryInterval`.
+    private func recordTelemetry(_ mono: [Float]?, peak: Float, frames: Int) {
+        telemetry.add(frames: frames, mono: mono, peak: peak)
         let now = CFAbsoluteTimeGetCurrent()
         if telemetryLastTick == 0 { telemetryLastTick = now; return }
         guard now - telemetryLastTick >= Self.telemetryInterval else { return }
-        var rms: Float = 0
-        if let mono, !mono.isEmpty {
-            mono.withUnsafeBufferPointer { vDSP_rmsqv($0.baseAddress!, 1, &rms, vDSP_Length($0.count)) }
-        }
-        let line = String(format: "TLM // %d buf · %d fr · peak %.1f dBFS · rms %.1f dBFS",
-                          telemetryBuffers, telemetryFrames, telemetryPeakDb, LevelMeter.dbFS(fromLinear: rms))
-        DiagnosticLogger.shared.log(line)
+        DiagnosticLogger.shared.log(telemetry.line, level: telemetry.peak == 0 ? .warn : .info)
         telemetryLastTick = now
-        telemetryBuffers = 0
-        telemetryFrames = 0
-        telemetryPeakDb = LevelMeter.dbFloor
+        telemetry = TelemetryWindow()
     }
 
     /// Feeds the take's mono mix to the voice detector. Display-only, like the
