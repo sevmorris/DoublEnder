@@ -579,6 +579,10 @@ class RecorderViewModel: ObservableObject {
         // The connection coming back may let a waiting take upload by itself,
         // and so may a dialog closing or the recorder going idle.
         MainActor.assumeIsolated {
+            // For an upload's retries, which read it off the main queue.
+            CloudConnectivity.shared.$isReady
+                .sink { [weak self] ready in self?.networkReadiness.set(ready) }
+                .store(in: &cancellables)
             CloudConnectivity.shared.$isReady
                 .removeDuplicates()
                 .filter { $0 }
@@ -1789,6 +1793,10 @@ class RecorderViewModel: ObservableObject {
     /// succeed. A failure calls it off. Main thread.
     var quitWhenUploaded = false
 
+    /// `CloudConnectivity.isReady`, readable off the main queue, for the waits
+    /// between an upload's attempts (`UploadRetry`).
+    private let networkReadiness = NetworkReadiness()
+
     /// A hop to the main queue that nothing waits for, for an upload's
     /// bookkeeping. The queue is serial, so the hops land in the order sent.
     private func onMainQueue(_ work: @escaping () -> Void) {
@@ -1833,7 +1841,8 @@ class RecorderViewModel: ObservableObject {
         // session opens still leaves something for the next-launch prompt.
         rememberUpload(of: fileURL)
 
-        let backoffSeconds: [UInt64] = [2, 4, 8]   // before retries 1, 2, 3
+        // The waits between attempts, and whether one is spent (`UploadRetry`).
+        var retry = UploadRetry()
         var attempt = 0
         // Nothing from here to the end of the transfer waits for the main
         // queue: a modal dialog opened from one of its blocks ("Microphone
@@ -1936,7 +1945,9 @@ class RecorderViewModel: ObservableObject {
                 // Deterministic failures (integrity mismatch, credential/signing)
                 // won't fix by re-sending — fail now, keep the local file.
                 let nonRetryable = (error as? Uploader.UploaderError)?.isNonRetryable ?? false
-                guard !nonRetryable, attempt < backoffSeconds.count else {
+                let wait = retry.next(after: error, nonRetryable: nonRetryable,
+                                      networkReady: networkReadiness.isReady)
+                guard wait != .giveUp else {
                     logger.error("Upload failed after \(attempt + 1, privacy: .public) attempt(s): \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Recording kept on Desktop; pending upload persisted for next launch.")
                     if Self.statusSuggestsClockSkew(summary.status) {
                         logger.error("Upload rejected with HTTP \(statusText, privacy: .public). If this keeps happening, a common cause is the Mac's date & time being off by more than ~15 minutes — check System Settings › General › Date & Time.")
@@ -1960,12 +1971,22 @@ class RecorderViewModel: ObservableObject {
                     }
                     return
                 }
-                let delay = backoffSeconds[attempt]
-                logger.warning("Upload attempt \(attempt + 1, privacy: .public) failed: \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Resuming in \(delay, privacy: .public)s.")
                 attempt += 1
-                // Stay in .uploading across the backoff so the UI shows a
-                // resume in progress rather than a flash of failure.
-                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                // Stay in .uploading across the wait so the UI shows a resume
+                // in progress rather than a flash of failure. A wait that is
+                // called off (LATER) ends at the top of the loop.
+                switch wait {
+                case .backoff(let delay):
+                    logger.warning("Upload attempt \(attempt, privacy: .public) failed: \(summary.label, privacy: .public), status \(statusText, privacy: .public), \(elapsedText, privacy: .public). Resuming in \(delay, privacy: .public)s.")
+                    try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                case .network:
+                    logger.warning("Upload attempt \(attempt, privacy: .public) failed with no connection: \(summary.label, privacy: .public), \(elapsedText, privacy: .public). Resuming when the connection is back.")
+                    let readiness = networkReadiness
+                    try? await retry.waitForNetwork(isReady: { readiness.isReady },
+                                                    sleep: { try await Task.sleep(nanoseconds: $0 * 1_000_000_000) })
+                case .giveUp:
+                    break
+                }
             }
         }
     }

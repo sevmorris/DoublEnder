@@ -243,3 +243,75 @@ final class PendingUploadsTests: XCTestCase {
     }
 }
 
+
+/// The waits between one upload's attempts.
+final class UploadRetryTests: XCTestCase {
+
+    private let offline = URLError(.notConnectedToInternet)
+    private let lost = URLError(.networkConnectionLost)
+
+    /// A closed lid or a lost Wi-Fi: the attempts fail while the Mac has no
+    /// connection, and Wi-Fi takes longer to rejoin after the wake than the
+    /// 2 + 4 + 8 s the retries wait. They used to be spent there, and the guest
+    /// was told the upload had failed. Now they wait for the connection.
+    func testFailuresWithNoConnectionSpendNoRetries() {
+        var retry = UploadRetry()
+        for _ in 0..<5 {
+            let wait = retry.next(after: offline, nonRetryable: false, networkReady: false)
+            XCTAssertEqual(wait, .network, "a retry was spent while the Mac had no connection")
+        }
+        XCTAssertEqual(retry.retriesSpent, 0)
+        // Back online, an upload still has all three retries.
+        XCTAssertEqual(retry.next(after: lost, nonRetryable: false, networkReady: true), .backoff(2))
+        XCTAssertEqual(retry.next(after: lost, nonRetryable: false, networkReady: true), .backoff(4))
+        XCTAssertEqual(retry.next(after: lost, nonRetryable: false, networkReady: true), .backoff(8))
+        XCTAssertEqual(retry.next(after: lost, nonRetryable: false, networkReady: true), .giveUp)
+    }
+
+    /// The wait ends as soon as the connection is back, and in all it is
+    /// capped: past the cap the retries are spent as they always were.
+    func testTheWaitForTheConnectionEndsWhenItIsBackAndIsCapped() async throws {
+        var retry = UploadRetry()
+        var slept: UInt64 = 0
+        try await retry.waitForNetwork(isReady: { slept >= 10 }, sleep: { slept += $0 })
+        XCTAssertEqual(slept, 10)
+
+        try await retry.waitForNetwork(isReady: { false }, sleep: { slept += $0 })
+        XCTAssertEqual(retry.networkWaited, UploadRetry.networkWaitLimit)
+        XCTAssertEqual(retry.next(after: offline, nonRetryable: false, networkReady: false), .backoff(2),
+                       "an upload with no connection must still end")
+    }
+
+    /// Called off (LATER, a quit): the wait stops at once.
+    func testACalledOffWaitStops() async {
+        var retry = UploadRetry()
+        struct Stop: Error {}
+        do {
+            try await retry.waitForNetwork(isReady: { false }, sleep: { _ in throw Stop() })
+            XCTFail("the wait went on")
+        } catch {}
+        XCTAssertEqual(retry.networkWaited, 0)
+    }
+
+    /// Cloud Storage answered, or the connection is up: the usual retries.
+    /// What cannot be fixed by sending again fails at once.
+    func testOtherFailuresAreRetriedAsBefore() {
+        var retry = UploadRetry()
+        // The network looks up, but the request still failed: spent as before.
+        XCTAssertEqual(retry.next(after: offline, nonRetryable: false, networkReady: true), .backoff(2))
+        // A server error with the network down is Cloud Storage's, not the Mac's.
+        XCTAssertEqual(retry.next(after: CocoaError(.fileReadUnknown), nonRetryable: false, networkReady: false),
+                       .backoff(4))
+        var other = UploadRetry()
+        XCTAssertEqual(other.next(after: offline, nonRetryable: true, networkReady: false), .giveUp)
+    }
+
+    func testOnlyConnectionFailuresCount() {
+        XCTAssertTrue(UploadRetry.isConnectivity(URLError(.notConnectedToInternet)))
+        XCTAssertTrue(UploadRetry.isConnectivity(URLError(.networkConnectionLost)))
+        XCTAssertTrue(UploadRetry.isConnectivity(URLError(.timedOut)))
+        XCTAssertFalse(UploadRetry.isConnectivity(URLError(.badServerResponse)))
+        XCTAssertFalse(UploadRetry.isConnectivity(URLError(.cancelled)))
+        XCTAssertFalse(UploadRetry.isConnectivity(CocoaError(.fileReadUnknown)))
+    }
+}
