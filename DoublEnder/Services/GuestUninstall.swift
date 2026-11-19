@@ -171,11 +171,22 @@ enum GuestUninstall {
         isGuestSession && !forSystem && recorderOpen && !hasUnuploadedTakes && !alreadyOffered
     }
 
+    /// A copy translocated from a disk image counts as on the disk image.
+    /// macOS translocates an app opened from a quarantined image as well as
+    /// one in Downloads, and its original is then on the read-only volume,
+    /// where it cannot go to the Trash. Until 2026-11-19 that original was
+    /// what the uninstall tried to trash: it failed, the guest was told so,
+    /// and the image stayed mounted.
     static func origin(of app: URL, tools: Tools) -> Origin {
+        var onImage = app
         if tools.isTranslocated(app) {
-            return .translocated(original: tools.originalLocation(app))
+            let original = tools.originalLocation(app)
+            guard let original, tools.diskImageVolume(original) != nil else {
+                return .translocated(original: original)
+            }
+            onImage = original
         }
-        if let volume = tools.diskImageVolume(app) {
+        if let volume = tools.diskImageVolume(onImage) {
             let imageFile = tools.diskImageFile(volume).flatMap { file in
                 tools.isWritableFolder(file.deletingLastPathComponent()) ? file : nil
             }

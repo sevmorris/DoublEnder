@@ -154,6 +154,20 @@ final class MoveToApplicationsTests: XCTestCase {
         XCTAssertTrue(MoveToApplications.explanation(for: offer).contains("downloaded to"))
     }
 
+    /// macOS translocates a copy opened from a quarantined disk image too:
+    /// its original is on the image, which is ejected, and nothing is trashed.
+    func testACopyTranslocatedFromADiskImageIsOnTheDiskImage() throws {
+        try FileManager.default.createDirectory(at: systemApplications, withIntermediateDirectories: true)
+        let world = adminWorld()
+        world.diskImage = volume
+        world.translocated = true
+        world.original = running
+        guard case .offer(let offer) = decide(world) else { return XCTFail("no offer") }
+        XCTAssertEqual(offer.origin, .diskImage(volume: volume))
+        XCTAssertEqual(offer.origin.volumeToEject, volume)
+        XCTAssertTrue(MoveToApplications.explanation(for: offer).contains("running from its disk image"))
+    }
+
     /// A standard account cannot write to /Applications; its own Applications
     /// folder takes the copy, and is made if it is not there yet.
     func testWithoutAdministratorRightsItGoesToTheHomeApplicationsFolder() throws {

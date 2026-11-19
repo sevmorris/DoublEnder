@@ -166,6 +166,32 @@ final class GuestUninstallTests: XCTestCase {
                        .diskImage(volume: volume, imageFile: dmg))
     }
 
+    /// macOS translocates an app opened from a quarantined disk image, not
+    /// only one in Downloads. Its original is on the read-only volume and
+    /// cannot be trashed; the image is ejected, and its file trashed, instead.
+    func testACopyTranslocatedFromADiskImageIsOnTheDiskImage() {
+        let translocatedApp = URL(fileURLWithPath: "/private/var/folders/xx/T/AppTranslocation/ABC/d/DoublEnder Cloud.app")
+        let volume = URL(fileURLWithPath: "/Volumes/DoublEnder Cloud")
+        let onImage = volume.appendingPathComponent("DoublEnder Cloud.app")
+        let dmg = URL(fileURLWithPath: "/Users/guest/Downloads/DoublEnder-Cloud.dmg")
+        let world = World()
+        world.translocated = true
+        world.original = onImage
+        world.diskImageVolume = volume
+        world.diskImageFile = dmg
+        world.writableFolders.insert("/Users/guest/Downloads")
+        world.stuck = [onImage]
+
+        let origin = GuestUninstall.origin(of: translocatedApp, tools: world.tools)
+        XCTAssertEqual(origin, .diskImage(volume: volume, imageFile: dmg))
+        XCTAssertFalse(GuestUninstall.explanation(for: origin, appName: "DoublEnder Cloud")
+            .contains("move itself to the Trash"))
+        XCTAssertEqual(GuestUninstall.perform(.uninstall, origin: origin, tools: world.tools),
+                       .removed(clearedSettings: true))
+        XCTAssertEqual(world.trashed, [dmg])
+        XCTAssertEqual(world.detachedVolumes, [volume])
+    }
+
     // MARK: - Alert choices & actions
 
     func testChoiceMappingFromAlertResponse() {
