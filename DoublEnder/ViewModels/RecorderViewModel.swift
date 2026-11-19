@@ -1044,11 +1044,13 @@ class RecorderViewModel: ObservableObject {
         }
         do {
             let fileURL = makeRecordingURL(nameOverride: nameOverride)
+            DiagnosticLogger.shared.log("STATE IDLE -> ARMED // \(fileURL.lastPathComponent) [\(outputFormat.rawValue.uppercased())]", level: .event, pin: .take)
 
             // Crash recovery is keyed off the PCM sidecar file, which the
             // audio engine creates the moment the writer starts — no
             // separate UserDefaults flag to keep in sync.
             try audioEngine.startRecording(to: fileURL, format: outputFormat, notes: notes)
+            DiagnosticLogger.shared.log("STATE ARMED -> RECORDING", level: .event)
 
             recordedFileURL = fileURL
             state = .recording
@@ -1073,6 +1075,7 @@ class RecorderViewModel: ObservableObject {
                 .autoconnect()
                 .sink { [weak self] _ in self?.audioEngine.checkRecordingInputHealth() }
         } catch {
+            DiagnosticLogger.shared.log("STATE ARMED -> FAULT // \(error.localizedDescription)", level: .warn)
             state = .error("Failed to start recording: \(error.localizedDescription)")
         }
     }
@@ -1082,6 +1085,7 @@ class RecorderViewModel: ObservableObject {
     /// The reason goes to the user with the take's confirmation.
     private func checkDiskSpaceDuringRecording() {
         guard isCurrentlyRecording else { return }
+        logDiskHealth()
         guard let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
             format: outputFormat
@@ -1144,6 +1148,9 @@ class RecorderViewModel: ObservableObject {
         // is cleared only when finalization completes (success or real failure).
         let alreadyFinalizing = isFinalizingRecording
         isFinalizingRecording = true
+        if !alreadyFinalizing {
+            DiagnosticLogger.shared.log("STATE RECORDING -> FLUSHING // finalizing writer", level: .event)
+        }
         timer?.cancel()
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()
@@ -1214,6 +1221,7 @@ class RecorderViewModel: ObservableObject {
             )
             switch result {
             case .success(.some(let url)):
+                DiagnosticLogger.shared.log("STATE FLUSHING -> SAVED // \(url.lastPathComponent) · \(takeSeconds) s", level: .event)
                 // Notify the user that the recording is on disk — fires for both
                 // DoublEnder and DoublEnderCloud so every saved file gets a
                 // system notification with a Reveal in Finder action, regardless
@@ -1247,6 +1255,7 @@ class RecorderViewModel: ObservableObject {
                 return
                 #endif
             case .success(.none):
+                DiagnosticLogger.shared.log("STATE FLUSHING -> IDLE // no audio captured", level: .warn)
                 self.recordingTime = 0
                 self.recordedFileURL = nil
                 if let reason = self.pendingDisconnectReason {
@@ -1258,6 +1267,7 @@ class RecorderViewModel: ObservableObject {
                     self.state = .ready
                 }
             case .failure(let error):
+                DiagnosticLogger.shared.log("STATE FLUSHING -> FAULT // \(error.localizedDescription)", level: .warn)
                 self.recordingTime = 0
                 let mainOutput = self.recordedFileURL
                 let disconnectReason = self.pendingDisconnectReason
@@ -1400,6 +1410,43 @@ class RecorderViewModel: ObservableObject {
         return "\(prefix)Failed to finalize recording: \(error.localizedDescription)"
     }
 
+    /// Disk-write health for the Service Monitor, every disk-watch tick
+    /// (5 s) on main: the file's size so far and the volume's free space.
+    private func logDiskHealth() {
+        let size = recordedFileURL
+            .flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? NSNumber }?
+            .int64Value ?? 0
+        let free = DiskSpaceChecker.availableMegabytes(at: Self.recordingsDirectory).map { "\($0) MB" } ?? "?"
+        DiagnosticLogger.shared.log(String(format: "DISK // file %.2f MB · free %@ · writing %@",
+                                           Double(size) / 1_048_576, free, isWritingData ? "YES" : "NO"))
+    }
+
+    /// The `status` command's lines. Main thread.
+    func serviceStatusLines() -> [String] {
+        var lines = [
+            "ENGINE STATE ... \(state.diagnosticName.uppercased())"
+                + (audioEngine.isRebuilding ? " (REBUILDING)" : "")
+                + (audioEngine.engineHealthy ? "" : " (UNHEALTHY)"),
+            "INPUT DEVICE ... \(boundInputDeviceName ?? "—")",
+        ]
+        if let input = audioEngine.inputDiagnostics() {
+            lines.append("TRANSPORT ...... \(input.transport)")
+            lines.append("SAMPLE RATE .... \(input.sampleRate.map { "\($0) Hz" } ?? "— (no buffer yet)")")
+            lines.append("CHANNELS ....... \(input.channels.map(String.init) ?? "—") · \(input.sampleFormat ?? "—") · layout \(input.layout ?? "—")")
+        }
+        lines.append("OUTPUT FORMAT .. \(outputFormat.displayName)")
+        if let file = recordedFileURL {
+            let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
+            lines.append("ACTIVE FILE .... \(file.lastPathComponent)")
+            lines.append(String(format: "FILE SIZE ...... %.2f MB · elapsed %@", Double(size) / 1_048_576, recordingTime.hhmmss))
+        } else {
+            lines.append("ACTIVE FILE .... none")
+        }
+        lines.append("WRITING ........ \(isWritingData ? "YES" : "NO")")
+        if let warning = recordingWarning { lines.append("WARNING ........ \(warning)") }
+        return lines
+    }
+
     /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
     /// finalize, off the main thread (`PCMSidecar.recoverFailedTake`). False
     /// when there is nothing this copy may recover, and then `done` is never
@@ -1534,6 +1581,7 @@ class RecorderViewModel: ObservableObject {
     /// "Quit Without Saving" path. The partial file and its recovery
     /// sidecar are both deleted so a future launch doesn't surface them.
     func abortRecording(completion: (() -> Void)? = nil) {
+        DiagnosticLogger.shared.log("STATE RECORDING -> ABORTED // discarding take", level: .warn)
         timer?.cancel()
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()

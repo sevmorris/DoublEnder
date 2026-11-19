@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import AVFoundation
 import Combine
+import Accelerate
 import OSLog
 
 private let logger = Logger(subsystem: "io.github.sevmorris.DoublEnder", category: "AudioEngine")
@@ -302,8 +303,17 @@ class AudioEngine: NSObject, ObservableObject {
     /// to `AudioObjectRemovePropertyListenerBlock`.
     private var deviceListBlock: AudioObjectPropertyListenerBlock?
 
+    // ── Service Monitor telemetry (writerQueue only) ─────────────────────
+    // One timestamp compare per buffer; a formatted line every few seconds.
+    private var telemetryLastTick: CFAbsoluteTime = 0
+    private var telemetryBuffers = 0
+    private var telemetryFrames = 0
+    private var telemetryPeakDb: Float = LevelMeter.dbFloor
+    private static let telemetryInterval: CFAbsoluteTime = 5
+
     override init() {
         super.init()
+        DiagnosticLogger.shared.log("ENGINE INIT // AVCaptureSession → AVAssetWriter front end", level: .event)
         refreshDevices()
         // Refresh the device list whenever the system wakes or the app comes
         // to front, in case a device that changed while DoublEnder was asleep
@@ -493,6 +503,8 @@ class AudioEngine: NSObject, ObservableObject {
                 input = try AVCaptureDeviceInput(device: target)
             } catch {
                 logger.error("AVCaptureDeviceInput init failed: \(error.localizedDescription, privacy: .public)")
+                DiagnosticLogger.shared.log("HANDSHAKE FAILED // \(target.localizedName): \(error.localizedDescription)", level: .warn, pin: .input)
+                DiagnosticLogger.shared.unpin(.inputWarning)
                 let message = "Could not bind to the selected input: \(error.localizedDescription)"
                 DispatchQueue.main.async {
                     self.lastError = message
@@ -560,6 +572,18 @@ class AudioEngine: NSObject, ObservableObject {
             )?.pointee
             let nativeSampleRate = nativeASBD?.mSampleRate ?? 48_000
             let isLowQuality = nativeSampleRate <= 16_000
+            let bufferFrames = self.audioDeviceID(forUID: target.uniqueID).flatMap { self.bufferFrameSize(for: $0) }
+            DiagnosticLogger.shared.log(
+                "HANDSHAKE // \(target.localizedName) · \(Int(nativeSampleRate)) Hz · "
+                + "\(nativeASBD.map { "\($0.mChannelsPerFrame) ch" } ?? "? ch") · "
+                + "buffer \(bufferFrames.map { "\($0) fr" } ?? "?")"
+                + (session.isRunning ? " · SESSION RUNNING" : " · SESSION NOT RUNNING"),
+                level: session.isRunning ? .event : .warn, pin: .input)
+            if isLowQuality {
+                DiagnosticLogger.shared.log("LOW-QUALITY INPUT (≤16 kHz, BT SCO?)", level: .warn, pin: .inputWarning)
+            } else {
+                DiagnosticLogger.shared.unpin(.inputWarning)
+            }
 
             // Verify the session is on the intended device by comparing
             // input.device.uniqueID to the intent. If the caller passed
@@ -855,6 +879,7 @@ class AudioEngine: NSObject, ObservableObject {
         guard !didDispatchDisconnect else { return }
         didDispatchDisconnect = true
         lastCaptureFailure = kind
+        DiagnosticLogger.shared.log("CAPTURE FAULT [\(kind.rawValue)] \(reason)", level: .warn)
         onDisconnectedDuringRecording?(reason)
     }
 
@@ -890,6 +915,7 @@ class AudioEngine: NSObject, ObservableObject {
 
     @objc private func captureSessionWasInterrupted(_ notification: Notification) {
         logger.warning("AVCaptureSession interrupted")
+        DiagnosticLogger.shared.log("SESSION INTERRUPTED — watchdog armed (5 s)", level: .warn)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             // Cancel any stale watchdog from a previous interruption, then arm a
@@ -1178,6 +1204,10 @@ class AudioEngine: NSObject, ObservableObject {
         writerQueue.async {
             self.voiceDetector = VoiceDetector()
             self.publishedVoiceStatus = VoiceDetector.Status()
+            self.telemetryLastTick = 0
+            self.telemetryBuffers = 0
+            self.telemetryFrames = 0
+            self.telemetryPeakDb = LevelMeter.dbFloor
         }
         isRecording = true
 
@@ -1454,9 +1484,11 @@ class AudioEngine: NSObject, ObservableObject {
         // cheaper than tearing down the session to discover the same fact.
         if !deviceHasInputStreams(id) {
             logger.info("Selected device has no input streams — refusing switch: \(device.localizedName, privacy: .public)")
+            DiagnosticLogger.shared.log("INPUT REJECTED // \(device.localizedName) has no input streams", level: .warn)
             DispatchQueue.main.async { self.selectedDeviceUsable = false }
             return
         }
+        DiagnosticLogger.shared.log("INPUT SELECT // \(device.localizedName) — rebuilding session")
         DispatchQueue.main.async { self.selectedDeviceUsable = true }
 
         // Rebuild the session bound to the explicit AVCaptureDevice, and
@@ -1518,6 +1550,19 @@ class AudioEngine: NSObject, ObservableObject {
     }
 
 
+    /// The device's IO buffer size in frames, for the Service Monitor.
+    private func bufferFrameSize(for deviceID: AudioDeviceID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var frames = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &frames)
+        return status == noErr ? frames : nil
+    }
+
     private func transportType(for deviceID: AudioDeviceID) -> UInt32? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,
@@ -1575,6 +1620,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         guard isRecording else { return }
 
         listenForVoice(in: mono, from: sampleBuffer)
+        recordTelemetry(mono)
 
         writerLock.lock()
         guard let writer = assetWriter else {
@@ -1640,6 +1686,12 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             writer.startSession(atSourceTime: startTime)
             assetWriterInput = input
+            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee {
+                DiagnosticLogger.shared.log(
+                    "WRITER OPEN // first buffer \(Int(asbd.mSampleRate)) Hz · \(asbd.mChannelsPerFrame) ch · "
+                    + "\(SessionDiagnostics.sampleFormat(asbd)) · \(CMSampleBufferGetNumSamples(sampleBuffer)) fr/buf",
+                    level: .event, pin: .writer)
+            }
         }
 
         guard let input = assetWriterInput else {
@@ -1663,6 +1715,7 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
             // it is reset in startRecording for the next take.
             if !hasWarnedDroppedFrame {
                 hasWarnedDroppedFrame = true
+                DiagnosticLogger.shared.log("WRITER BACKPRESSURE — buffer dropped", level: .warn)
                 DispatchQueue.main.async { [weak self] in self?.droppedFrameWarning = true }
             }
             if consecutiveDropCount >= writeErrorThreshold {
@@ -1792,6 +1845,29 @@ extension AudioEngine: AVCaptureAudioDataOutputSampleBufferDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.meterLevel = level
         }
+    }
+
+    /// Service Monitor tick, on writerQueue. Per buffer it only counts and
+    /// compares the meter's already-computed peak; the RMS and the formatted
+    /// line happen once every `telemetryInterval`.
+    private func recordTelemetry(_ mono: [Float]?) {
+        telemetryBuffers += 1
+        telemetryFrames += mono?.count ?? 0
+        telemetryPeakDb = max(telemetryPeakDb, smoothedPeakLevel)
+        let now = CFAbsoluteTimeGetCurrent()
+        if telemetryLastTick == 0 { telemetryLastTick = now; return }
+        guard now - telemetryLastTick >= Self.telemetryInterval else { return }
+        var rms: Float = 0
+        if let mono, !mono.isEmpty {
+            mono.withUnsafeBufferPointer { vDSP_rmsqv($0.baseAddress!, 1, &rms, vDSP_Length($0.count)) }
+        }
+        let line = String(format: "TLM // %d buf · %d fr · peak %.1f dBFS · rms %.1f dBFS",
+                          telemetryBuffers, telemetryFrames, telemetryPeakDb, LevelMeter.dbFS(fromLinear: rms))
+        DiagnosticLogger.shared.log(line)
+        telemetryLastTick = now
+        telemetryBuffers = 0
+        telemetryFrames = 0
+        telemetryPeakDb = LevelMeter.dbFloor
     }
 
     /// Feeds the take's mono mix to the voice detector. Display-only, like the

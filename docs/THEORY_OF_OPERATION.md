@@ -403,6 +403,49 @@ At record start: if `DiskSpaceChecker.recordingBlockedReason` returns a non-nil 
 
 During recording, the 5-second disk watch calls the same function. If it returns non-nil, `stopRecording()` is called immediately — the writer is still healthy at this point, so `finishWriting` usually succeeds and the file is saved — and the take's confirmation says the disk stopped it, with the same message (§4).
 
+### The Service Monitor
+
+A hidden diagnostics console, in both builds, for when a take goes wrong and the useful facts would otherwise be only in the unified log. **About DoublEnder** in the app menu opens the app's own About window (`AboutView`, which replaces the stock panel through `CommandGroup(replacing: .appInfo)`). ⌥-clicking its icon, or clicking it three times within 0.6 s, opens or closes the panel `DE-DIAG // SERVICE MONITOR` (`ServiceMonitorPanel`, `ServiceMonitorView`).
+
+**What it records.** `DiagnosticLogger.shared` collects lines from the moment the engine is created (`ENGINE INIT`), whether or not the panel is ever opened:
+
+- `AudioEngine`:
+  - the capture session's handshake on each rebuild: device, native sample rate, channels, the device's IO buffer size (`kAudioDevicePropertyBufferFrameSize`), and whether the session is running;
+  - an input at 16 kHz or below (a Bluetooth headset's call profile, usually);
+  - an input selected, or refused for having no input streams;
+  - a session interruption;
+  - a capture fault (`dispatchDisconnectIfNeeded`);
+  - the writer opening on its first buffer, with that buffer's format;
+  - the take's first dropped buffer.
+- While recording, the engine adds one `TLM` line every 5 seconds, on the writer queue (`recordTelemetry`): the buffers and frames since the last line, the highest meter peak among them, and an RMS. Per buffer it only counts and compares the meter's already-computed peak. The RMS and the formatting happen once per interval, so the RMS is that of the buffer that ends the interval, not of the interval as a whole.
+- `RecorderViewModel`:
+  - the take's states: armed, recording, flushing, saved, nothing captured, fault, aborted;
+  - on every disk-watch tick (5 s), the file's size so far, the volume's free space, and whether data is flowing (`logDiskHealth`).
+
+**How it records.** `log` is safe from any queue and never waits on the main thread. It takes a lock, appends the line with its time, and schedules at most one `DispatchQueue.main.async` per batch. The batch is stamped (`HH:mm:ss.SSS`) and published on the main thread. So a blocked UI cannot stall the writer queue. A modal that keeps the main queue waiting ("Modals and the main queue", §8) holds lines back, and they arrive when it closes, still carrying the time they were logged.
+
+**What it keeps.** The buffer holds the last 500 lines (`DiagnosticLogger.capacity`), in memory only: nothing is written to disk or uploaded, and it is gone when the app quits. A take adds about two lines every 5 seconds (`TLM` and the disk line), so the buffer holds roughly the last 20 minutes of one. So the facts support needs most are also **pinned** (`DiagnosticLogger.Pin`): the latest line of each kind is kept outside the ring, shown above the scrollback under a rule, and put first in `dump`. The kinds are:
+
+- the input's handshake, or its failure;
+- a low-quality input, removed when the next handshake is not one;
+- the writer opening on the take's first buffer;
+- the take's start, with its file and format.
+
+Each is also in the scrollback as usual. Until 2026-11-18 nothing was pinned, so on a take longer than about 20 minutes the handshake and the take's start had scrolled out by the time it ended.
+
+The lines name files and folders, and a take's name carries the guest's name. They leave the app only through `dump`, which copies them to the clipboard for the guest to send.
+
+**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. It takes these commands:
+
+| Command | Does |
+|---|---|
+| `help` | Lists the commands |
+| `status` | The engine's state, the bound input (transport, sample rate, channels, format, layout), the output format, the active file and its size, whether data is flowing, and any recording warning (`serviceStatusLines`) |
+| `paths` | The output folder, working directory, app bundle and temporary folder. `paths open` reveals the active file in Finder, or opens the output folder |
+| `dump` | Copies the pinned lines, then the buffer, to the clipboard |
+| `clear` (`cls`) | Empties the buffer; the pinned lines stay |
+| `degauss` | A shake and a flash; it does nothing else |
+
 ---
 
 ## 6. Device Management and Hot-Plug
@@ -818,3 +861,4 @@ Not everything the app remembers is session-scoped. Each setting was decided on 
 | Pending upload (Cloud, `pendingUploadURL`) | Kept until the upload succeeds or is skipped (§8) |
 | USB first-seen map (`usbDeviceFirstSeenAt`) | Kept, never pruned (§6) |
 | Window position | Kept, as `NSWindow Frame Faceplate` |
+| Service Monitor log | Never stored: the last 500 lines and the pinned ones, in memory only (§5) |

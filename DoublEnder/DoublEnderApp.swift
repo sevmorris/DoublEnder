@@ -104,6 +104,13 @@ struct DoublEnderApp: App {
                     .keyboardShortcut("w")
             }
 
+            // Our own About window: its icon hides the Service Monitor.
+            CommandGroup(replacing: .appInfo) {
+                Button("About \(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "DoublEnder")") {
+                    openWindow(id: "about")
+                }
+            }
+
             CommandGroup(after: .appInfo) {
                 if !GuestUninstall.isGuestSession {
                     Button("Check for Updates…") {
@@ -150,6 +157,12 @@ struct DoublEnderApp: App {
             HelpView()
         }
         .windowResizability(.contentSize)
+
+        Window("About", id: "about") {
+            AboutView()
+        }
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 
