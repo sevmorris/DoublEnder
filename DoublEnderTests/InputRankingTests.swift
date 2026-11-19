@@ -19,6 +19,56 @@ final class InputRankingTests: XCTestCase {
         InputCandidate(uniqueID: name, name: name, manufacturer: manufacturer, isUSB: true)
     }
 
+    // MARK: - The input a launch starts on
+
+    private let builtIn = InputCandidate(
+        uniqueID: "builtin", name: "MacBook Pro Microphone", manufacturer: "Apple Inc.", isUSB: false
+    )
+    private let headset = InputCandidate(
+        uniqueID: "headset", name: "AirPods Pro", manufacturer: "Apple Inc.", isUSB: false
+    )
+
+    /// The tester of 2026-11-19: a Bluetooth headset as the Mac's input, a
+    /// webcam, and the lid closed. The launch starts on the headset, so Keep
+    /// Current to the webcam's offer keeps a mic that hears them.
+    func testStartsOnTheInputTheMacIsUsing() {
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "headset", builtIn: "builtin",
+                                                  hardware: [builtIn, webcam, headset], lidClosed: true), headset)
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "headset", builtIn: "builtin",
+                                                  hardware: [builtIn, webcam, headset], lidClosed: false), headset)
+    }
+
+    /// With the Mac on its built-in mic, the lid open, it starts there, as
+    /// every launch used to.
+    func testStartsOnTheBuiltInMicWhenTheMacIsOnIt() {
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "builtin", builtIn: "builtin",
+                                                  hardware: [webcam, builtIn], lidClosed: false), builtIn)
+    }
+
+    /// A closed lid cuts the built-in mic off: never started on while anything
+    /// else is there, even as the system default.
+    func testAClosedLidPassesOverTheBuiltInMic() {
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "builtin", builtIn: "builtin",
+                                                  hardware: [builtIn, webcam], lidClosed: true), webcam)
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: nil, builtIn: "builtin",
+                                                  hardware: [builtIn, dock, usbMic], lidClosed: true), usbMic)
+        // Nothing else: the engine still needs an input.
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "builtin", builtIn: "builtin",
+                                                  hardware: [builtIn], lidClosed: true), builtIn)
+    }
+
+    /// A system default that is a dock's port, virtual (not in `hardware`), or
+    /// gone is passed over for the built-in mic, then the first real input.
+    func testASystemDefaultThatIsNoMicIsPassedOver() {
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "dock", builtIn: "builtin",
+                                                  hardware: [dock, builtIn], lidClosed: false), builtIn)
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "blackhole", builtIn: "builtin",
+                                                  hardware: [builtIn, usbMic], lidClosed: false), builtIn)
+        XCTAssertEqual(InputRanking.startingInput(systemDefault: "dock", builtIn: nil,
+                                                  hardware: [dock, usbMic], lidClosed: false), usbMic)
+        XCTAssertNil(InputRanking.startingInput(systemDefault: nil, builtIn: nil, hardware: [], lidClosed: false))
+    }
+
     // MARK: - Mac with no built-in mic, a dock and a real USB mic
 
     func testStartsOnTheRealMicWhicheverComesFirst() {
