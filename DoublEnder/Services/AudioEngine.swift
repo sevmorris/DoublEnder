@@ -1375,11 +1375,33 @@ class AudioEngine: NSObject, ObservableObject {
                     sidecar?.discard()
                     completion(.success(outputURL))
                 } else {
-                    sidecar?.close()
+                    // Kept open, and so locked, for the recovery that follows
+                    // (`takeSidecarOfFailedTake`).
+                    sidecar?.flush()
+                    self.holdSidecarOfFailedTake(sidecar)
                     completion(.failure(RecordingError.writerFinishedWithError(reason)))
                 }
             }
         }
+    }
+
+    /// The sidecar of the take whose main file just failed to finalize, still
+    /// open and so still locked (`PCMSidecar.flush`). Main thread only.
+    private var sidecarOfFailedTake: PCMSidecar?
+
+    private func holdSidecarOfFailedTake(_ sidecar: PCMSidecar?) {
+        sidecarOfFailedTake?.close()
+        sidecarOfFailedTake = sidecar
+    }
+
+    /// The failed take's sidecar, for the recorder to recover the take from and
+    /// `close` when it is done. Until 2026-11-18 the sidecar was closed here,
+    /// which let go of its lock just before the recorder converted it, so
+    /// another copy of the app scanning the Desktop could take it for a crash
+    /// and recover it as well. Main thread only.
+    func takeSidecarOfFailedTake() -> PCMSidecar? {
+        defer { sidecarOfFailedTake = nil }
+        return sidecarOfFailedTake
     }
 
     /// Drop a stuck `isRecording` flag when the writer is already gone. After

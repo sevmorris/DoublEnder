@@ -465,6 +465,17 @@ final class PCMSidecar {
         }
     }
 
+    /// Everything written so far onto the disk, with the handle, and so the
+    /// lock, kept: the main file could not be finalized, and the take is
+    /// recovered from this file while this process still holds it, so no
+    /// other copy of the app takes it for a crash and recovers it too
+    /// (`AudioEngine.takeSidecarOfFailedTake`). `close` afterwards.
+    func flush() {
+        ioQueue.sync {
+            try? self.handle.synchronize()
+        }
+    }
+
     /// Close the handle but keep the file — the main file could not be
     /// finalized, so the sidecar is the only intact copy.
     func close() {
@@ -500,6 +511,11 @@ final class PCMSidecar {
     /// Re-wrap a sidecar's raw float PCM into a valid 32-bit-float WAV
     /// alongside it. Streams in 1 MB chunks so multi-hour recordings don't
     /// blow up memory. Returns the recovered WAV URL.
+    ///
+    /// A WAV that cannot be finished (a full disk, the likeliest reason a take
+    /// failed to finalize in the first place) is deleted, and the sidecar
+    /// stays for the next try. Until 2026-11-18 it was left, cut short under a
+    /// header that claimed the whole take.
     static func recoverToWAV(sidecarURL: URL) throws -> URL {
         let parsed = try parseHeader(at: sidecarURL)
         guard parsed.dataSize > 0 else { throw RecoveryError.emptyPayload }
@@ -509,22 +525,59 @@ final class PCMSidecar {
         try input.seek(toOffset: UInt64(parsed.headerSize))
 
         let outURL = recoveredWAVURL(for: sidecarURL)
-        FileManager.default.createFile(
+        guard FileManager.default.createFile(
             atPath: outURL.path,
             contents: wavHeader(
                 sampleRate: parsed.sampleRate,
                 channels: parsed.channels,
                 dataSize: parsed.dataSize
             )
-        )
-        let output = try FileHandle(forWritingTo: outURL)
-        defer { try? output.close() }
-        try output.seekToEnd()
-
-        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
-            try output.write(contentsOf: chunk)
+        ) else {
+            try? FileManager.default.removeItem(at: outURL)
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        do {
+            let output = try FileHandle(forWritingTo: outURL)
+            defer { try? output.close() }
+            try output.seekToEnd()
+            while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+            }
+            try output.synchronize()
+        } catch {
+            try? FileManager.default.removeItem(at: outURL)
+            throw error
         }
         return outURL
+    }
+
+    /// Recovers the take whose main file failed to finalize, off the main
+    /// thread, and hands the outcome back on the main thread. The sidecar and
+    /// the partial main file go once the WAV is whole; on a failure both stay.
+    /// `release` (which lets go of the sidecar's lock) runs on the main thread
+    /// once the conversion is over, either way, before `completion`.
+    ///
+    /// Until 2026-11-18 the recorder converted on the main thread, about
+    /// 690 MB per hour of take, so the app froze on a long one, and it did so
+    /// after closing the sidecar, which let go of its lock: another copy of the
+    /// app scanning the Desktop then could take it for a crash and recover it
+    /// as well.
+    static func recoverFailedTake(sidecarURL: URL, mainOutput: URL,
+                                  release: @escaping () -> Void,
+                                  queue: DispatchQueue = .global(qos: .userInitiated),
+                                  convert: @escaping (URL) throws -> URL = { try recoverToWAV(sidecarURL: $0) },
+                                  completion: @escaping (Result<URL, Error>) -> Void) {
+        queue.async {
+            let result = Result { try convert(sidecarURL) }
+            if case .success = result {
+                try? FileManager.default.removeItem(at: sidecarURL)
+                try? FileManager.default.removeItem(at: mainOutput)
+            }
+            MainRunLoop.deliver {
+                release()
+                completion(result)
+            }
+        }
     }
 
     private struct ParsedHeader {
