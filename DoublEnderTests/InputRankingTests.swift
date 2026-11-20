@@ -85,6 +85,19 @@ final class InputRankingTests: XCTestCase {
         XCTAssertNil(InputRanking.startingInput(systemDefault: nil, builtIn: nil, hardware: [], lidClosed: false))
     }
 
+    // MARK: - The offer's words
+
+    /// The offer names the input the recorder is on, since the guest may take
+    /// "current" for the one their Mac is using.
+    func testTheOfferNamesBothInputs() {
+        let words = SwitchOfferWords(offered: "C920 HD Pro Webcam", current: "AirPods Pro")
+        XCTAssertEqual(words.title, "Switch to C920 HD Pro Webcam?")
+        XCTAssertEqual(words.switchButton, "Switch to C920 HD Pro Webcam")
+        XCTAssertEqual(words.keepButton, "Keep AirPods Pro")
+        XCTAssertTrue(words.text.contains("recording from AirPods Pro"))
+        XCTAssertEqual(SwitchOfferWords(offered: "Shure MV7", current: nil).keepButton, "Not Now")
+    }
+
     // MARK: - Mac with no built-in mic, a dock and a real USB mic
 
     func testStartsOnTheRealMicWhicheverComesFirst() {

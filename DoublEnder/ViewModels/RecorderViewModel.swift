@@ -774,13 +774,15 @@ class RecorderViewModel: ObservableObject {
         // the most recent under Task 3's tie-break.
         recordCurrentUSBDevicesFirstSeen()
 
+        let current = availableInputDevices.first { $0.uniqueID == selectedInputDeviceID }?.localizedName
+        let words = SwitchOfferWords(offered: device.localizedName, current: current)
         let alert = NSAlert()
         alert.window.appearance = NSAppearance(named: .darkAqua)
         alert.alertStyle = .informational
-        alert.messageText = "USB audio input detected: \(device.localizedName)"
-        alert.informativeText = "Switch to this input if your microphone is connected through it."
-        alert.addButton(withTitle: "Switch")            // .alertFirstButtonReturn
-        alert.addButton(withTitle: "Keep Current")      // .alertSecondButtonReturn
+        alert.messageText = words.title
+        alert.informativeText = words.text
+        alert.addButton(withTitle: words.switchButton)                          // .alertFirstButtonReturn
+        alert.addButton(withTitle: words.keepButton).keyEquivalent = "\u{1b}"  // .alertSecondButtonReturn
 
         // App-modal runModal() rather than beginSheetModal(for:) — the
         // DoublEnder main window is borderless (FaceplateWindow, in

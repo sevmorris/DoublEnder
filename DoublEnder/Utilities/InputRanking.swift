@@ -114,6 +114,31 @@ enum InputRanking {
     }
 }
 
+/// The words of the offer to switch to a USB input. It names the input the
+/// recorder is on, since the guest may take "current" for the one their Mac
+/// is using: until 2026-11-19 it said only "Switch" and "Keep Current", and a
+/// tester on a Bluetooth headset kept a built-in mic behind a closed lid.
+struct SwitchOfferWords: Equatable {
+    let title: String
+    let text: String
+    let switchButton: String
+    let keepButton: String
+
+    /// `current` is nil when the recorder is on no input.
+    init(offered: String, current: String?) {
+        title = "Switch to \(offered)?"
+        switchButton = "Switch to \(offered)"
+        if let current {
+            text = "DoublEnder is recording from \(current). Switch if \(offered) is your microphone, "
+                + "or your microphone is connected through it."
+            keepButton = "Keep \(current)"
+        } else {
+            text = "Switch if \(offered) is your microphone, or your microphone is connected through it."
+            keepButton = "Not Now"
+        }
+    }
+}
+
 /// The USB inputs a launch offers, one after another. The first is the newest
 /// (`InputRanking.usbOffers`); the next is offered only once the guest has
 /// kept the current input over the one before ("Keep Current"), and a switch
