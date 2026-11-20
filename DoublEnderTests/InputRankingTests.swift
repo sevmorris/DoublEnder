@@ -85,45 +85,7 @@ final class InputRankingTests: XCTestCase {
         XCTAssertNil(InputRanking.startingInput(systemDefault: nil, builtIn: nil, hardware: [], lidClosed: false))
     }
 
-    // MARK: - Asking at launch
-
-    private func asks(_ systemDefault: String?, _ hardware: [InputCandidate], lidClosed: Bool,
-                      builtIn: String? = "builtin") -> Bool {
-        InputRanking.asksAtLaunch(systemDefault: systemDefault, builtIn: builtIn, hardware: hardware, lidClosed: lidClosed)
-    }
-
-    /// Three inputs to choose among: one question, not a run of offers.
-    func testThreeInputsAreAskedAbout() {
-        XCTAssertTrue(asks("builtin", [builtIn, webcam, usbMic], lidClosed: false))
-        XCTAssertTrue(asks("builtin", [builtIn, headset, webcam], lidClosed: false))
-    }
-
-    /// Two get the single offer, which names both.
-    func testTwoInputsGetTheOffer() {
-        XCTAssertFalse(asks("builtin", [builtIn, webcam], lidClosed: false))
-        // The tester's setup with the headset as the Mac's input: it starts on
-        // the headset and offers the webcam.
-        XCTAssertFalse(asks("headset", [builtIn, webcam, headset], lidClosed: true))
-    }
-
-    /// The case the launch can't tell: lid closed, the built-in mic still the
-    /// Mac's input, a headset and a webcam. It asks.
-    func testWithNothingToGoOnTwoInputsAreAskedAbout() {
-        XCTAssertTrue(asks("builtin", [builtIn, webcam, headset], lidClosed: true))
-        XCTAssertTrue(asks(nil, [webcam, headset], lidClosed: false, builtIn: nil))
-        // One input that can hear: nothing to ask.
-        XCTAssertFalse(asks("builtin", [builtIn, webcam], lidClosed: true))
-    }
-
-    /// A dock's audio port and a built-in mic behind a closed lid are never
-    /// among the choices, so they don't make a question.
-    func testADockAndAClosedBuiltInMicAreNotChoices() {
-        XCTAssertEqual(InputRanking.launchChoices(builtIn: "builtin", hardware: [builtIn, dock, usbMic], lidClosed: true),
-                       [usbMic])
-        XCTAssertFalse(asks("mic", [builtIn, dock, usbMic], lidClosed: false))
-    }
-
-    // MARK: - The words
+    // MARK: - The offer's words
 
     /// The offer names the input the recorder is on, since the guest may take
     /// "current" for the one their Mac is using.
@@ -134,13 +96,6 @@ final class InputRankingTests: XCTestCase {
         XCTAssertEqual(words.keepButton, "Keep AirPods Pro")
         XCTAssertTrue(words.text.contains("recording from AirPods Pro"))
         XCTAssertEqual(SwitchOfferWords(offered: "Shure MV7", current: nil).keepButton, "Not Now")
-    }
-
-    func testTheChooserMarksTheCurrentInputAndABluetoothOne() {
-        XCTAssertEqual(LaunchInputChooserWords.label(webcam, isCurrent: true), "Logitech BRIO \u{2014} current")
-        XCTAssertEqual(LaunchInputChooserWords.label(headset, isCurrent: false), "AirPods Pro (Bluetooth, call quality)")
-        XCTAssertTrue(LaunchInputChooserWords.text(lidClosed: true).contains("lid is closed"))
-        XCTAssertFalse(LaunchInputChooserWords.text(lidClosed: false).contains("lid"))
     }
 
     // MARK: - Mac with no built-in mic, a dock and a real USB mic

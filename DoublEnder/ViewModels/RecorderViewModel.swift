@@ -687,27 +687,19 @@ class RecorderViewModel: ObservableObject {
         // it is set, which is early enough: the offer opens on a later pass
         // of the run loop.
         NotificationCenter.default.publisher(for: ModalGate.didChange)
-            .sink { [weak self] _ in self?.inputOffers.retry() }
+            .sink { [weak self] _ in self?.usbOffers.retry() }
             .store(in: &cancellables)
         $state
-            .sink { [weak self] _ in self?.inputOffers.retry() }
+            .sink { [weak self] _ in self?.usbOffers.retry() }
             .store(in: &cancellables)
 
         requestPermissions()
     }
 
-    /// A question about the input, waiting for its turn: the offer of a USB
-    /// input, by device UID, or the launch's question of which input to
-    /// record from (`InputRanking.asksAtLaunch`).
-    enum InputOffer: Hashable {
-        case switchTo(String)
-        case chooseAtLaunch
-    }
-
-    /// Input questions waiting to be asked. One waits while a take is in
-    /// progress or another dialog is up (the name prompt excepted, see
-    /// `ModalGate`), and opens from the run loop when neither is.
-    private lazy var inputOffers = WaitingOffers<InputOffer>(
+    /// USB inputs waiting to be offered, by device UID. An offer waits while
+    /// a take is in progress or another dialog is up (the name prompt
+    /// excepted, see `ModalGate`), and opens from the run loop when neither is.
+    private lazy var usbOffers = WaitingOffers<String>(
         canOpen: { [weak self] in
             guard let self else { return false }
             #if GCS_ENABLED
@@ -719,19 +711,8 @@ class RecorderViewModel: ObservableObject {
                                      uploading: uploading,
                                      dialogInTheWay: self.isShowingModalAlert || !ModalGate.canOpenOffer())
         },
-        isWanted: { [weak self] offer in
-            guard let self else { return false }
-            switch offer {
-            case .switchTo(let uid): return self.usbDeviceToOffer(uid) != nil
-            case .chooseAtLaunch: return self.chosenInputUID == nil && self.launchChoices().choices.count >= 2
-            }
-        },
-        present: { [weak self] offer in
-            switch offer {
-            case .switchTo(let uid): self?.presentUSBSwitchPrompt(uid: uid)
-            case .chooseAtLaunch: self?.presentLaunchChooser()
-            }
-        })
+        isWanted: { [weak self] uid in self?.usbDeviceToOffer(uid) != nil },
+        present: { [weak self] uid in self?.presentUSBSwitchPrompt(uid: uid) })
 
     /// Offers to switch to a USB input that has appeared. Callers fire this
     /// unconditionally: an input not worth offering is forgotten, and one that
@@ -747,7 +728,7 @@ class RecorderViewModel: ObservableObject {
             }
             return
         }
-        inputOffers.add(.switchTo(device.uniqueID))
+        usbOffers.add(device.uniqueID)
     }
 
     /// The device to offer for this UID, or nil when there is nothing to
@@ -784,7 +765,7 @@ class RecorderViewModel: ObservableObject {
     }
 
     /// App-modal NSAlert offering to switch input to a USB device. Called by
-    /// `inputOffers`, from the run loop, when the offer can open.
+    /// `usbOffers`, from the run loop, when the offer can open.
     private func presentUSBSwitchPrompt(uid: String) {
         guard let device = usbDeviceToOffer(uid) else { return }
 
@@ -830,44 +811,6 @@ class RecorderViewModel: ObservableObject {
             dismissedUSBDevices.insert(device.uniqueID)
             offerNextLaunchUSBInput(afterDeclining: device.uniqueID)
         }
-    }
-
-    /// The inputs the launch would ask the guest to choose among, and whether
-    /// the lid is closed (which the question says, as the reason the built-in
-    /// mic is not among them).
-    private func launchChoices() -> (choices: [InputCandidate], lidClosed: Bool) {
-        let lidClosed = AudioEngine.isLidClosed()
-        let choices = InputRanking.launchChoices(
-            builtIn: audioEngine.builtInInputDevice()?.uniqueID,
-            hardware: audioEngine.hardwareInputDevices().map(audioEngine.inputCandidate),
-            lidClosed: lidClosed)
-        return (choices, lidClosed)
-    }
-
-    /// The launch's question: which input to record from, one per line, the
-    /// one the recorder started on selected. The answer is the guest's pick
-    /// (`chooseInput`), so it comes back by itself if it drops out, and no
-    /// launch offer follows it.
-    private func presentLaunchChooser() {
-        let (choices, lidClosed) = launchChoices()
-        guard choices.count >= 2, chosenInputUID == nil else { return }
-        let list = InputChoiceList(choices: choices, current: selectedInputDeviceID)
-        let alert = NSAlert()
-        alert.window.appearance = NSAppearance(named: .darkAqua)
-        alert.alertStyle = .informational
-        alert.messageText = LaunchInputChooserWords.title
-        alert.informativeText = LaunchInputChooserWords.text(lidClosed: lidClosed)
-        alert.accessoryView = list.view
-        alert.addButton(withTitle: LaunchInputChooserWords.button)
-        // App-modal, like the USB offer: the faceplate is borderless, and a
-        // sheet on it never delivers its clicks.
-        isShowingModalAlert = true
-        let shown = ModalGate.run(.prompt) { alert.runModal() }
-        isShowingModalAlert = false
-        // Not shown: an update is replacing the app. The picker has them all.
-        guard shown != nil, let uid = list.selectedUID,
-              availableInputDevices.contains(where: { $0.uniqueID == uid }) else { return }
-        chooseInput(uid)
     }
 
     /// After Keep Current on one of the launch's offers, the next USB input
@@ -1031,23 +974,11 @@ class RecorderViewModel: ObservableObject {
                     // One that can't be offered, such as the input this Mac
                     // with no built-in mic has just started on, is passed
                     // over rather than ending the series.
-                    //
-                    // Three inputs or more to choose among, or two when the
-                    // launch had nothing to go on, and it asks once instead,
-                    // which to record from (`InputRanking.asksAtLaunch`).
-                    if InputRanking.asksAtLaunch(
-                        systemDefault: self.audioEngine.systemDefaultInputUID(),
-                        builtIn: self.audioEngine.builtInInputDevice()?.uniqueID,
-                        hardware: self.audioEngine.hardwareInputDevices().map(self.audioEngine.inputCandidate),
-                        lidClosed: AudioEngine.isLidClosed()) {
-                        self.inputOffers.add(.chooseAtLaunch)
-                    } else {
-                        let inOrder = self.usbDevicesInOfferOrder()
-                        self.launchUSBOffers = LaunchUSBOffers(inOrder.map(\.uniqueID))
-                        if let first = self.launchUSBOffers.first(isWanted: { self.usbDeviceToOffer($0) != nil }),
-                           let usbDevice = self.usbDeviceToOffer(first) {
-                            self.offerUSBInput(usbDevice)
-                        }
+                    let inOrder = self.usbDevicesInOfferOrder()
+                    self.launchUSBOffers = LaunchUSBOffers(inOrder.map(\.uniqueID))
+                    if let first = self.launchUSBOffers.first(isWanted: { self.usbDeviceToOffer($0) != nil }),
+                       let usbDevice = self.usbDeviceToOffer(first) {
+                        self.offerUSBInput(usbDevice)
                     }
                 } else {
                     self.state = .error("Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable DoublEnder.")
@@ -2293,36 +2224,5 @@ extension TimeInterval {
         let m = (total % 3600) / 60
         let s = total % 60
         return String(format: "%02d:%02d:%02d", h, m, s)
-    }
-}
-
-/// The launch chooser's list: a radio button per input. Radio buttons that
-/// share a superview and an action act as one group. Main thread only, like
-/// the view model that makes it.
-private final class InputChoiceList: NSObject {
-    let view = NSStackView()
-    private let uids: [String]
-    private(set) var selectedUID: String?
-
-    init(choices: [InputCandidate], current: String) {
-        uids = choices.map(\.uniqueID)
-        super.init()
-        view.orientation = .vertical
-        view.alignment = .leading
-        view.spacing = 6
-        let selected = uids.contains(current) ? current : uids.first
-        for (index, input) in choices.enumerated() {
-            let button = NSButton(radioButtonWithTitle: LaunchInputChooserWords.label(input, isCurrent: input.uniqueID == current),
-                                  target: self, action: #selector(picked(_:)))
-            button.tag = index
-            button.state = input.uniqueID == selected ? .on : .off
-            view.addArrangedSubview(button)
-        }
-        selectedUID = selected
-        view.setFrameSize(view.fittingSize)
-    }
-
-    @objc private func picked(_ sender: NSButton) {
-        selectedUID = uids[sender.tag]
     }
 }
