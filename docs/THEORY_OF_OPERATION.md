@@ -410,43 +410,66 @@ A hidden diagnostics console, in both builds, for when a take goes wrong and the
 **What it records.** `DiagnosticLogger.shared` collects lines from the moment the engine is created (`ENGINE INIT`), whether or not the panel is ever opened:
 
 - `AudioEngine`:
-  - the capture session's handshake on each rebuild: device, native sample rate, channels, the device's IO buffer size (`kAudioDevicePropertyBufferFrameSize`), and whether the session is running;
+  - the capture session's handshake on each rebuild: device, native sample rate, channels, the device's IO buffer size (`kAudioDevicePropertyBufferFrameSize`) in frames and milliseconds, and whether the session is running;
   - an input at 16 kHz or below (a Bluetooth headset's call profile, usually);
   - the inputs present at launch, and each one that arrives or goes after;
   - an input selected, or refused for having no input streams;
   - a session interruption, and its end;
-  - a capture fault (`dispatchDisconnectIfNeeded`);
+  - a capture fault (`dispatchDisconnectIfNeeded`), in words (`CaptureFailure.serviceDescription`: "no audio arrived for 3 s") with its kind in brackets;
   - the writer opening on its first buffer, with that buffer's format;
-  - the take's first dropped buffer.
-- While recording, the engine adds one `TLM` line every 5 seconds, on the writer queue (`recordTelemetry`, `TelemetryWindow`): the buffers and frames since the last line (frames from the sample buffers themselves, so a format the mono mix cannot read still counts), the highest sample peak among them, and the RMS of the whole interval. Per buffer it adds one `vDSP_svesq` pass to the meter's own peak; the formatting happens once per interval. The levels are the samples', not the meter's: an interval of nothing but zeros reads **SILENT** (logged as a warning), the sign of a denied microphone or a muted interface, and one the mix cannot read says its level is unreadable. Until 2026-11-19 the peak was the meter's, which reads no lower than -36 dB, and the RMS was the last buffer's, through `LevelMeter.dbFS`, which turns zero into that floor, so a dead input read "peak -36.0 · rms -36.0", louder than a quiet working one.
+  - the take's first dropped buffer, at once (every one is counted in the `LEVEL` lines).
+- While recording, one **`LEVEL` line** every 5 seconds, on the disk-watch tick and once more as the take stops (`RecorderViewModel.logInterval`). On the writer queue the engine adds each buffer to a `TelemetryWindow` under its own lock (`recordTelemetry`): its frames and its length in seconds, from the buffer's own sample rate, one `vDSP_svesq` pass beside the meter's peak, and every buffer the writer drops or refuses. On the main thread the view model takes the window whole (`drainTelemetry`), measures how long the interval really was, and writes one line:
+
+  ```
+  LEVEL pk -12.3 · avg -30.1 dBFS · OK · audio 5.0 s / 5.0 s · file 412.3 MB · free 393 GB (~30 h)
+  ```
+
+  - **The level**, the samples' peak and the interval's RMS, with a verdict: **CLIP** at -0.1 dBFS, **HOT** within 3 dB of full scale, **QUIET** below -40 dBFS (nobody speaking on this side, which is normal on a double-ender), **OK** otherwise. Nothing but zeros reads **SILENT**, the sign of a denied microphone or a muted interface; a format the mix cannot read reads **UNREADABLE**; no buffer at all reads **NO AUDIO**. Until 2026-11-19 the peak was the meter's, which reads no lower than -36 dB, and the RMS was the last buffer's, through `LevelMeter.dbFS`, which turns zero into that floor, so a dead input read "peak -36.0 · rms -36.0", louder than a quiet working one.
+  - **Audio against time**: the seconds of audio the input delivered, against the seconds that passed. More than half a second short is **INPUT DROPPING**, an input losing audio that the file never shows; the watchdogs act only on a full stall. The window being taken from the main thread is what lets an interval in which no buffer came still have a line.
+  - **Buffers the writer dropped or refused**, every one, where until 2026-11-20 only the first dropped buffer of a take was logged.
+  - **The file and the disk**: the file so far, the volume's free space, and how long that lasts at the take's average write rate before the disk watch stops it (`DiskReading`, to `DiskSpaceChecker.minimumFreeBytes`).
+
+  The line is a warning when anything in it is wrong: CLIP, SILENT, NO AUDIO, a shortfall, or a dropped or refused buffer. Until 2026-11-20 this was two lines, a `TLM` line from the writer queue (buffers and frames, peak and RMS) and a `DISK` line (file, free space in MB, whether data was flowing), so the buffer held half as much of a take.
 - `RecorderViewModel`:
   - the take's states: armed, recording, flushing, saved, nothing captured, fault, aborted, and, when the writer fails, recovering from the sidecar and how that ended;
-  - Cloud: each upload's start, each failed attempt (with the same sanitized summary as the system log, and the retry or the wait for the connection that follows), its end, and LATER;
-  - on every disk-watch tick (5 s), the file's size so far, the volume's free space, and whether data is flowing (`logDiskHealth`).
+  - when a take ends, its **summary** (`TakeTally.summary`), a warning unless all went well, logged as the take's result comes back and before any confirmation, which is modal and would otherwise add the time the guest took to click OK to its offset:
 
-**How it records.** `log` is safe from any queue and never waits on the main thread. It takes a lock, appends the line with its time, and schedules at most one `DispatchQueue.main.async` per batch. The batch is stamped (`HH:mm:ss.SSS`) and published on the main thread. So a blocked UI cannot stall the writer queue. A modal that keeps the main queue waiting ("Modals and the main queue", §8) holds lines back, and they arrive when it closes, still carrying the time they were logged.
+    ```
+    TAKE // 00:42:10 · 1.93 GB · SAVED, stopped in the app · peak -1.2 dBFS · 0 dropped · 0 short · 0 silent · 3 CLIPPED · 0 interruptions · voice heard
+    ```
 
-**What it keeps.** The buffer holds the last 500 lines (`DiagnosticLogger.capacity`), in memory only: nothing is written to disk or uploaded, and it is gone when the app quits. A take adds about two lines every 5 seconds (`TLM` and the disk line), so the buffer holds roughly the last 20 minutes of one. So the facts support needs most are also **pinned** (`DiagnosticLogger.Pin`): the latest line of each kind is kept outside the ring, shown above the scrollback under a rule, and put first in `dump`. The kinds are:
+    how long and how big, how it ended (`SessionDiagnostics.TakeEnd`) and why (`takeCause`, a capture failure in words), the take's peak, and the count of dropped buffers, short, silent and clipped intervals, interruptions, and whether a voice was heard. `TakeTally` adds up each `LEVEL` interval;
+  - Cloud: each upload's start, each failed attempt (with the same sanitized summary as the system log, and the retry or the wait for the connection that follows), its end, and LATER.
+
+**How it records.** `log` is safe from any queue and never waits on the main thread. It takes a lock, appends the line with its time, and schedules at most one `DispatchQueue.main.async` per batch. The batch is stamped (`HH:mm:ss.SSS`) and published on the main thread. Between the take's start and its summary (`beginTake`, `endTake`), each line also carries how far into the take it was logged, taken as it is logged: the console's time column shows that (`+00:12:35.120`, the question support asks being "how far in did it drop?"), and the time of day outside a take, and `dump` keeps both. So a blocked UI cannot stall the writer queue. A modal that keeps the main queue waiting ("Modals and the main queue", §8) holds lines back, and they arrive when it closes, still carrying the time they were logged.
+
+**What it keeps.** The buffer holds the last 500 lines (`DiagnosticLogger.capacity`), in memory only: nothing is written to disk or uploaded, and it is gone when the app quits. A take adds about one line every 5 seconds (`LEVEL`), so the buffer holds roughly the last 40 minutes of one. So the facts support needs most are also **pinned** (`DiagnosticLogger.Pin`): the latest line of each kind is kept outside the ring, shown above the scrollback under a rule, and put first in `dump`. The kinds are:
 
 - the input's handshake, or its failure;
 - a low-quality input, removed when the next handshake is not one;
 - the writer opening on the take's first buffer, removed when the next take is armed, so a take is never shown beside the last one's writer;
-- the take's start, with its file and format, once the engine has started it; or, when it could not start, that failure. Until 2026-11-19 the take was pinned as armed before the engine tried, so a take that never started stayed pinned as one.
+- the take's start, with its file and format, once the engine has started it; or, when it could not start, that failure. Until 2026-11-19 the take was pinned as armed before the engine tried, so a take that never started stayed pinned as one;
+- the last take's summary, removed when the next take is armed.
 
 Each is also in the scrollback as usual. Until 2026-11-18 nothing was pinned, so on a take longer than about 20 minutes the handshake and the take's start had scrolled out by the time it ended.
+
+**The live status block**, above the pinned lines under its own rule, is read twice a second while the panel shows (`RecorderViewModel.serviceLiveLines`) and never logged: the state (`● REC` and the elapsed time during a take), the input with its rate and channels; the meter as a bar of 24 cells, and during a take whether a voice has been heard; and the file, its write rate, the free space and how long it lasts, and the take's dropped buffers so far. A low rate, a missing voice past its warning, a dropped buffer or a file not being written is shown as a warning.
 
 The lines name files and folders, and a take's name carries the guest's name. They leave the app only through `dump`, which copies them to the clipboard for the guest to send.
 
 **The system log in `dump`.** `dump` also copies the app's own entries in the unified log since this launch, the latest 2,000 (`DiagnosticLogger.systemLogLines`, an `OSLogStore` of the current process, filtered to the app's subsystem): everything its `Logger`s wrote, which the ring never saw. Values the code marks private stay `<private>`, as the upload code marks every path and name. Reading the process's own log needs no entitlement, but takes a second or so, so it runs off the main thread and the panel says when it is done. The app logs only what goes wrong, so a calm session has nothing there, and the section says so. Debug and info entries can be missing, since the system keeps those in memory only.
 
-**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. Its sounds (a click as it opens and closes, and `degauss`) play through the Mac's output, so during a take they stay silent (`ServiceSound`): a guest on speakers would record them. The scrollback follows new lines while it is at the bottom; scrolling up holds it, and the header says so, so a take's line every few seconds does not pull the view away from what is being read. Scrolling back down, End, or any command follows again. It opens centred under the About window, or above it when there is no room below, and always inside the screen's visible frame (`ServiceMonitorPanel.topLeft`). Closing it with its close button or ⌘W logs `SERVICE MODE // OFF`, as toggling it off does. A command line takes at most 120 characters, typed or pasted. It takes these commands:
+**The panel** is a utility `NSPanel`, not a dialog. It does not go through `ModalGate` or count in `AppActivity`, so it holds off no USB offer, update or upload, and it stays up when the app is in the background. Its sounds (a click as it opens and closes, and `degauss`) play through the Mac's output, so during a take they stay silent (`ServiceSound`): a guest on speakers would record them. The scrollback follows new lines while it is at the bottom; scrolling up holds it, and the header says so, so a take's line every few seconds does not pull the view away from what is being read. Scrolling back down, End, or any command follows again. It opens centred under the About window, or above it when there is no room below, and always inside the screen's visible frame (`ServiceMonitorPanel.topLeft`). Closing it with its close button or ⌘W logs `SERVICE MODE // OFF`, as toggling it off does. It opens at 760 × 500 and resizes. Its text is 13 pt to start; ⌘+ and ⌘− step it from 11 to 18 pt, ⌘0 puts it back, and the size is kept in the app's defaults (`serviceMonitorTextSize`, through `UserDefaults.app`, so a test run never touches it). Until 2026-11-20 the text was fixed at 11 pt, so a larger window only held more lines. A command line takes at most 120 characters, typed or pasted. A command's answer that reports a problem is shown as a warning. It takes these commands:
 
 | Command | Does |
 |---|---|
-| `help` | Lists the commands |
-| `status` | The engine's state, the bound input (transport, sample rate, channels, format, layout), the output format, the active file and its size, whether data is flowing, and any recording warning (`serviceStatusLines`) |
+| `help` | Lists the commands, and how to read a `LEVEL` line and the time column |
+| `status` | In sections (`serviceStatusLines`). **Input**: the device, its connection and maker, sample rate (16 kHz or below flagged), channels, format and layout, a meter that may differ from the file's level, a closed lid under the built-in mic, and the meter's level. **Recorder**: the state in words and the elapsed time, the session, the output format, the active file, its size and write rate; during a take whether data is reaching the file, whether a voice has been heard, and the take's tally so far; and any recording warning. **Disk**: free space, and how long it lasts at the take's rate. The state names are `AppState.serviceName` ("SELECTING MIC"); `diagnosticName` is the heartbeat's and stays as the dashboard reads it |
+| `inputs` | Every input present (`AudioEngine.serviceInputLines`): its connection, nominal sample rate and input channels, which is the Mac's default and which is in use, a rate of 16 kHz or below, and a built-in mic under a closed lid |
+| `sys` | The app's version, build and architecture, and how long it has been open; macOS; the Mac's model, chip and memory (`SessionDiagnostics.SystemInfo`); the Mac's uptime; power (AC, or battery with its charge and time left, 20% or less a warning); thermal state (serious or critical a warning); Low Power Mode; the lid; microphone access |
+| `text N` | Sets the text size, 11 to 18 pt; `text` alone puts it back to 13 |
 | `paths` | The output folder, the app's Application Support folder (update state, the version kept for going back), the app bundle and the temporary folder. `paths open` reveals the active file in Finder, or opens the output folder, and says which, or that it could not |
-| `dump` | Copies the pinned lines, the buffer and the system log since launch to the clipboard |
+| `dump` | Copies the pinned lines, the buffer and the system log since launch to the clipboard, under two lines naming the app, its version and build, macOS, the Mac's model, chip and memory, and when it was copied (`ServiceConsole.dumpHeader`), so a pasted log says where it came from |
 | `clear` (`cls`) | Empties the buffer, with any line logged but not yet shown, so its own `> clear` is gone too; the pinned lines stay |
 | `degauss` | A shake and a flash; it does nothing else |
 
@@ -901,3 +924,4 @@ Not everything the app remembers is session-scoped. Each setting was decided on 
 | USB first-seen map (`usbDeviceFirstSeenAt`) | Kept, never pruned (§6) |
 | Window position | Kept, as `NSWindow Frame Faceplate` |
 | Service Monitor log | Never stored: the last 500 lines and the pinned ones, in memory only (§5) |
+| Service Monitor text size (`serviceMonitorTextSize`) | Kept (§5); removed with the rest of the domain when a guest copy uninstalls itself |

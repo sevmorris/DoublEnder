@@ -34,6 +34,21 @@ extension AppState {
         case .error: return "error"
         }
     }
+
+    /// The state's name in words, for the Service Monitor. Not
+    /// `diagnosticName`, which the heartbeat sends and the dashboard reads.
+    var serviceName: String {
+        switch self {
+        case .selectingMic: return "SELECTING MIC"
+        case .ready: return "READY"
+        case .recording: return "RECORDING"
+        #if GCS_ENABLED
+        case .uploading: return "UPLOADING"
+        case .uploadFailed: return "UPLOAD FAILED"
+        #endif
+        case .error: return "ERROR"
+        }
+    }
 }
 
 /// User-selectable output format. The picker in the settings popover binds
@@ -417,6 +432,13 @@ class RecorderViewModel: ObservableObject {
     /// device-list listener updates.
     private var inputWatchTimer: AnyCancellable?
     private static let diskWatchInterval: TimeInterval = 5
+    /// The Service Monitor's view of the running take: what its intervals held
+    /// (`TakeTally`), when it started and when the current interval did.
+    private(set) var takeTally = TakeTally()
+    private var takeStartedAt: Date?
+    private var intervalStartedAt: Date?
+    /// Free space, read at most every few seconds for the live status block.
+    private var cachedFreeBytes: (at: Date, bytes: Int64?)?
     private static let inputWatchInterval: TimeInterval = 1
     /// Set when stop was triggered by a disconnect so we can alert the user.
     private var pendingDisconnectReason: String?
@@ -1121,8 +1143,9 @@ class RecorderViewModel: ObservableObject {
             let takeLabel = "\(fileURL.lastPathComponent) [\(outputFormat.rawValue.uppercased())]"
             DiagnosticLogger.shared.log("STATE IDLE -> ARMED // \(takeLabel)", level: .event)
             // The last take's writer line is not this one's. The pin returns
-            // with this take's first buffer.
+            // with this take's first buffer. Its summary goes with it.
             DiagnosticLogger.shared.unpin(.writer)
+            DiagnosticLogger.shared.unpin(.summary)
 
             // Crash recovery is keyed off the PCM sidecar file, which the
             // audio engine creates the moment the writer starts — no
@@ -1136,6 +1159,11 @@ class RecorderViewModel: ObservableObject {
                                             level: .warn, pin: .take)
                 throw error
             }
+            let started = Date()
+            DiagnosticLogger.shared.beginTake(at: started)
+            takeTally = TakeTally()
+            takeStartedAt = started
+            intervalStartedAt = started
             DiagnosticLogger.shared.log("STATE ARMED -> RECORDING // \(takeLabel)", level: .event, pin: .take)
 
             recordedFileURL = fileURL
@@ -1170,7 +1198,7 @@ class RecorderViewModel: ObservableObject {
     /// The reason goes to the user with the take's confirmation.
     private func checkDiskSpaceDuringRecording() {
         guard isCurrentlyRecording else { return }
-        logDiskHealth()
+        logInterval()
         guard let reason = DiskSpaceChecker.recordingBlockedReason(
             for: Self.recordingsDirectory,
             format: outputFormat
@@ -1234,6 +1262,11 @@ class RecorderViewModel: ObservableObject {
         let alreadyFinalizing = isFinalizingRecording
         isFinalizingRecording = true
         if !alreadyFinalizing {
+            // The take's last part-interval, unless the disk watch has just
+            // logged one.
+            if isCurrentlyRecording, let start = intervalStartedAt, Date().timeIntervalSince(start) >= 0.5 {
+                logInterval()
+            }
             DiagnosticLogger.shared.log("STATE RECORDING -> FLUSHING // finalizing writer", level: .event)
         }
         timer?.cancel()
@@ -1304,6 +1337,24 @@ class RecorderViewModel: ObservableObject {
                 crashBackup: takeCrashBackup,
                 voice: takeVoice
             )
+            // The take's summary, pinned, logged now: a confirmation below is
+            // modal, and a summary logged after it would carry the time the
+            // guest took to click OK. Lines stop counting from the take's start
+            // once this pass is over, so its own lines about how the take
+            // ended keep their offsets.
+            let summaryFile: URL? = { if case .success(.some(let url)) = result { return url }; return self.recordedFileURL }()
+            let summaryBytes = summaryFile
+                .flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? NSNumber }?.int64Value
+            let summary = self.lastTake.map {
+                self.takeTally.summary(seconds: $0.seconds, fileBytes: summaryBytes, end: $0.end, cause: $0.cause,
+                                       interruptions: $0.interruptions, voice: $0.voice)
+            }
+            if let summary { DiagnosticLogger.shared.log(summary.text, level: summary.level, pin: .summary) }
+            defer {
+                DiagnosticLogger.shared.endTake()
+                self.takeStartedAt = nil
+                self.intervalStartedAt = nil
+            }
             switch result {
             case .success(.some(let url)):
                 DiagnosticLogger.shared.log("STATE FLUSHING -> SAVED // \(url.lastPathComponent) · \(takeSeconds) s", level: .event)
@@ -1499,41 +1550,155 @@ class RecorderViewModel: ObservableObject {
         return "\(prefix)Failed to finalize recording: \(error.localizedDescription)"
     }
 
-    /// Disk-write health for the Service Monitor, every disk-watch tick
-    /// (5 s) on main: the file's size so far and the volume's free space.
-    private func logDiskHealth() {
+    /// The Service Monitor's `LEVEL` line, every disk-watch tick (5 s) on
+    /// main and once more as the take stops: what the input delivered since
+    /// the last one (`AudioEngine.drainTelemetry`), the file so far and the
+    /// disk under it. Each interval goes into the take's tally.
+    private func logInterval() {
+        let now = Date()
+        let window = audioEngine.drainTelemetry()
+        let wall = intervalStartedAt.map { now.timeIntervalSince($0) } ?? 0
+        intervalStartedAt = now
+        takeTally.add(window, wallSeconds: wall)
+        let disk = currentDiskReading(now: now, freshFree: true)
+        DiagnosticLogger.shared.log(window.line(wallSeconds: wall, disk: disk),
+                                    level: window.isProblem(wallSeconds: wall) ? .warn : .info)
+    }
+
+    /// The take's file and the disk under it. `freshFree` reads the free space
+    /// now; otherwise a reading up to 5 s old will do.
+    private func currentDiskReading(now: Date = Date(), freshFree: Bool = false) -> DiskReading {
         let size = recordedFileURL
             .flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? NSNumber }?
             .int64Value ?? 0
-        let free = DiskSpaceChecker.availableMegabytes(at: Self.recordingsDirectory).map { "\($0) MB" } ?? "?"
-        DiagnosticLogger.shared.log(String(format: "DISK // file %.2f MB · free %@ · writing %@",
-                                           Double(size) / 1_048_576, free, isWritingData ? "YES" : "NO"))
+        if freshFree || cachedFreeBytes.map({ now.timeIntervalSince($0.at) >= Self.diskWatchInterval }) ?? true {
+            cachedFreeBytes = (now, DiskSpaceChecker.availableBytes(at: Self.recordingsDirectory))
+        }
+        let elapsed = takeStartedAt.map { now.timeIntervalSince($0) } ?? 0
+        return DiskReading(fileBytes: size, freeBytes: cachedFreeBytes?.bytes,
+                           reserveBytes: DiskSpaceChecker.minimumFreeBytes(for: outputFormat),
+                           bytesPerSecond: isCurrentlyRecording && elapsed >= 5 && size > 0 ? Double(size) / elapsed : nil)
     }
 
-    /// The `status` command's lines. Main thread.
-    func serviceStatusLines() -> [String] {
-        var lines = [
-            "ENGINE STATE ... \(state.diagnosticName.uppercased())"
-                + (audioEngine.isRebuilding ? " (REBUILDING)" : "")
-                + (audioEngine.engineHealthy ? "" : " (UNHEALTHY)"),
-            "INPUT DEVICE ... \(boundInputDeviceName ?? "—")",
-        ]
+    /// The `status` command, in sections, a problem shown as a warning.
+    func serviceStatusLines() -> [DiagnosticLogger.Answer] {
+        typealias A = DiagnosticLogger.Answer
+        var lines: [A] = [.heading("INPUT")]
+        lines.append(.row("DEVICE", boundInputDeviceName ?? "—"))
         if let input = audioEngine.inputDiagnostics() {
-            lines.append("TRANSPORT ...... \(input.transport)")
-            lines.append("SAMPLE RATE .... \(input.sampleRate.map { "\($0) Hz" } ?? "— (no buffer yet)")")
-            lines.append("CHANNELS ....... \(input.channels.map(String.init) ?? "—") · \(input.sampleFormat ?? "—") · layout \(input.layout ?? "—")")
+            lines.append(.row("CONNECTION", ServiceFormat.transport(input.transport)
+                              + (input.manufacturer.map { " · \($0)" } ?? "")))
+            if let rate = input.sampleRate {
+                lines.append(rate <= 16_000
+                             ? .row("SAMPLE RATE", "\(rate) Hz  LOW (Bluetooth call profile?)", level: .warn)
+                             : .row("SAMPLE RATE", "\(rate) Hz"))
+            } else {
+                lines.append(.row("SAMPLE RATE", "— (no audio buffer yet)"))
+            }
+            lines.append(.row("CHANNELS", "\(input.channels.map(String.init) ?? "—") · \(input.sampleFormat ?? "—")"
+                              + " · layout \(input.layout ?? "—")"))
+            if input.meterMatchesFile == false {
+                lines.append(.row("METER", "may differ from the file's level (unmeasured channel layout)", level: .warn))
+            }
+            if input.transport == "builtIn", AudioEngine.isLidClosed() {
+                lines.append(.row("LID", "CLOSED: the built-in mic hears nothing", level: .warn))
+            }
         }
-        lines.append("OUTPUT FORMAT .. \(outputFormat.displayName)")
+        lines.append(.row("LEVEL", String(format: "%.0f dB on the meter", meterLevel)
+                          + (meterLevel <= LevelMeter.dbFloor ? " (its floor)" : "")))
+
+        lines.append(.heading("RECORDER"))
+        lines.append(.row("STATE", state.serviceName + (isCurrentlyRecording ? " · \(recordingTime.hhmmss)" : "")))
+        lines.append(.row("SESSION", audioEngine.isRebuilding ? "REBUILDING"
+                          : (audioEngine.engineHealthy ? "running" : "UNHEALTHY"),
+                          level: audioEngine.engineHealthy ? .info : .warn))
+        lines.append(.row("OUTPUT FORMAT", outputFormat.displayName))
         if let file = recordedFileURL {
-            let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
-            lines.append("ACTIVE FILE .... \(file.lastPathComponent)")
-            lines.append(String(format: "FILE SIZE ...... %.2f MB · elapsed %@", Double(size) / 1_048_576, recordingTime.hhmmss))
+            lines.append(.row("ACTIVE FILE", file.lastPathComponent))
+            let disk = currentDiskReading()
+            lines.append(.row("FILE SIZE", ServiceFormat.bytes(disk.fileBytes)
+                              + (disk.bytesPerSecond.map { " · \(ServiceFormat.rate($0))" } ?? "")))
         } else {
-            lines.append("ACTIVE FILE .... none")
+            lines.append(.row("ACTIVE FILE", "none"))
         }
-        lines.append("WRITING ........ \(isWritingData ? "YES" : "NO")")
-        if let warning = recordingWarning { lines.append("WARNING ........ \(warning)") }
+        if isCurrentlyRecording {
+            lines.append(isWritingData ? .row("WRITING", "yes")
+                         : .row("WRITING", "NO: audio is not reaching the file", level: .warn))
+            let voice = audioEngine.voiceStatus
+            lines.append(.row("VOICE", voice.heard ? "heard" + (voice.secondsWithoutVoice > 0 ? ", none for \(voice.secondsWithoutVoice) s" : "")
+                              : "not heard yet (\(voice.secondsWithoutVoice) s)",
+                              level: voice.isWarning ? .warn : .info))
+            let tally = takeTally
+            lines.append(.row("THIS TAKE", "\(tally.droppedBuffers) dropped · \(tally.shortIntervals) short · "
+                              + "\(tally.silentIntervals) silent · \(tally.clippedIntervals) clipped · peak \(TelemetryWindow.dBFS(tally.peak))",
+                              level: tally.hasProblems ? .warn : .info))
+        }
+        if let warning = recordingWarning { lines.append(.row("WARNING", warning, level: .warn)) }
+
+        lines.append(.heading("DISK"))
+        let disk = currentDiskReading(freshFree: true)
+        if let free = disk.freeBytes {
+            var text = "\(ServiceFormat.bytes(free)) free"
+            if let left = disk.secondsLeft { text += " · \(ServiceFormat.timeLeft(left)) at this take's rate" }
+            lines.append(.row("FREE", text, level: free < disk.reserveBytes * 2 ? .warn : .info))
+        } else {
+            lines.append(.row("FREE", "could not be read", level: .warn))
+        }
         return lines
+    }
+
+    /// The live status block above the pinned lines, read twice a second
+    /// while the panel shows: state and input, the meter, the file and disk.
+    func serviceLiveLines() -> [DiagnosticLogger.Answer] {
+        typealias A = DiagnosticLogger.Answer
+        let input = audioEngine.inputDiagnostics()
+        var head = state.serviceName
+        if isCurrentlyRecording { head = "● REC \(recordingTime.hhmmss)" }
+        head += " · \(boundInputDeviceName ?? "no input")"
+        if let input {
+            head += " · " + (input.sampleRate.map { String(format: "%g kHz", Double($0) / 1000) } ?? "? kHz")
+            head += " · \(input.channels.map { "\($0) ch" } ?? "? ch")"
+        }
+        let lowRate = (input?.sampleRate ?? 48_000) <= 16_000
+        var lines = [A(text: head + (lowRate ? " · LOW RATE" : ""), level: lowRate ? .warn : .event)]
+
+        let cells = 24
+        let fraction = max(0, min(1, (meterLevel - LevelMeter.dbFloor) / -LevelMeter.dbFloor))
+        let lit = Int((fraction * Float(cells)).rounded())
+        let bar = String(repeating: "█", count: lit) + String(repeating: "░", count: cells - lit)
+        var level = "LEVEL [\(bar)] " + (meterLevel <= LevelMeter.dbFloor ? String(format: "≤%.0f dB", LevelMeter.dbFloor)
+                                                                      : String(format: "%.0f dB", meterLevel))
+        var levelWarn = false
+        if isCurrentlyRecording {
+            let voice = audioEngine.voiceStatus
+            level += voice.heard ? " · voice heard" : " · no voice yet"
+            levelWarn = voice.isWarning
+        }
+        lines.append(A(text: level, level: levelWarn ? .warn : .info))
+
+        let disk = currentDiskReading()
+        var diskText = "DISK "
+        if isCurrentlyRecording {
+            diskText += ServiceFormat.bytes(disk.fileBytes)
+            if let rate = disk.bytesPerSecond { diskText += " @ \(ServiceFormat.rate(rate))" }
+            diskText += " · "
+        }
+        diskText += disk.freeBytes.map { "\(ServiceFormat.bytes($0)) free" } ?? "free ?"
+        if let left = disk.secondsLeft { diskText += " (\(ServiceFormat.timeLeft(left)))" }
+        var diskWarn = false
+        if isCurrentlyRecording {
+            let tally = takeTally
+            diskText += " · \(tally.droppedBuffers) dropped"
+            if !isWritingData { diskText += " · NOT WRITING" }
+            diskWarn = tally.droppedBuffers > 0 || !isWritingData
+        }
+        lines.append(A(text: diskText, level: diskWarn ? .warn : .info))
+        return lines
+    }
+
+    /// The `inputs` command (`AudioEngine.serviceInputLines`).
+    func serviceInputLines() -> [DiagnosticLogger.Answer] {
+        audioEngine.serviceInputLines()
     }
 
     /// Re-wrap a `.pcmrec` sidecar into a WAV when the main writer could not
@@ -1675,6 +1840,9 @@ class RecorderViewModel: ObservableObject {
     /// sidecar are both deleted so a future launch doesn't surface them.
     func abortRecording(completion: (() -> Void)? = nil) {
         DiagnosticLogger.shared.log("STATE RECORDING -> ABORTED // discarding take", level: .warn)
+        DiagnosticLogger.shared.endTake()
+        takeStartedAt = nil
+        intervalStartedAt = nil
         timer?.cancel()
         diskWatchTimer?.cancel()
         inputWatchTimer?.cancel()
