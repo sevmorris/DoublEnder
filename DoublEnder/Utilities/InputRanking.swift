@@ -76,15 +76,54 @@ enum InputRanking {
     static func startingInput(systemDefault: String?, builtIn: String?, hardware: [InputCandidate],
                               lidClosed: Bool) -> InputCandidate? {
         let usable = hardware.filter { !(lidClosed && $0.uniqueID == builtIn) }
-        let builtInHears = !lidClosed && hardware.contains { $0.uniqueID == builtIn }
-        if let systemDefault, let input = usable.first(where: { $0.uniqueID == systemDefault }),
-           !isDockPort(input), !(input.isBluetooth && builtInHears) {
+        if let input = usableSystemDefault(systemDefault, builtIn: builtIn, hardware: hardware, lidClosed: lidClosed) {
             return input
         }
-        if builtInHears, let input = hardware.first(where: { $0.uniqueID == builtIn }) {
+        if builtInHears(builtIn, hardware: hardware, lidClosed: lidClosed),
+           let input = hardware.first(where: { $0.uniqueID == builtIn }) {
             return input
         }
         return defaultInput(among: usable) ?? defaultInput(among: hardware)
+    }
+
+    private static func builtInHears(_ builtIn: String?, hardware: [InputCandidate], lidClosed: Bool) -> Bool {
+        !lidClosed && hardware.contains { $0.uniqueID == builtIn }
+    }
+
+    /// The system default, when `startingInput` takes it.
+    private static func usableSystemDefault(_ systemDefault: String?, builtIn: String?, hardware: [InputCandidate],
+                                            lidClosed: Bool) -> InputCandidate? {
+        guard let systemDefault, !(lidClosed && systemDefault == builtIn),
+              let input = hardware.first(where: { $0.uniqueID == systemDefault }),
+              !isDockPort(input),
+              !(input.isBluetooth && builtInHears(builtIn, hardware: hardware, lidClosed: lidClosed))
+        else { return nil }
+        return input
+    }
+
+    /// The inputs a guest is asked to choose among: every hardware input but
+    /// a dock's audio port, and the built-in mic only while it can hear.
+    static func launchChoices(builtIn: String?, hardware: [InputCandidate], lidClosed: Bool) -> [InputCandidate] {
+        hardware.filter { !isDockPort($0) && !(lidClosed && $0.uniqueID == builtIn) }
+    }
+
+    /// Whether a launch asks which input to record from (`presentLaunchChooser`)
+    /// instead of offering the USB inputs one after another. It asks with
+    /// three or more inputs to choose among, where one offer after another
+    /// was a run of "switch?" questions that never said what the guest was
+    /// on; and with two or more when it had nothing to go on: the built-in mic
+    /// can't hear and the Mac's own input isn't one it can take. Two inputs
+    /// otherwise get the single offer, which names both.
+    ///
+    /// Asked of a tester's setup on 2026-11-19: a Bluetooth headset, a webcam,
+    /// and the lid closed with the built-in mic still the Mac's input.
+    static func asksAtLaunch(systemDefault: String?, builtIn: String?, hardware: [InputCandidate],
+                             lidClosed: Bool) -> Bool {
+        let choices = launchChoices(builtIn: builtIn, hardware: hardware, lidClosed: lidClosed)
+        if choices.count >= 3 { return true }
+        let sure = usableSystemDefault(systemDefault, builtIn: builtIn, hardware: hardware, lidClosed: lidClosed) != nil
+            || builtInHears(builtIn, hardware: hardware, lidClosed: lidClosed)
+        return !sure && choices.count >= 2
     }
 
     /// The USB input to offer first at launch: the most recently first-seen one
@@ -111,6 +150,50 @@ enum InputRanking {
                 return seenA != seenB ? seenA > seenB : a.offset < b.offset
             }
             .map(\.element)
+    }
+}
+
+/// The words of the offer to switch to a USB input. It names the input the
+/// recorder is on, since the guest may take "current" for the one their Mac
+/// is using: until 2026-11-19 it said only "Switch" and "Keep Current", and a
+/// tester on a Bluetooth headset kept a built-in mic behind a closed lid.
+struct SwitchOfferWords: Equatable {
+    let title: String
+    let text: String
+    let switchButton: String
+    let keepButton: String
+
+    /// `current` is nil when the recorder is on no input.
+    init(offered: String, current: String?) {
+        title = "Switch to \(offered)?"
+        switchButton = "Switch to \(offered)"
+        if let current {
+            text = "DoublEnder is recording from \(current). Switch if \(offered) is your microphone, "
+                + "or your microphone is connected through it."
+            keepButton = "Keep \(current)"
+        } else {
+            text = "Switch if \(offered) is your microphone, or your microphone is connected through it."
+            keepButton = "Not Now"
+        }
+    }
+}
+
+/// The words of the launch's question, which input to record from.
+enum LaunchInputChooserWords {
+    static let title = "Which microphone should DoublEnder record from?"
+    static func text(lidClosed: Bool) -> String {
+        lidClosed
+            ? "More than one is connected, and your Mac's built-in microphone can't hear you while its lid is closed."
+            : "More than one is connected."
+    }
+    static let button = "Record from This Microphone"
+    /// The label for an input in the list. `isCurrent` marks the one the
+    /// recorder is on until the guest chooses.
+    static func label(_ input: InputCandidate, isCurrent: Bool) -> String {
+        var label = input.name
+        if input.isBluetooth { label += " (Bluetooth, call quality)" }
+        if isCurrent { label += " \u{2014} current" }
+        return label
     }
 }
 

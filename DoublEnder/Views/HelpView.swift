@@ -150,7 +150,8 @@ struct HelpView: View {
                 section("While You Record") {
                     definition("No voice heard", "If two minutes of a recording go by with no voice in it, or ten minutes after the last one, a pop-up appears over your other apps. Check that the right microphone is selected and isn't muted, or stop if you're finished; OPEN DOUBLENDER brings the recorder forward. The recording carries on either way, and the pop-up goes away when DoublEnder hears a voice again. If a recording ends without a voice in it, its confirmation says so.")
                     definition("Microphone disconnected", "If your microphone disconnects while you record, DoublEnder stops and saves the recording, switches to another input and tells you which. If it disconnects between recordings, DoublEnder switches and tells you the same way. Check the input before you record again.")
-                    definition("USB audio input detected", "When you plug in a USB audio device between recordings, DoublEnder offers to switch to it. Choose Switch if your microphone is connected through it, or Keep Current to stay where you are.")
+                    definition("Switch to a USB input?", "When a USB audio device is connected, DoublEnder offers to switch to it, and names the microphone it is recording from now. Switch if your microphone is that device, or is connected through it; otherwise keep the one you're on.")
+                    definition("Which microphone?", "When you open DoublEnder with three or more microphones connected, or with your laptop closed and more than one to choose from, it asks which one to record from. The one it started on is selected; choose another, or keep it. A Bluetooth headset is marked: it records at phone-call quality.")
                 }
 
                 #if GCS_ENABLED
