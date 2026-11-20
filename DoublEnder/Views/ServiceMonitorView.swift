@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import AVFoundation
+import IOKit.ps
 
 // MARK: - Palette
 
@@ -13,7 +15,22 @@ private enum CRT {
     /// Warning orange, still phosphor-ish.
     static let warn = Color(red: 0xFF/255, green: 0x7A/255, blue: 0x1A/255)
     static let bezel = Color(red: 0x1C/255, green: 0x19/255, blue: 0x13/255)
-    static let font = Font.system(size: 11, weight: .regular, design: .monospaced)
+
+    static func font(_ size: Double) -> Font {
+        .system(size: size, weight: .regular, design: .monospaced)
+    }
+}
+
+/// The console's text size, in points: ⌘+ and ⌘− step it, ⌘0 and `text`
+/// with no size put it back, `text N` sets it. Kept in the app's defaults.
+enum ServiceTextSize {
+    static let key = "serviceMonitorTextSize"
+    static let standard = 13.0
+    static let range = 11.0...18.0
+
+    static func clamped(_ size: Double) -> Double {
+        min(max(size.rounded(), range.lowerBound), range.upperBound)
+    }
 }
 
 // MARK: - Panel
@@ -73,7 +90,7 @@ final class ServiceMonitorPanel: NSObject, NSWindowDelegate {
     }
 
     private func makePanel() -> NSPanel {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 580, height: 380),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 500),
                             styleMask: [.titled, .closable, .resizable, .utilityWindow],
                             backing: .buffered, defer: false)
         panel.title = "DE-DIAG // SERVICE MONITOR"
@@ -81,7 +98,7 @@ final class ServiceMonitorPanel: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.isExcludedFromWindowsMenu = true
-        panel.minSize = NSSize(width: 460, height: 280)
+        panel.minSize = NSSize(width: 520, height: 340)
         panel.backgroundColor = NSColor(red: 0x1C/255, green: 0x19/255, blue: 0x13/255, alpha: 1)
         panel.contentView = NSHostingView(rootView: ServiceMonitorView())
         panel.delegate = self
@@ -124,6 +141,9 @@ struct ServiceMonitorView: View {
     /// or a command lets go.
     @State private var following = true
     @FocusState private var focused: Bool
+    @AppStorage(ServiceTextSize.key, store: .app) private var textSize = ServiceTextSize.standard
+
+    private var font: Font { CRT.font(textSize) }
 
     /// The longest command line the prompt takes, typed or pasted.
     static let inputLimit = 120
@@ -132,7 +152,7 @@ struct ServiceMonitorView: View {
         screen
             .padding(12)
             .background(bezel)
-            .frame(minWidth: 460, minHeight: 280)
+            .frame(minWidth: 520, minHeight: 340)
     }
 
     // MARK: Bezel
@@ -155,6 +175,7 @@ struct ServiceMonitorView: View {
             CRT.charcoal
             VStack(alignment: .leading, spacing: 6) {
                 header
+                liveStatus
                 pinnedLines
                 scrollback
                 prompt
@@ -190,8 +211,40 @@ struct ServiceMonitorView: View {
             Text("BUF \(log.lines.count)/\(DiagnosticLogger.capacity)")
                 .foregroundColor(CRT.dim)
         }
-        .font(CRT.font.weight(.bold))
+        .font(font.weight(.bold))
         .shadow(color: CRT.amber, radius: 3)
+    }
+
+    /// The live status block (`RecorderViewModel.serviceLiveLines`), read
+    /// twice a second while the panel shows, under a rule.
+    private var liveStatus: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(RecorderViewModel.shared.serviceLiveLines().enumerated()), id: \.offset) { _, line in
+                    Text(line.text)
+                        .foregroundColor(color(for: line.level))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                rule
+            }
+            .font(font)
+            .shadow(color: CRT.amber.opacity(0.85), radius: 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var rule: some View {
+        Rectangle()
+            .fill(CRT.dim.opacity(0.6))
+            .frame(height: 1)
+            .padding(.top, 4)
+    }
+
+    /// A line's time: how far into the take it came, or the time of day
+    /// outside one, both 13 characters wide so the text lines up.
+    private func stampText(_ line: DiagnosticLogger.Line) -> String {
+        "[\(line.offsetStamp ?? " " + line.stamp)]"
     }
 
     /// The latest handshake, writer and take lines (`DiagnosticLogger.Pin`),
@@ -204,19 +257,16 @@ struct ServiceMonitorView: View {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(pins) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("[\(line.stamp)]").foregroundColor(CRT.dim)
+                        Text(stampText(line)).foregroundColor(CRT.dim)
                         Text(line.text)
                             .foregroundColor(color(for: line.level))
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Rectangle()
-                    .fill(CRT.dim.opacity(0.6))
-                    .frame(height: 1)
-                    .padding(.top, 4)
+                rule
             }
-            .font(CRT.font)
+            .font(font)
             .shadow(color: CRT.amber.opacity(0.85), radius: 3)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -228,7 +278,7 @@ struct ServiceMonitorView: View {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(log.lines) { line in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("[\(line.stamp)]").foregroundColor(CRT.dim)
+                            Text(stampText(line)).foregroundColor(CRT.dim)
                             Text(line.text)
                                 .foregroundColor(color(for: line.level))
                                 .textSelection(.enabled)
@@ -237,7 +287,7 @@ struct ServiceMonitorView: View {
                         .id(line.id)
                     }
                 }
-                .font(CRT.font)
+                .font(font)
                 .compositingGroup()
                 .shadow(color: CRT.amber.opacity(0.85), radius: 3)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -274,12 +324,12 @@ struct ServiceMonitorView: View {
                 let on = Int(context.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
                 Rectangle()
                     .fill(CRT.amber)
-                    .frame(width: 7, height: 13)
+                    .frame(width: textSize * 0.62, height: textSize * 1.18)
                     .opacity(focused && on ? 1 : (focused ? 0 : 0.35))
             }
             Spacer(minLength: 0)
         }
-        .font(CRT.font)
+        .font(font)
         .shadow(color: CRT.amber, radius: 3)
     }
 
@@ -329,6 +379,19 @@ struct ServiceMonitorView: View {
             break
         }
         if press.modifiers.contains(.command) {
+            switch press.characters {
+            case "=", "+":
+                textSize = ServiceTextSize.clamped(textSize + 1)
+                return .handled
+            case "-", "_":
+                textSize = ServiceTextSize.clamped(textSize - 1)
+                return .handled
+            case "0":
+                textSize = ServiceTextSize.standard
+                return .handled
+            default:
+                break
+            }
             if press.characters == "v", let text = NSPasteboard.general.string(forType: .string) {
                 // The same limit as typing: a long paste would be one long line.
                 input = String((input + text.filter { !$0.isNewline }).prefix(Self.inputLimit))
@@ -351,7 +414,7 @@ struct ServiceMonitorView: View {
         following = true
         if history.last != command { history.append(command) }
         if history.count > 50 { history.removeFirst() }
-        ServiceConsole.run(command, degauss: degauss)
+        ServiceConsole.run(command, degauss: degauss, textSize: $textSize)
     }
 
     private func degauss() {
@@ -418,7 +481,7 @@ private struct ShakeEffect: GeometryEffect {
 
 @MainActor
 enum ServiceConsole {
-    static func run(_ raw: String, degauss: () -> Void) {
+    static func run(_ raw: String, degauss: () -> Void, textSize: Binding<Double>) {
         let log = DiagnosticLogger.shared
         log.log("> \(raw)", level: .input)
         let parts = raw.lowercased().split(separator: " ").map(String.init)
@@ -426,16 +489,39 @@ enum ServiceConsole {
         case "help":
             [
                 "help      list service commands",
-                "status    audio device, sample rate, engine state, active file",
+                "status    the input, the recorder, this take so far and the disk",
+                "inputs    every input present: connection, rate, channels, which is in use",
+                "sys       this Mac: macOS, model, power, heat, lid, microphone access",
                 "paths     output, app support, bundle and temp folders   (paths open → Finder)",
                 "dump      copy the pinned lines, the log buffer and the app's system log",
-                "          since launch to the clipboard",
+                "          since launch to the clipboard, under a line naming app and Mac",
+                "text N    text size, \(Int(ServiceTextSize.range.lowerBound))–\(Int(ServiceTextSize.range.upperBound)) pt; ⌘+ ⌘− ⌘0 too",
                 "clear     clear the console buffer (the pinned lines stay)",
                 "degauss   demagnetize the tube",
-                "scrolling up holds the scrollback; End or any command follows again",
             ].forEach { log.log($0) }
+            [
+                "LEVEL lines come every 5 s in a take: pk/avg level, OK · QUIET · HOT · CLIP · SILENT,",
+                "  seconds of audio received against seconds passed, and the file and disk.",
+                "During a take the time column counts from its start (+hh:mm:ss.mmm).",
+                "Scrolling up holds the scrollback; End or any command follows again.",
+            ].forEach { log.log($0, level: .system) }
         case "status":
-            RecorderViewModel.shared.serviceStatusLines().forEach { log.log($0) }
+            RecorderViewModel.shared.serviceStatusLines().forEach { log.log($0.text, level: $0.level) }
+        case "inputs":
+            RecorderViewModel.shared.serviceInputLines().forEach { log.log($0.text, level: $0.level) }
+        case "sys":
+            systemLines().forEach { log.log($0.text, level: $0.level) }
+        case "text":
+            if let arg = parts.dropFirst().first {
+                guard let size = Double(arg), ServiceTextSize.range.contains(size) else {
+                    log.log("?TEXT SIZE — \(Int(ServiceTextSize.range.lowerBound)) to \(Int(ServiceTextSize.range.upperBound)) pt", level: .warn)
+                    return
+                }
+                textSize.wrappedValue = ServiceTextSize.clamped(size)
+            } else {
+                textSize.wrappedValue = ServiceTextSize.standard
+            }
+            log.log("TEXT \(Int(textSize.wrappedValue)) PT", level: .system)
         case "paths":
             let output = RecorderViewModel.recordingsDirectory
             // The update state, the version kept for going back, and the
@@ -470,7 +556,7 @@ enum ServiceConsole {
                 await MainActor.run {
                     let log = DiagnosticLogger.shared
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(log.exportText(systemLog: shown), forType: .string)
+                    NSPasteboard.general.setString(log.exportText(header: dumpHeader(), systemLog: shown), forType: .string)
                     log.log("COPIED TO PASTEBOARD // \(log.pinnedLines.count) pinned · \(log.lines.count) log · "
                             + "\(system.count) system log lines", level: .system)
                 }
@@ -483,5 +569,87 @@ enum ServiceConsole {
         default:
             log.log("?SYNTAX ERROR — '\(parts.first ?? raw)' unknown. Type 'help'.", level: .warn)
         }
+    }
+
+    // MARK: Reports
+
+    /// The app and the Mac, `dump`'s first lines, so a pasted log says where
+    /// it came from.
+    static func dumpHeader(now: Date = Date()) -> [String] {
+        let info = SessionDiagnostics.SystemInfo.current
+        let stamp = ISO8601DateFormatter.string(from: now, timeZone: .current,
+                                                formatOptions: [.withInternetDateTime])
+        return ["-- \(appDescription) · macOS \(info.os) · \(info.model ?? "?") · \(info.chip ?? "?") · \(info.memoryGB) GB --",
+                "-- copied \(stamp) --"]
+    }
+
+    /// "DoublEnder 2.10.5lr (67)".
+    static var appDescription: String {
+        let bundle = Bundle.main
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "DoublEnder"
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(name) \(version) (\(build))"
+    }
+
+    /// The `sys` command: the app, macOS and the Mac, and what about the Mac
+    /// can spoil a take: its power, its heat, a closed lid, microphone access.
+    static func systemLines() -> [DiagnosticLogger.Answer] {
+        typealias A = DiagnosticLogger.Answer
+        let info = SessionDiagnostics.SystemInfo.current
+        let process = ProcessInfo.processInfo
+        var lines: [A] = [.heading("SYSTEM")]
+        let up = Date().timeIntervalSince(DiagnosticLogger.shared.startedAt)
+        lines.append(.row("APP", "\(appDescription) · \(info.arch)\(info.translated ? " (Rosetta)" : "") · open \(up.hhmmss)"))
+        lines.append(.row("MACOS", info.os))
+        lines.append(.row("MAC", "\(info.model ?? "?") · \(info.chip ?? "?") · \(info.memoryGB) GB"))
+        lines.append(.row("MAC UP", process.systemUptime.hhmmss))
+        lines.append(powerLine())
+        switch process.thermalState {
+        case .nominal: lines.append(.row("THERMAL", "nominal"))
+        case .fair: lines.append(.row("THERMAL", "fair"))
+        case .serious: lines.append(.row("THERMAL", "SERIOUS: the Mac may slow down", level: .warn))
+        case .critical: lines.append(.row("THERMAL", "CRITICAL: the Mac is slowing down", level: .warn))
+        @unknown default: lines.append(.row("THERMAL", "unknown"))
+        }
+        lines.append(process.isLowPowerModeEnabled ? .row("LOW POWER", "ON", level: .warn) : .row("LOW POWER", "off"))
+        lines.append(AudioEngine.isLidClosed()
+                     ? .row("LID", "CLOSED: the built-in mic hears nothing", level: .warn)
+                     : .row("LID", "open, or no lid"))
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: lines.append(.row("MIC ACCESS", "granted"))
+        case .denied: lines.append(.row("MIC ACCESS", "DENIED: System Settings › Privacy & Security › Microphone", level: .warn))
+        case .restricted: lines.append(.row("MIC ACCESS", "RESTRICTED by a profile or parental controls", level: .warn))
+        case .notDetermined: lines.append(.row("MIC ACCESS", "not asked yet", level: .warn))
+        @unknown default: lines.append(.row("MIC ACCESS", "unknown"))
+        }
+        return lines
+    }
+
+    /// The power source and battery, from IOKit's power sources. A Mac with
+    /// no battery says so.
+    private static func powerLine() -> DiagnosticLogger.Answer {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef] else {
+            return .row("POWER", "unknown")
+        }
+        for source in sources {
+            guard let description = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any],
+                  description[kIOPSTypeKey] as? String == kIOPSInternalBatteryType,
+                  let current = description[kIOPSCurrentCapacityKey] as? Int,
+                  let max = description[kIOPSMaxCapacityKey] as? Int, max > 0 else { continue }
+            let percent = current * 100 / max
+            let onBattery = description[kIOPSPowerSourceStateKey] as? String == kIOPSBatteryPowerValue
+            let charging = description[kIOPSIsChargingKey] as? Bool ?? false
+            if onBattery {
+                var text = "BATTERY \(percent)%"
+                if let minutes = description[kIOPSTimeToEmptyKey] as? Int, minutes > 0 {
+                    text += String(format: " · about %d:%02d left", minutes / 60, minutes % 60)
+                }
+                return .row("POWER", text, level: percent <= 20 ? .warn : .info)
+            }
+            return .row("POWER", "AC power · battery \(percent)%" + (charging ? ", charging" : ""))
+        }
+        return .row("POWER", "AC power (no battery)")
     }
 }

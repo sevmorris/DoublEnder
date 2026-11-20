@@ -33,7 +33,9 @@ enum DiskSpaceChecker {
         availableBytes(at: directory).map { Int($0 / (1024 * 1024)) }
     }
 
-    private static func availableBytes(at url: URL) -> Int64? {
+    /// Free space for recordings at `url`, in bytes, or nil if the volume
+    /// can't be queried.
+    static func availableBytes(at url: URL) -> Int64? {
         guard let values = try? url.resourceValues(forKeys: [
             .volumeAvailableCapacityForImportantUsageKey
         ]),
