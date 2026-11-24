@@ -72,10 +72,23 @@ extension UserDefaults {
     /// keeps its file out of ~/Library/Preferences, where the App Preferences
     /// source's io.github.sevmorris.* pattern would back it up. It carries the
     /// bundle identifier, so the Local and Cloud builds' test runs stay apart.
-    static let app: UserDefaults = AppLauncher.isHostingTests
-        ? UserDefaults(suiteName: FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(Bundle.main.bundleIdentifier ?? "io.github.sevmorris.DoublEnder").tests").path)!
-        : .standard
+    static let app: UserDefaults = AppLauncher.isHostingTests ? scratchForTests() : .standard
+
+    /// The test run's scratch suite, empty at the start of every run.
+    ///
+    /// Its file outlives the run, at the same path each time, and a suite named
+    /// by a path keeps reading the values its file held when it was loaded:
+    /// setting such a key again reaches the file but not `string(forKey:)`
+    /// (macOS 27.2, 2026-11-23). So whatever the last run left, such as the
+    /// empty guest name a test put back as it finished, would win over what
+    /// this run writes. Deleting the file before the suite first reads it
+    /// starts every run clean, as on a CI runner.
+    private static func scratchForTests() -> UserDefaults {
+        let bundleID = Bundle.main.bundleIdentifier ?? "io.github.sevmorris.DoublEnder"
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("\(bundleID).tests").path
+        try? FileManager.default.removeItem(atPath: path + ".plist")
+        return UserDefaults(suiteName: path)!
+    }
 }
 
 struct DoublEnderApp: App {
